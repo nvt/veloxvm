@@ -1,0 +1,38 @@
+PROGRAM-POLICY socket-ipv6
+SHA256 a123 {
+  CPU 5%
+  NET aaaa::200:0:0:1 5678 UDP client
+  POWER 400 uW
+  BANDWIDTH 150 bps
+  THREADS 1
+}
+
+PROGRAM-POLICY udp-client
+SHA256 a123 {
+  CPU 100%
+  NET aaaa::200:0:0:1 5678 UDP client
+  POWER 100 mW
+  THREADS 1
+}
+
+PROGRAM-POLICY leds
+SHA256 a123 {
+  CPU 10%
+  FILE /dev/leds WRITE
+  THREADS 1
+}
+
+PROGRAM-POLICY tail5
+SHA256 a123 {
+  CPU 40%
+  RESOURCE console
+  RESOURCE stats
+  THREADS 1
+}
+
+PROGRAM-POLICY loop
+SHA256 a123 {
+  POWER 3 mW
+  RESOURCE console
+  THREADS 1
+}

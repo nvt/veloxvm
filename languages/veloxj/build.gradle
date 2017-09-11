@@ -1,0 +1,22 @@
+apply plugin: 'application'
+apply plugin: 'findbugs'
+apply plugin: 'java'
+
+version = '1.0'
+mainClassName = 'se.sics.veloxj.VeloxCompiler'
+
+jar {
+    manifest {
+        attributes("Main-Class": "se.sics.veloxj.VeloxCompiler",
+                   "Implementation-Title": "VeloxCompiler",
+                   "Implementation-Version": version)
+    }
+}
+
+compileJava {
+    options.compilerArgs << "-Xlint:unchecked" << "-Xlint:deprecation"
+}
+
+repositories {
+    mavenCentral()
+}

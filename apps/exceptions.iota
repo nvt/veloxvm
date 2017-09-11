@@ -1,0 +1,19 @@
+function c() {
+  a = 1;
+  b = 0;
+  a / b;
+}
+
+function b() {
+  c();
+}
+
+function a() {
+  b();
+}
+
+try {
+  print("Result: ", a(), '\n');
+} catch(*Div0Exception*) {
+  println("Caught div0 exception!");
+}

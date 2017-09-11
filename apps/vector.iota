@@ -1,0 +1,6 @@
+def X = make_vector(15, true);
+X[10] = false;
+println(X[9]);
+println(X[10]);
+def Y = vector_merge(false, X, false);
+println("Last element: ", Y[|Y| - 1]);

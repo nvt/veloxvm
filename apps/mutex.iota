@@ -1,0 +1,27 @@
+def var = 1;
+def saved_var = 1;
+def i = 0;
+def j = 0;
+def m = make_mutex("special mutex");
+
+function x() {
+  while(true) {
+    mutex_lock!(m);
+
+    var = var + 1;
+    set!(saved_var, var);
+
+    for(i = 0; i < modulo(random(), 10); i++) {
+      j++;
+    }
+
+    if(saved_var != var) {
+      println(saved_var, " != ", var);
+    }
+
+    mutex_unlock!(m);
+  }
+}
+
+thread_create!(x);
+thread_create!(x);

@@ -1,0 +1,13 @@
+function c(i)
+{
+  size = case(i) {
+           (1, 2, 3): "Small";
+           (4, 5, 6): "Medium";
+           else: "Large";
+         };
+  string_append(number->string(i), " is ", size);
+}
+
+println(c(1));
+println(c(5));
+println(c(10));

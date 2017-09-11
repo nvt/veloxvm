@@ -1,0 +1,81 @@
+/* An implementation of Eratosthenes's Sieve. */
+
+def primes_ready = false;
+
+def primes = make_vector(10000, true);
+
+function sieve_mark_multiples(start_num, num, limit)
+{
+  next_num = start_num + num;
+  if(next_num <= limit) {
+    primes[next_num] = false;
+    sieve_mark_multiples(start_num, next_num, limit); 
+  }
+}
+
+function find_next_unmarked(num, limit)
+{
+  if(num > limit) {
+    false;
+  } else {
+    if(primes[num]) {
+      num;
+    } else {
+      find_next_unmarked(num + 1, limit);
+    }
+  }
+}
+
+function sieve(limit)
+{
+  for(i = 2;
+      i != false && i < limit;
+      i = find_next_unmarked(i + 1, limit)) {
+    sieve_mark_multiples(i, i, limit);
+  }
+}
+
+function generate_primes(limit)
+{
+  primes[0] = false;
+  primes[1] = false;
+  sieve(limit);
+  primes_ready = true;
+}
+
+function prime?(num)
+{
+  limit = |primes| - 1;
+  if(not(primes_ready)) {
+    print("Finding all primes up to ", limit, "...");
+    generate_primes(limit);
+    println("done!");
+  }
+  if(num > limit) {
+    "too large number";
+  } else {
+    if(num < 2) {
+      false;
+    } else {
+      primes[num];
+    }
+  }
+}
+
+def test_numbers = [-5, 0, 1, 2, 11, 50, 83, 1899, 3931, 70001];
+println("Which of the numbers ", test_numbers, " are primes? ",
+        map(prime?, test_numbers));
+
+function print_if_prime(prime_vector)
+{
+  for(i = 0; i < |prime_vector|; i++) {
+    if(prime_vector[i]) {
+      println(i, " is a prime");
+    }
+  }
+}
+
+print_if_prime(primes);
+
+prime_count = count(lambda(x) { x == true; }, vector->list(primes));
+println("Number of primes: ", prime_count);
