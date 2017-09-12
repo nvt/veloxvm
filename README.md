@@ -1,9 +1,44 @@
+## Overview
+
 VeloxVM is a virtual machine for resource-constrained devices in the
-Internet of Things. Its primary purpose is to provide a safe and versatile
-execution environment for small applications on such devices. To this end,
-VeloxVM features high-level programming languages, a compact bytecode format,
-preemptive multithreading, exception handling, resource provisioning,
-and security policies.
+Internet of Things. Its primary purpose is to provide a safe and
+versatile execution environment for small applications on such
+devices. To this end, VeloxVM features high-level programming
+languages, preemptive multithreading, exception handling, resource
+provisioning, and security policies. The services that many IoT
+operating systems are unable to give to applications because of a lack
+of hardware and language support can thus be provided by VeloxVM
+instead. Despite providing a comprehensive feature set, VeloxVM is
+able to execute together with a host operating system on
+resource-constrained IoT devices with as little as 32 kB RAM and 256
+kB ROM.
+
+### Application Development
+
+Applications can be written in the _Scheme_ programming language or
+_Iota_ (Internet of Things Application language), which is a new
+language developed in conjunction with VeloxVM. Most of the [Scheme
+standard version
+R5RS](http://www.schemers.org/Documents/Standards/R5RS/) is supported,
+along with some extensions. Additionally, a considerably number of
+procedures have been added for network programming and accessing the
+typical services of an IoT operating system. Iota is basically an
+imperative script language with C-like syntax. When compiling Iota
+scripts, they get translated to Scheme as an intermediary step.
+
+The applications are compiled to a custom bytecode format with
+high-level instructions.  The instruction set contains 191
+instructions, and is designed to make IoT apps efficient to express in
+bytecode. An compact bytecode makes software updates fast and
+energy-efficient to send over radio, and to store on the
+devices---either in RAM or in ROM.
+
+### Supported operating systems
+
+* POSIX systems such as Linux, *BSD, macOS, and Windows with Cygwin
+  (ports/posix)
+
+* Contiki (ports/contiki)
 
 ## Required software
 
@@ -11,12 +46,12 @@ Before using the VM for the first time, please ensure that you have the
 following software installed:
  * bison
  * flex
- * clisp (or one of the other LISP packages listed below)
+ * clisp (or one of the other LISP distributions listed below)
 
 The following LISP distributions are supported:
  * Armed Bear Common LISP (abcl),
  * Clozure CL (ccl)
- * CMU Common LISP (cmucl) *default*
+ * CMU Common LISP (cmucl)
  * GNU CLISP (clisp)
  * Steel Bank Common LISP (sbcl)
 
@@ -33,7 +68,7 @@ another LISP implementation and naming the resulting file "compiler".
 To create a native compiler based on SBCL, go to compiler/ and 
 run "sbcl --load sbcl-compile.lisp".
 
-## To try out VeloxVM in a POSIX environment, do the following in a shell:
+## Trying out VeloxVM in a POSIX environment
 
 1. Build the VM and all tools.
 
@@ -54,7 +89,7 @@ run "sbcl --load sbcl-compile.lisp".
 
    E.g., <code>bin/vm apps/math.vm</code>
 
-## To try out VeloxVM on the Zoul platform for Contiki OS, do the following:
+## Trying out VeloxVM on the Zoul platform for Contiki OS
 
 1. Enter the Contiki port directory.
 
