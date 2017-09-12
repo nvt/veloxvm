@@ -20,16 +20,16 @@ _Iota_ (Internet of Things Application language), which is a new
 language developed in conjunction with VeloxVM. Most of the [Scheme
 standard version
 R5RS](http://www.schemers.org/Documents/Standards/R5RS/) is supported,
-along with some extensions. Additionally, a considerably number of
+along with some extensions. Additionally, a considerable number of
 procedures have been added for network programming and accessing the
 typical services of an IoT operating system. Iota is basically an
 imperative script language with C-like syntax. When compiling Iota
 scripts, they get translated to Scheme as an intermediary step.
 
 The applications are compiled to a custom bytecode format with
-high-level instructions.  The instruction set contains 191
+high-level instructions. The instruction set contains 191
 instructions, and is designed to make IoT apps efficient to express in
-bytecode. An compact bytecode makes software updates fast and
+bytecode. A compact bytecode makes software updates fast and
 energy-efficient to send over radio, and to store on the
 devices---either in RAM or in ROM.
 
