@@ -16,15 +16,15 @@ kB ROM.
 ### Application Development
 
 Applications can be written in the _Scheme_ programming language or
-_Iota_ (Internet of Things Application language), which is a new
-language developed in conjunction with VeloxVM. Most of the [Scheme
-standard version
-R5RS](http://www.schemers.org/Documents/Standards/R5RS/) is supported,
-along with some extensions. Additionally, a considerable number of
-procedures have been added for network programming and accessing the
-typical services of an IoT operating system. Iota is basically an
-imperative script language with C-like syntax. When compiling Iota
-scripts, they get translated to Scheme as an intermediary step.
+_Cyclus_, which is a new language for IoT application scripting
+developed in conjunction with VeloxVM. Most of the [Scheme standard
+version R5RS](http://www.schemers.org/Documents/Standards/R5RS/) is
+supported, along with some extensions. Additionally, a considerable
+number of procedures have been added for network programming and
+accessing the typical services of an IoT operating system. Cyclus is
+basically an imperative script language with an infix syntax. When
+compiling Cyclus scripts, they get translated to Scheme as an
+intermediary step.
 
 The applications are compiled to a custom bytecode format with
 high-level instructions. The instruction set contains 191
@@ -81,11 +81,13 @@ run "sbcl --load sbcl-compile.lisp".
    If no parameter is supplied to the compile.sh script, all apps will
    be compiled. The parameter "app name" refers to the name of a app
    in the "apps" directory. The name of the app should be without the
-   suffix in the filename; e.g., ./compile.sh math
+   suffix in the filename; e.g., <code>./compile.sh math</code> to
+   compile a file named either math.scm or math.cyl in the apps
+   directory.
 
 3. Run an app.
 
-  </code>bin/vm &lt;app path&gt;</code>
+  <code>bin/vm &lt;app path&gt;</code>
 
    E.g., <code>bin/vm apps/math.vm</code>
 

@@ -34,7 +34,7 @@
 %option yylineno
 
 %{
-#include "iota-parser.tab.h"
+#include "cyclus-parser.tab.h"
 
 #define INT_TO_STRING(base)                          \
   do {                                               \

@@ -1,6 +1,6 @@
 Example translations.
 
-Iota source 1.
+Cyclus source 1.
 
 x = 10 * 9;
 if (x > 8 * 7) {
@@ -16,7 +16,7 @@ Translated Scheme source 1.
   (print "x is high" #\Newline)
   (print "x is log" #\Newline)
 
-Iota source 2.
+Cyclus source 2.
 
 x = array(100);
 x[15] = 1904;
