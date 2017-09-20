@@ -6,7 +6,7 @@ APP_DIR = apps
 TOOLS_DIR = tools
 POLICY_COMPILER_DIR = $(TOOLS_DIR)/policy-compiler
 LANGUAGES_DIR = languages
-SCRIPT_DIR = $(LANGUAGES_DIR)/iota
+SCRIPT_DIR = $(LANGUAGES_DIR)/cyclus
 
 .PHONY: build_tools
 
