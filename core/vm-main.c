@@ -159,15 +159,16 @@ vm_init(void)
 
   if(vm_memory_init() == 0 ||
      vm_native_init() == 0 ||
-     vm_thread_init() == 0 ||
-     vm_thread_stack_create() == 0 ||
 #if VM_PROFILER_ENABLE
      vm_profiler_init() == 0 ||
 #endif
-     vm_lib_init() == 0) {
+     vm_thread_init() == 0 ||
+     vm_thread_stack_create() == 0) {
     VM_DEBUG(VM_DEBUG_LOW, "Initialization failed");
     return 0;
   }
+
+  vm_lib_init();
 
   if(VM_SUPERUSER_MODE) {
     VM_DEBUG(VM_DEBUG_LOW, "Application policies are disabled");
