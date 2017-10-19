@@ -39,6 +39,8 @@
 #include <math.h>
 #include <string.h>
 
+#if VM_ENABLE_REALS
+
 VM_DECLARE_FUNCTION(make_rectangular);
 VM_DECLARE_FUNCTION(make_polar);
 VM_DECLARE_FUNCTION(real_part);
@@ -137,7 +139,6 @@ complex_write(vm_port_t *port, vm_obj_t *obj)
 static int
 load(vm_program_t *program)
 {
-#if VM_ENABLE_REALS
   if(ext_type_complex.type_id == 0) {
     vm_ext_type_register(&ext_type_complex);
     VM_DEBUG(VM_DEBUG_LOW, "Registering complex object type with ID %u",
@@ -145,10 +146,6 @@ load(vm_program_t *program)
   }
 
   return 1;
-#else
-  vm_signal_error(vm_current_thread(), VM_ERROR_UNIMPLEMENTED);
-  return 0;
-#endif
 }
 
 static int
@@ -157,7 +154,6 @@ unload(vm_program_t *program)
   return 1;
 }
 
-#if VM_ENABLE_REALS
 static vm_real_t
 get_real(vm_obj_t *obj)
 {
@@ -174,61 +170,61 @@ get_real(vm_obj_t *obj)
       vm_complex_t *complex = obj->value.ext_object.opaque_data;
       return complex->real;
     }
+    /* Fall through. */
   default:
     VM_DEBUG(VM_DEBUG_MEDIUM, "Erroneous type to convert to a real: %d",
              (int)obj->type);
     return 0;
   }
 }
-#endif /* VM_ENABLE_REALS */
+
+static vm_complex_t *
+get_complex(vm_obj_t *obj)
+{
+  if(obj->type != VM_TYPE_EXTERNAL ||
+     obj->value.ext_object.type != &ext_type_complex) {
+    return 0;
+  }
+
+  return obj->value.ext_object.opaque_data;
+}
 
 VM_FUNCTION(make_rectangular)
 {
-#if VM_ENABLE_REALS
   VM_PUSH_COMPLEX(get_real(&argv[0]), get_real(&argv[1]));
-#else
-  vm_signal_error(thread, VM_ERROR_UNIMPLEMENTED);
-#endif
 }
 
 VM_FUNCTION(make_polar)
 {
-#if VM_ENABLE_REALS
-#else
   vm_signal_error(thread, VM_ERROR_UNIMPLEMENTED);
-#endif
 }
 
 VM_FUNCTION(real_part)
 {
-#if VM_ENABLE_REALS
-  if(argv[0].type == VM_TYPE_COMPLEX) {
-/*    VM_PUSH_REAL(argv[0].value.complex.real);*/
-    VM_PUSH_REAL(0);
+  vm_complex_t *complex;
+
+  complex = get_complex(&argv[0]);
+  if(complex != NULL) {
+    VM_PUSH_REAL(complex->real);
   } else {
     VM_PUSH(&argv[0]);
   }
-#else
-  vm_signal_error(thread, VM_ERROR_UNIMPLEMENTED);
-#endif
 }
 
 VM_FUNCTION(imag_part)
 {
-#if VM_ENABLE_REALS
-  if(argv[0].type == VM_TYPE_COMPLEX) {
-    VM_PUSH_REAL(0);
+  vm_complex_t *complex;
+
+  complex = get_complex(&argv[0]);
+  if(complex != NULL) {
+    VM_PUSH_REAL(complex->imag);
   } else {
     VM_PUSH_INTEGER(0);
   }
-#else
-  vm_signal_error(thread, VM_ERROR_UNIMPLEMENTED);
-#endif
 }
 
 VM_FUNCTION(magnitude)
 {
-#if VM_ENABLE_REALS
   vm_complex_t *complex;
   vm_real_t real;
   vm_real_t imag;
@@ -244,15 +240,23 @@ VM_FUNCTION(magnitude)
   }
 
   VM_PUSH_REAL(sqrt(pow(real, 2) + pow(imag, 2)));
-#else
-  vm_signal_error(thread, VM_ERROR_UNIMPLEMENTED);
-#endif
 }
 
 VM_FUNCTION(angle)
 {
-#if VM_ENABLE_REALS
-#else
   vm_signal_error(thread, VM_ERROR_UNIMPLEMENTED);
-#endif
 }
+
+#else /* VM_ENABLE_REALS */
+
+vm_lib_t vm_lib_complex = {
+  .name = NULL,
+  .load = NULL,
+  .unload = NULL,
+  .operators = NULL,
+  .operator_count = 0,
+  .symbols = NULL,
+  .symbol_count = 0
+};
+
+#endif /* VM_ENABLE_REALS */
