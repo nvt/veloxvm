@@ -37,9 +37,7 @@
 #include "vm-log.h"
 #include "vm-native.h"
 
-#if VM_SUPERUSER_MODE
-#warning Security policy enforcement is disabled.
-#else
+#if !VM_SUPERUSER_MODE
 static void
 construct_exception_object(vm_obj_t *obj, vm_policy_type_t type,
                            const char *message)
@@ -114,7 +112,7 @@ policy_violation(vm_thread_t *thread, vm_policy_type_t type,
     break;
   }
 }
-#endif /* VM_SUPERUSER_MODE */
+#endif /* !VM_SUPERUSER_MODE */
 
 vm_boolean_t
 vm_policy_check_bandwidth(vm_thread_t *thread)

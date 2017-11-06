@@ -108,10 +108,14 @@ else
   fi
 
   # Compile the Scheme source code of the app.
-  FILE=${APPDIR}/$1.scm
-  if [ -e $FILE ]; then
-    compile_scheme $FILE
+  SCM_FILE=${APPDIR}/$1.scm
+  ISCM_FILE=${APPDIR}/$1.iscm
+
+  if [ -e $SCM_FILE ]; then
+    compile_scheme $SCM_FILE
+  elif [ -e $ISCM_FILE ]; then
+    compile_scheme $ISCM_FILE
   else
-    echo "Error: $FILE does not exist"
+    echo "Error: Neither $SCM_FILE nor $ISCM_FILE exists"
   fi
 fi

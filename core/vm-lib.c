@@ -63,6 +63,11 @@ vm_lib_register(vm_lib_t *lib)
 {
   int i;
 
+  if(lib->name == 0 || lib->symbol_count == 0) {
+    VM_DEBUG(VM_DEBUG_MEDIUM, "Reject loading of empty lib");
+    return 0;
+  }
+
   lib->next = libs;
   libs = lib;
 
