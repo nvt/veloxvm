@@ -22,7 +22,7 @@ VM_EXECUTABLE_FILE = vm
 VM_OBJ_DIR = obj
 VM_BIN_DIR = bin
 
-VM_INCLUDE_FILES = ${wildcard $(VM_CORE_DIR)/*.h}
+VM_INCLUDE_FILES = ${wildcard $(VM_INCLUDE_DIR)/*.h}
 
 VM_CORE_DIR = core
 VM_POLICY_DIR = core/policies
@@ -52,7 +52,7 @@ VM_PORT_FILES = ${wildcard $(VM_PORT_DIR)/*.c}
 VM_PORT_OBJECTS = ${patsubst $(VM_PORT_DIR)/%.c,$(VM_OBJ_DIR)/%.o,$(VM_PORT_FILES)}
 
 CFLAGS += -Wall -g -DVM_PORT=$(VM_PORT)
-CFLAGS += -Iinclude -I$(VM_PORT_DIR)
+CFLAGS += -I$(VM_INCLUDE_DIR) -I$(VM_PORT_DIR)
 CFLAGS += $(VM_PORT_CFLAGS)
 CFLAGS += ${patsubst %,-I$(VM_PORT_DIR)/%,$(VM_PORT_INCLUDE_DIRS)}
 CFLAGS += $(DEFINES)
