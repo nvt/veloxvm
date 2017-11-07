@@ -17,4 +17,7 @@ If the build succeeds the Javascript file's relative path will be bin/vm.js.
 
 It can be executed in a Unix environment by using the node.js tool:
 
-  nodejs bin/vm.js <path to VM app>
+  nodejs bin/vm.js /apps/math.vm
+
+Note that the path to math.vm starts with a slash, because the real directory
+../../apps is mapped to the mountpoint /apps in the node.js environment.

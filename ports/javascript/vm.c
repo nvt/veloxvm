@@ -36,6 +36,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <emscripten.h>
+
 #include "vm.h"
 #include "vm-log.h"
 #include "vm-macros.h"
@@ -52,6 +54,11 @@ main(int argc, char *argv[])
     return EXIT_FAILURE;
   }
 #endif
+
+  EM_ASM(
+    FS.mkdir('/apps');
+    FS.mount(NODEFS, { root: '../../apps' }, '/apps');
+  );
 
   if(vm_init() == 0) {
     fprintf(stderr, "Unable to initialize the VM\n");
