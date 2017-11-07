@@ -52,8 +52,7 @@ Nicolas Tsiftes <nicolas.tsiftes@ri.se>, RISE SICS
 
 ### Contributors
 
-Niclas Finne <niclas.finne@ri.se>, RISE SICS: Made improvements of the
-Contiki port.
+Niclas Finne <niclas.finne@ri.se>, RISE SICS: Improvements of the Contiki port.
 
 ## Review Team
 

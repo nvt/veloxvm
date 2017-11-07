@@ -37,7 +37,6 @@ devices---either in RAM or in ROM.
 
 * POSIX systems such as Linux, *BSD, macOS, and Windows with Cygwin
   (ports/posix)
-
 * Contiki (ports/contiki)
 
 ## Required software
@@ -46,6 +45,7 @@ Before using the VM for the first time, please ensure that you have the
 following software installed:
  * bison
  * flex
+ * clang
  * clisp (or one of the other LISP distributions listed below)
 
 The following LISP distributions are supported:
