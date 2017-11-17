@@ -219,7 +219,7 @@ static void
 attribute_energy(vm_thread_t *thread, int done)
 {
   static unsigned long e_cpu, e_lpm;
-  unsigned long diff_cpu, diff_lpm;
+  unsigned long diff_cpu, diff_lpm, cpu_time, total_time;
 
   if(!done) {
     e_cpu      = energest_type_time(ENERGEST_TYPE_CPU);
@@ -230,9 +230,13 @@ attribute_energy(vm_thread_t *thread, int done)
 
     thread->program->perf_attr.cpu_time += diff_cpu;
 
-    vm_policy_check_cpu(thread->program,
-                        (100 * (unsigned long)thread->program->perf_attr.cpu_time) /
-                        (diff_cpu + e_cpu + diff_lpm + e_lpm));
+    total_time = diff_cpu + diff_lpm + e_cpu + e_lpm;
+    cpu_time = thread->program->perf_attr.cpu_time;
+
+    if(total_time > 0) {
+      /* Multiply by hundred because the policy is for percentages. */
+      vm_policy_check_cpu(thread->program, 100 * cpu_time / total_time);
+    }
 
     vm_policy_check_power(thread);
   }
@@ -241,8 +245,6 @@ attribute_energy(vm_thread_t *thread, int done)
 static void
 register_devices(void)
 {
-  const struct sensors_sensor *sensor;
-
   /* Register the Contiki File System device. */
   if(vm_device_register("cfs",
                         &device_cfs, VM_PORT_FLAG_INPUT | VM_PORT_FLAG_OUTPUT) == 0) {
@@ -254,16 +256,6 @@ register_devices(void)
                         &device_leds, VM_PORT_FLAG_OUTPUT) == 0) {
     VM_DEBUG(VM_DEBUG_LOW, "Failed to register %s", "leds");
   }
-
-  /* Register all sensors available in Contiki. */
-  sensor = sensors_first();
-  do {
-    VM_DEBUG(VM_DEBUG_LOW, "Register sensor %s", sensor->type);
-    if(vm_device_register(sensor->type, &device_sensors,
-                          VM_PORT_FLAG_INPUT | VM_PORT_FLAG_OUTPUT) == 0) {
-      VM_DEBUG(VM_DEBUG_LOW, "Failed to register %s", sensor->type);
-    }
-  } while((sensor = sensors_next(sensor)) != NULL);
 
   /* Register the serial device. */
   if(vm_device_register("serial",
@@ -616,7 +608,7 @@ vm_native_write(vm_port_t *port, const char *format, ...)
 {
   va_list args;
   int len;
-  char buf[80];
+  char buf[VM_CONSOLE_BUFFER_SIZE];
 
   va_start(args, format);
   len = vsnprintf(buf, sizeof(buf), format, args);
@@ -632,7 +624,7 @@ vm_native_write_buffer(vm_port_t *port, const char *buf, size_t len)
   struct native_socket *sock;
 
   if(port == NULL) {
-    port = vm_native_default_port(port->thread, VM_PORT_FLAG_OUTPUT);
+    port = vm_native_default_port(NULL, VM_PORT_FLAG_OUTPUT);
   }
 
   if(port != NULL && port->io != NULL && port->io->write != NULL) {
