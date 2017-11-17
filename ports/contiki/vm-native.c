@@ -649,7 +649,7 @@ vm_native_write(vm_port_t *port, const char *format, ...)
 {
   va_list args;
   int len;
-  char buf[80];
+  char buf[VM_CONSOLE_BUFFER_SIZE];
 
   va_start(args, format);
   len = vsnprintf(buf, sizeof(buf), format, args);
@@ -665,7 +665,7 @@ vm_native_write_buffer(vm_port_t *port, const char *buf, size_t len)
   struct native_socket *sock;
 
   if(port == NULL) {
-    port = vm_native_default_port(port->thread, VM_PORT_FLAG_OUTPUT);
+    port = vm_native_default_port(NULL, VM_PORT_FLAG_OUTPUT);
   }
 
   if(port != NULL && port->io != NULL && port->io->write != NULL) {

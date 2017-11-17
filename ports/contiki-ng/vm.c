@@ -31,10 +31,6 @@
 #include <stdio.h>
 
 #include "contiki.h"
-#include "dev/watchdog.h"
-#if WITH_POWERTRACE
-#include "apps/powertrace/powertrace.h"
-#endif
 
 #include "vm.h"
 #include "vm-file.h"
@@ -60,10 +56,6 @@ PROCESS_THREAD(vm_process, ev, data)
   vm_result_t result;
 
   PROCESS_BEGIN();
-
-#if WITH_POWERTRACE
-  powertrace_start(CLOCK_SECOND * 10);
-#endif
 
   if(!vm_init()) {
     VM_DEBUG(VM_DEBUG_LOW, "Unable to initialize the VM");
@@ -92,13 +84,10 @@ PROCESS_THREAD(vm_process, ev, data)
 
     while(1) {
       result = vm_run();
-      watchdog_periodic();
       sched_counter++;
+
       if(result == VM_RESULT_FINISHED) {
         if(VM_ALWAYS_ON) {
-#if WITH_POWERTRACE
-          powertrace_stop();
-#endif
           PROCESS_YIELD();
         } else {
           break;
@@ -125,10 +114,6 @@ PROCESS_THREAD(vm_process, ev, data)
   }
 
   vm_exit();
-
-#if WITH_POWERTRACE
-  powertrace_stop();
-#endif
 
   PROCESS_END();
 }
