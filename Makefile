@@ -85,6 +85,9 @@ vm: $(VM_BIN_DIR) $(VM_OBJ_DIR) $(VM_CORE_OBJECTS) \
 		$(VM_CONTROL_OBJECTS) $(VM_PORT_OBJECTS) \
 		$(VM_LIB_DIRS) $(VM_LIBS)
 
+docker:
+	sudo docker build -f tools/docker/Dockerfile -t veloxvm .
+
 clean:
 	@rm -rf $(VM_BIN_DIR) $(VM_OBJ_DIR)
 	@rm -rf $(APP_DIR)/*.iscm
