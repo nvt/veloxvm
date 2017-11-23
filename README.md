@@ -37,9 +37,29 @@ devices---either in RAM or in ROM.
 
 * POSIX systems such as Linux, *BSD, macOS, and Windows with Cygwin
   (ports/posix)
-* Contiki (ports/contiki)
+* [Contiki OS](http://www.contiki-os.org/) (ports/contiki)
+* [Contiki-NG](https://www.contiki-ng.org/) (ports/contiki-ng)
 
-## Required software
+## Docker setup
+
+The easiest way to get started with VeloxVM is to use a ready-made Docker
+image available from Docker Cloud. This image contains all of the required
+software, a compiled VM binary, and compiled example scripts.
+
+For instance, to try the prime number sieve example, run Docker as follows:
+
+  <code>docker run nvt1/veloxvm:latest bin/vm apps/sieve.vm</code>
+
+This command will fetch a Docker image that has been generated from the
+latest pull request in the nvt/veloxvm repository at GitHub. The image will
+then be cached locally for subsequent runs.
+
+Another possibility is to go into a bash shell, and navigate directly within
+the Docker container:
+
+  <code>docker run -it nvt1/veloxvm:latest bash</code>
+
+## Manual setup
 
 Before using the VM for the first time, please ensure that you have the
 following software installed:
@@ -47,6 +67,11 @@ following software installed:
  * flex
  * clang
  * clisp (or one of the other LISP distributions listed below)
+
+To be able to run all the tests, the following software is also needed:
+ * afl-fuzz
+ * python3
+ * python3-pexpect
 
 The following LISP distributions are supported:
  * Armed Bear Common LISP (abcl),
@@ -91,17 +116,22 @@ run "sbcl --load sbcl-compile.lisp".
 
    E.g., <code>bin/vm apps/math.vm</code>
 
-## Trying out VeloxVM on the Zoul platform for Contiki OS
+## Trying out VeloxVM in Contiki OS and Contiki-NG
 
-1. Enter the Contiki port directory.
+1. Enter the port directory.
 
-  <code>cd ports/contiki</code>
+  For Contiki OS: <code>cd ports/contiki</code>
+
+  For Contiki-NG: <code>cd ports/contiki-ng</code>
 
 2. Generate a RAM image of the bytecode for an app, in this case "math".
 
   <code>./create-vm-in-ram.sh math</code>
 
-3. Build a Contiki firmware with the VM linked with it and loaded as a
-   Contiki process.
+3. Build a Contiki firmware with Velox included.
+
+  This step requires that we select an appropriate OS platform to build the
+  VM for. We will use the Zoul platform, because it has sufficient RAM and ROM
+  for a basic Velox installation.
 
   <code>make TARGET=zoul vm.upload login</code>
