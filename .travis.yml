@@ -1,0 +1,17 @@
+language: c
+
+addons:
+ apt:
+  packages:
+  - bison
+  - clisp
+  - flex
+  - python3
+  - python3-pexpect
+
+install:
+
+script:
+  - make
+  - ./compile.sh
+  - cd tests/functional-testing && python3 app-tester.py
