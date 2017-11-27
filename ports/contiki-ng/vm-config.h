@@ -150,4 +150,10 @@
 #define VM_LIST_PRINT_LIMIT 10
 #endif
 
+/* Build an executable of the VM and an app stored
+   as bytecode in a header file. */
+#ifndef VM_BUNDLE
+#define VM_BUNDLE 0
+#endif
+
 #endif /* !VM_CONFIG_H */

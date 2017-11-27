@@ -44,31 +44,29 @@
 int
 main(int argc, char *argv[])
 {
-#ifndef VM_BUNDLE
   int i;
 
-  if(argc < 2) {
+  if(!VM_BUNDLE && argc < 2) {
     fprintf(stderr, "Usage: %s <program> [<program> ...]\n", argv[0]);
     return EXIT_FAILURE;
   }
-#endif
 
   if(vm_init() == 0) {
     fprintf(stderr, "Unable to initialize the VM\n");
     return EXIT_FAILURE;
   }
 
-#ifdef VM_BUNDLE
-  /* Load a single program from a designated area in memory. */
-  vm_load_program(VM_MAKE_STRING(VM_BUNDLE));
-#else
-  /* Load the programs from the file system. */
-  for(i = 1; i < argc; i++) {
-    if(vm_load_program(argv[i]) == 0) {
-      VM_DEBUG(VM_DEBUG_LOW, "Unable to load program %s", argv[i]);
+  if(VM_BUNDLE) {
+    /* Load a single program from a designated area in memory. */
+    vm_load_program(VM_MAKE_STRING(VM_BUNDLE));
+  } else {
+    /* Load the programs from the file system. */
+    for(i = 1; i < argc; i++) {
+      if(vm_load_program(argv[i]) == 0) {
+        VM_DEBUG(VM_DEBUG_LOW, "Unable to load program %s", argv[i]);
+      }
     }
   }
-#endif
 
   for(;;) {
     /* Main VM processing loop. */
