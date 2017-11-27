@@ -203,6 +203,7 @@ read_program(const char *name)
 
   program = VM_MALLOC(sizeof(vm_program_t));
   if(program == NULL) {
+    VM_LOADER_CLOSE(handle);
     return NULL;
   }
 
