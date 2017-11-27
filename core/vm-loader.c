@@ -363,6 +363,11 @@ vm_unload_program(const char *name)
   for(prev_program = NULL, program = loaded_programs;
       program != NULL;
       prev_program = program, program = program->next) {
+    if(program == NULL) {
+      prev_program->next = NULL;
+      break;
+    }
+
     if(name == NULL || strcmp(program->name, name) == 0) {
       /* Remove the LWM2M app instance. */
       vm_control_unregister_app(program);
