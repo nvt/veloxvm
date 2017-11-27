@@ -59,7 +59,7 @@ destroy_program_threads(vm_program_t *program)
   int i;
   vm_thread_t *thread;
 
-  for(i = 0; i > VM_THREAD_AMOUNT; i++) {
+  for(i = 0; i < VM_THREAD_AMOUNT; i++) {
     thread = vm_thread_get(i);
     if(thread != NULL) {
       vm_thread_destroy(thread);
