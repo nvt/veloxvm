@@ -140,6 +140,7 @@ read_table(vm_table_t *table, int handle)
   unsigned table_size;
   vm_loader_offset_t saved_offset;
 
+  item_count = 0;
   READ_CHECK(handle, &item_count, sizeof(item_count));
   VM_DEBUG(VM_DEBUG_MEDIUM, "Reading a table containing %u item%s",
          item_count, item_count == 1 ? "" : "s");
@@ -153,6 +154,7 @@ read_table(vm_table_t *table, int handle)
   /* Calculate the raw table size. */
   table_size = 0;
   for(i = 0; i < item_count; i++) {
+    item_length = 0;
     READ_CHECK(handle, &item_length, sizeof(item_length));
     if(VM_LOADER_SEEK_RELATIVE(handle, item_length) == (vm_loader_offset_t)-1) {
       VM_DEBUG(VM_DEBUG_LOW, "loader:seek failed");
