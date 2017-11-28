@@ -150,7 +150,7 @@ VM_FUNCTION(construct_packet)
           return;
         }
 
-        while(field_bits > 0) {
+        while(field_bits > 7) {
           packet->bytes[position / 8] = (value >> (field_bits - 8)) & 0xff;
           position += 8;
           field_bits -= 8;
