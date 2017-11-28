@@ -191,5 +191,5 @@ vm_exit(void)
   vm_thread_stack_destroy();
 #endif
 
-  VM_DEBUG(VM_DEBUG_LOW, "Exiting the VM");
+  VM_DEBUG(VM_DEBUG_LOW, "Exiting");
 }

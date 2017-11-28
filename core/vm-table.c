@@ -37,7 +37,7 @@
 #include <stdlib.h>
 
 int
-vm_table_create(vm_table_t *table, unsigned item_count, unsigned table_size)
+vm_table_create(vm_table_t *table, unsigned item_count, uint32_t table_size)
 {
   if(item_count == 0) {
     /* We allow empty tables to be created. */

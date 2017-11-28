@@ -112,6 +112,7 @@ vm_list_t *
 vm_list_cdr(vm_list_t *list, int copy)
 {
   vm_list_t *cdr_list;
+  vm_list_item_t *next;
 
   if(list == NULL || list->length <= 0) {
     return NULL;
@@ -130,8 +131,9 @@ vm_list_cdr(vm_list_t *list, int copy)
       list->tail = NULL;
       list->length = 0;
     } else {
+      next = list->head->next;
       vm_free(list->head);
-      list->head = list->head->next;
+      list->head = next;
       list->length--;
     }
     cdr_list = list;

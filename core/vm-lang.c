@@ -66,7 +66,7 @@ raise_exception(vm_thread_t *thread, vm_error_type_t error_type)
       "PolicyException",  /* VM_ERROR_POLICY */
       "NameException",    /* VM_ERROR_NAME */
       NULL,               /* VM_ERROR_UNHANDLED_EXCEPTION */
-      "LibraryException"  /* VM_ERROR_LIBRARY */
+      "LibraryException", /* VM_ERROR_LIBRARY */
       "SyscallException"  /* VM_ERRROR_SYSCALL */
     };
 

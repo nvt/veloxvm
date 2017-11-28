@@ -356,16 +356,16 @@ vm_run(void)
       vm_print_error(thread);
       vm_thread_destroy(thread);
       if(program->nthreads == 0) {
-        vm_unload_program(program->name);
+        vm_unload_program(program);
       }
       break;
     case VM_THREAD_EXITING:
-      vm_unload_program(program->name);
+      vm_unload_program(program);
       break;
     case VM_THREAD_FINISHED:
       vm_thread_destroy(thread);
       if(program->nthreads == 0) {
-        vm_unload_program(program->name);
+        vm_unload_program(program);
       }
       break;
     default:

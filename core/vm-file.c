@@ -39,14 +39,14 @@
  */
 
 #include "vm.h"
-#ifdef VM_BUNDLE
+#if VM_BUNDLE
 #include "vm-app-image.h"
 #endif
 #include "vm-file.h"
 
 #include <string.h>
 
-#ifdef VM_BUNDLE
+#if VM_BUNDLE
 #define VM_FILE_SIZE ((vm_file_offset_t)sizeof(vm_program))
 #else
 #define VM_FILE_SIZE 0
@@ -57,15 +57,14 @@ static vm_file_offset_t pos;
 int
 vm_file_open(const char *n, int flags)
 {
-#ifndef VM_BUNDLE
+  if(VM_BUNDLE) {
+    VM_DEBUG(VM_DEBUG_MEDIUM, "Opening a program stored in memory (%u bytes)",
+             (unsigned)VM_FILE_SIZE);
+    pos = 0;
+    return 1;
+  }
+
   return -1;
-#endif
-
-  VM_DEBUG(VM_DEBUG_MEDIUM, "Opening a program stored in memory (%u bytes)",
-           (unsigned)VM_FILE_SIZE);
-
-  pos = 0;
-  return 1;
 }
 
 void
@@ -78,7 +77,7 @@ vm_file_read(int fd, void *buf, vm_file_offset_t len)
 {
   (void)fd;
 
-#ifdef VM_BUNDLE
+#if VM_BUNDLE
   if(pos < VM_FILE_SIZE) {
     if(len > VM_FILE_SIZE - pos) {
       len = VM_FILE_SIZE - pos;
@@ -105,9 +104,9 @@ vm_file_write(int fd, const void *buf, vm_file_offset_t len)
 vm_file_offset_t
 vm_file_seek(int fd, vm_file_offset_t offset, int whence)
 {
-#ifndef VM_BUNDLE
-  return (vm_file_offset_t)-1;
-#endif
+  if(!VM_BUNDLE) {
+    return (vm_file_offset_t)-1;
+  }
 
   switch(whence) {
   case VM_FILE_SEEK_SET:

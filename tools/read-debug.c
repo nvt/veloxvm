@@ -77,6 +77,10 @@ main(int argc, char *argv[])
   form_id = argc == 3 ? atoi(argv[2]) : -1;
 
   fd = open(filename, O_RDONLY);
+  if(fd < 0) {
+    perror("open");
+    return EXIT_FAILURE;
+  }
 
   if(read(fd, buf, 1) != 1) {
     fprintf(stderr, "Failed to read the expression count!\n");

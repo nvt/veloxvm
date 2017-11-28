@@ -52,7 +52,7 @@
 typedef int vm_loader_handle_t;
 typedef off_t vm_loader_offset_t;
 
-#ifdef VM_BUNDLE
+#if VM_BUNDLE
 #include "vm-file.h"
 #define VM_LOADER_OPEN(name) vm_file_open((name), O_RDONLY)
 #define VM_LOADER_READ(handle, buf, size) vm_file_read((handle), (buf), (size))
