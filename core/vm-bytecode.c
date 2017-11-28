@@ -62,10 +62,9 @@
 static vm_integer_t
 get_integer(vm_thread_t *thread)
 {
-  vm_integer_t nbytes;
-  vm_boolean_t is_negative;
+  unsigned nbytes;
+  unsigned is_negative;
   vm_integer_t integer;
-  vm_integer_t i;
 
   nbytes = VM_GET_INTEGER_SIZE(thread);
 
@@ -81,12 +80,24 @@ get_integer(vm_thread_t *thread)
     return 0;
   }
 
-  /* TODO: Rewrite into something faster. */
-  for(integer = i = 0; i < nbytes; i++) {
-    integer |= (int32_t)thread->expr->ip[i] << (8 * (nbytes - i - 1));
+  integer = *thread->expr->ip++;
+
+  /*
+   * Special error case: Do not allow the sign bit to be set if
+   * (1) the integer in the bytecode is of the largest allowed size and
+   * (2) the integer is marked as positive in the bytecode.
+   */
+  if(nbytes == sizeof(integer) && (integer >> 7) && !is_negative) {
+    vm_signal_error(thread, VM_ERROR_BYTECODE);
+    vm_set_error_string(thread,
+                        "too large value for integer (> 2,147,483,647)");
+    return 0;
   }
 
-  thread->expr->ip += nbytes;
+  while(--nbytes > 0) {
+    integer <<= 8;
+    integer |= *thread->expr->ip++;
+  }
 
   return is_negative ? -integer : integer;
 }
