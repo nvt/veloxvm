@@ -35,12 +35,14 @@
 
 typedef struct vm_table {
   void *raw_table;
-  size_t size;
+  uint32_t size;
   uint8_t *next_free;
   uint8_t **items;
   uint16_t *item_lengths;
   unsigned item_count;
 } vm_table_t;
+
+#define VM_TABLE_MAX_BYTES  (255 * 256)
 
 #define VM_TABLE_SIZE(table)                         \
           ((table).item_count)
@@ -49,7 +51,7 @@ typedef struct vm_table {
 #define VM_TABLE_GET(table, index)                   \
           ((table).items[(index)])
 
-int vm_table_create(vm_table_t *, unsigned, unsigned);
+int vm_table_create(vm_table_t *, unsigned, uint32_t);
 void vm_table_destroy(vm_table_t *);
 int vm_table_set(vm_table_t *, unsigned, void *, unsigned);
 

@@ -205,7 +205,7 @@ vm_result_t vm_run(void);
 
 /* Program loader functions. (vm-loader.c) */
 int vm_load_program(const char *);
-int vm_unload_program(const char *);
+int vm_unload_program(vm_program_t *);
 vm_program_t *vm_find_program(const char *);
 vm_program_t *vm_get_programs(void);
 

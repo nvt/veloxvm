@@ -137,7 +137,7 @@ read_table(vm_table_t *table, int handle)
   uint8_t item_count;
   uint8_t item_length;
   int i;
-  unsigned table_size;
+  uint32_t table_size;
   vm_loader_offset_t saved_offset;
 
   item_count = 0;
@@ -160,7 +160,14 @@ read_table(vm_table_t *table, int handle)
       VM_DEBUG(VM_DEBUG_LOW, "loader:seek failed");
       return 0;
     }
-    table_size += item_length + 1;
+
+    if(table_size > VM_TABLE_MAX_BYTES) {
+      VM_DEBUG(VM_DEBUG_LOW, "Maximum table size exceeded (%lu > %lu)",
+               (unsigned long)table_size, (unsigned long)VM_TABLE_MAX_BYTES);
+      return 0;
+    }
+
+    table_size += (uint32_t)item_length + 1;
   }
   VM_DEBUG(VM_DEBUG_MEDIUM, "Allocating a table of %u bytes", table_size);
 
@@ -355,39 +362,42 @@ vm_load_program(const char *name)
 }
 
 int
-vm_unload_program(const char *name)
+vm_unload_program(vm_program_t *program)
 {
-  vm_program_t *program;
-  vm_program_t *prev_program;
+  vm_program_t *iter;
+  vm_program_t *tmp;
+  vm_program_t *prev;
 
-  for(prev_program = NULL, program = loaded_programs;
-      program != NULL;
-      prev_program = program, program = program->next) {
-    if(program == NULL) {
-      prev_program->next = NULL;
-      break;
-    }
+  prev = NULL;
 
-    if(name == NULL || strcmp(program->name, name) == 0) {
-      /* Remove the LWM2M app instance. */
-      vm_control_unregister_app(program);
-
-      if(prev_program == NULL) {
-        loaded_programs = program->next;
-      } else {
-        prev_program->next = program->next;
+  for(iter = loaded_programs; iter != NULL;) {
+    if(program == NULL || iter == program) {
+      tmp = iter;
+      if(iter == loaded_programs) {
+        loaded_programs = iter->next;
+      } else if(prev != NULL) {
+        prev->next = iter->next;
       }
-      destroy_program_threads(program);
+
+      prev = iter;
+      iter = iter->next;
+
+      vm_control_unregister_app(tmp);
+
+      destroy_program_threads(tmp);
 
 #if VM_INSTRUCTION_PROFILING
       VM_PRINTF("%s instruction profiling result (# <form> <executions<)\n",
-                program->name);
-      for(i = 0; i < VM_TABLE_SIZE(program->exprv); i++) {
-        VM_PRINTF("# %u %lu\n", i, program->exec_count[i]);
+                tmp->name);
+      for(i = 0; i < VM_TABLE_SIZE(tmp->exprv); i++) {
+        VM_PRINTF("# %u %lu\n", i, tmp->exec_count[i]);
       }
 #endif
-      VM_DEBUG(VM_DEBUG_LOW, "Unloaded the program \"%s\"", program->name);
-      free_program(program);
+      VM_DEBUG(VM_DEBUG_LOW, "Unloaded the program \"%s\"", tmp->name);
+      free_program(tmp);
+    } else {
+      prev = iter;
+      iter = iter->next;
     }
   }
 
