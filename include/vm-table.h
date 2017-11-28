@@ -36,6 +36,7 @@
 typedef struct vm_table {
   void *raw_table;
   uint32_t size;
+  uint32_t available_size;
   uint8_t *next_free;
   uint8_t **items;
   uint16_t *item_lengths;

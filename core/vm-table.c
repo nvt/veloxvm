@@ -39,9 +39,16 @@
 int
 vm_table_create(vm_table_t *table, unsigned item_count, uint32_t table_size)
 {
+  if(table_size > VM_TABLE_MAX_BYTES) {
+    VM_DEBUG(VM_DEBUG_LOW, "Attempt to create a too large table %lu",
+             (unsigned long)table_size);
+    return 0;
+  }
+
   if(item_count == 0) {
     /* We allow empty tables to be created. */
     table->item_count = 0;
+    table->available_size = 0;
     table->raw_table = NULL;
     table->items = NULL;
     table->item_lengths = NULL;
@@ -53,6 +60,7 @@ vm_table_create(vm_table_t *table, unsigned item_count, uint32_t table_size)
     return 0;
   }
   table->size = table_size;
+  table->available_size = table_size;
   table->next_free = table->raw_table;
 
   table->items = VM_MALLOC(sizeof(*table->items) * item_count);
@@ -86,11 +94,17 @@ vm_table_destroy(vm_table_t *table)
 int
 vm_table_set(vm_table_t *table, unsigned index, void *ptr, unsigned item_length)
 {
+  if(index >= table->item_count || item_length + 1 > table->available_size) {
+    VM_DEBUG(VM_DEBUG_MEDIUM, "Unable to insert a table item");
+    return 0;
+  }
+
   table->items[index] = table->next_free;
   memcpy(table->items[index], ptr, item_length);
   table->items[index][item_length] = '\0';
   table->item_lengths[index] = item_length;
   table->next_free += item_length + 1;
+  table->available_size -= item_length + 1;
 
   return 1;
 }
