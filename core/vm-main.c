@@ -96,10 +96,13 @@ vm_print_debug(unsigned level, const char *format, ...)
   va_end(ap);
 
 #if VM_DEBUG_LEVEL >= VM_DEBUG_MEDIUM
-  vm_native_time(&current_time);
 
-  VM_PRINTF("VM Debug(%u): t=%lu.%03u ", level,
-            (unsigned long)current_time.sec, (unsigned)current_time.msec);
+  if(vm_native_time(&current_time)) {
+    VM_PRINTF("VM Debug(%u): t=%lu.%03u ", level,
+              (unsigned long)current_time.sec, (unsigned)current_time.msec);
+  } else {
+    VM_PRINTF("VM Debug(%u): t=?.? ", level);
+  }
 
   thread = vm_current_thread();
   if(thread != NULL) {
