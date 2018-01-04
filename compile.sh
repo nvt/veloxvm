@@ -38,6 +38,11 @@ translate_cyclus() {
   CYCLUS_COMPILER=../cyclus/cyclus
   SOURCES=$@
 
+  if [ ! -f $CYCLUS_COMPILER ]; then
+    echo "Error: The Cyclus compiler is missing. Run \"make\" first."
+    exit 1
+  fi
+
   STR="files"
   if [ $# -eq 1 ]; then
     STR="file"
@@ -116,6 +121,6 @@ else
   elif [ -e $ISCM_FILE ]; then
     compile_scheme $ISCM_FILE
   else
-    echo "Error: Neither $SCM_FILE nor $ISCM_FILE exists"
+    echo "Error: Neither $SCM_FILE nor $ISCM_FILE exists."
   fi
 fi
