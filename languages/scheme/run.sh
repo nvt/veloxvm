@@ -2,7 +2,9 @@
 
 COMPILER=compiler-cli.lisp
 
-CL_IMPL=clisp
+# Check if an environmental variable is set for the Common LISP implementation.
+# If not, the default choice is GNU CLISP.
+CL_IMPL=${CL_IMPL:-clisp}
 
 case $CL_IMPL in
 	"abcl")   CMD_LINE="abcl --load $COMPILER --" ;;
