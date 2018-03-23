@@ -1,6 +1,0 @@
-import("leds");
-
-while(true) {
-  leds_toggle(*LEDRed*);
-  thread_sleep!(1000);
-}

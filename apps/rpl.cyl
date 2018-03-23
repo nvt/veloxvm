@@ -1,9 +1,0 @@
-import("rpl");
-
-/* Check whether we have joined a DAG every second, and stop checking
-   as soon as the condition is fulfilled. */
-while(!rpl_in_dag?()) {
-  thread_sleep!(1000);
-}
-
-println("We have joined a DAG!");

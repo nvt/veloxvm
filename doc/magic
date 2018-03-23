@@ -1,6 +1,0 @@
-# "Magic" pattern for VM bytecode, which can be used to identify such
-# files with the "file" utility.
-
-0 short 0xb55e Velox VM bytecode
->2 byte x version %d
-
