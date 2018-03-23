@@ -14,4 +14,17 @@ install:
 script:
   - make
   - ./compile.sh
-  - cd tests/functional-testing && python3 app-tester.py
+  - (cd tests/functional-testing && python3 app-tester.py)
+  - mkdir -p doc/html
+  - echo "<html><head><title>Test</title></head><body>Documentation deployment test. Generated on " `date` "</body></html>" > doc/html/index.html
+
+deploy:
+  provider: pages
+  skip-cleanup: true
+  github-token: $SECRET_TOKEN  # Set in travis-ci.org dashboard, marked secure
+  keep-history: true
+  local-dir: doc/html
+  on:
+    branches:
+      only:
+        - master
