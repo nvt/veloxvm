@@ -135,3 +135,15 @@ run "sbcl --load sbcl-compile.lisp".
   for a basic Velox installation.
 
   <code>make TARGET=zoul vm.upload login</code>
+
+## Additional Reading Material
+
+1. N. Tsiftes and T. Voigt. [Velox VM: A safe execution environment for
+resource-constrained IoT applications](https://doi.org/10.1016/j.jnca.2018.06.001).
+<i>Journal of Network and Computer Applications</i>, Volume 118, pages 61-73. 2018.
+
+2. N. Tsiftes. [Storage-Centric System Architectures for Networked,
+Resource-Constrained Devices](http://www.diva-portal.org/smash/record.jsf?pid=diva2%3A882135).
+<i>Digital Comprehensive Summaries of Uppsala Dissertations from the Faculty of Science and
+Technology</i> 1331. Uppsala: Acta Universitatis Upsaliensis. 2016.
+
