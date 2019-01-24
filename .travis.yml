@@ -1,30 +1,35 @@
 language: c
 
 addons:
- apt:
-  packages:
-  - bison
-  - clisp
-  - flex
-  - python3
-  - python3-pexpect
+  apt:
+    packages:
+    - bison
+    - clisp
+    - flex
+    - python3
+    - python3-pexpect
 
-install:
+install: 
 
 script:
-  - make
-  - ./compile.sh
-  - (cd tests/functional-testing && python3 app-tester.py)
-  - mkdir -p doc/html
-  - echo "<html><head><title>Test</title></head><body>Documentation deployment test. Generated on " `date` "</body></html>" > doc/html/index.html
+- make
+- "./compile.sh"
+- "(cd tests/functional-testing && python3 app-tester.py)"
+- mkdir -p doc/html
+- echo "<html><head><title>Test</title></head><body>Documentation deployment test.
+  Generated on " `date` "</body></html>" > doc/html/index.html
 
 deploy:
   provider: pages
   skip-cleanup: true
-  github-token: $SECRET_TOKEN  # Set in travis-ci.org dashboard, marked secure
+  github-token: "$SECRET_TOKEN"
   keep-history: true
   local-dir: doc/html
   on:
     branches:
       only:
-        - master
+      - master
+
+env:
+  global:
+    secure: RvctGyyRJVNeT5h5ZC0E7dugIa7u/D4btYTgM2emyoPldS1L9xxTe7TI8fFS43zC1tWnTetiz8FZYe41qRLeKocnVASS/M1PM7ne1z3ie7qtVy+AnP+6yUVB0Tuvitjx2dL6g91rKE/mQiqpLVLkJUjPKJ7/SFvmJx6tY2aFTZbNrMxfkGfHQJFNXX01UA2ZkVWj3yDcNwNIjJXSQQKBM5kUSFF4/0b4aNLsUaUDBFoP1jJFz8PcvDu9JCsSEtMeDZJkPVs+QCfbdhYGN1TVCXq3EGDjO+me8lnm0VbMI7aazkOpI/+y20KqGnUBNVxD+ZA6UOtMlPqwwuSPIWiH7MQ5YFMxjh27FVGY0+jfM7NneB8ksLoydrtiW6pL3Vh1s+yrJRvtafvt3/STse89yphm0OHSh/Px+A/wNCCuM3Y1rmbJQv52cUpeilzmk+hqeOSLm0V197UnGgIWTnBoW53QWSdjY3lluRxeJCLUXQ+JctSJYg/iovkY8+ridm/K542RQQk/S42p2ts0tyTVCdfZSEDZtwFILwOj6SITt0B1InNAdufh95BItOeb7QdKqa7o6WWSVJsHTV5szl8S/Xc1R1+PJybJHDfK+gSDJm02P4LB//T2wVOD9DviWN57M8tOEVisTD5ze1uQXkcxl+rx0ewgtmEKZ/T4T4Onp0Q=

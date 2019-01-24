@@ -51,7 +51,7 @@ VM_CONTROL_OBJECTS = ${patsubst $(VM_CONTROL_DIR)/%.c,$(VM_OBJ_DIR)/%.o,$(VM_CON
 VM_PORT_FILES = ${wildcard $(VM_PORT_DIR)/*.c}
 VM_PORT_OBJECTS = ${patsubst $(VM_PORT_DIR)/%.c,$(VM_OBJ_DIR)/%.o,$(VM_PORT_FILES)}
 
-CFLAGS += -Wall -g -DVM_PORT=$(VM_PORT)
+CFLAGS += -Wall -g -pg -DVM_PORT=$(VM_PORT)
 CFLAGS += -I$(VM_INCLUDE_DIR) -I$(VM_PORT_DIR)
 CFLAGS += $(VM_PORT_CFLAGS)
 CFLAGS += ${patsubst %,-I$(VM_PORT_DIR)/%,$(VM_PORT_INCLUDE_DIRS)}
