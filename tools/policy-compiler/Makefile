@@ -3,7 +3,7 @@ all: vm-policy
 vm-policy: policy-scanner.l policy-parser.y
 	bison -d policy-parser.y
 	flex policy-scanner.l
-	clang -I../../include -o vm-policy policy-parser.tab.c lex.yy.c
+	cc -I../../include -o vm-policy policy-parser.tab.c lex.yy.c
 
 clean:
 	@rm -rf vm-policy
