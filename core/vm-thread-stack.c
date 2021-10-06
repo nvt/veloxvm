@@ -115,6 +115,9 @@ vm_thread_stack_alloc(vm_thread_t *thread)
 void
 vm_thread_stack_free(vm_expr_t *frame)
 {
+  if(frame == NULL) {
+    return;
+  }
   if(frame->bindv != NULL) {
     VM_FREE(frame->bindv);
   }
