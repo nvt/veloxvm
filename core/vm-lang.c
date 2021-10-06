@@ -157,6 +157,8 @@ vm_raise_exception(vm_thread_t *thread, vm_obj_t *obj)
         return;
       }
 
+      thread->expr->bindc = 0;
+
       /* Set the guard object to the argument of the raise expression. */
       vm_symbol_bind(thread, &thread->exprv[i]->argv[1].value.symbol_ref, obj);
 
