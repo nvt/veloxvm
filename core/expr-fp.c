@@ -74,6 +74,11 @@ static void
 execute_synthetic_expr(vm_thread_t *thread, vm_expr_t *expr,
 		       vm_obj_t *function, int result_dest)
 {
+  if(thread->exprc >= VM_CONTEXT_STACK_SIZE) {
+    vm_signal_error(thread, VM_ERROR_STACK_OVERFLOW);
+    return;
+  }
+
   /* Store the result of the synthetic expression in argument "result_dest"
      of the current expression. */
   thread->expr->eval_arg = result_dest;
