@@ -373,6 +373,12 @@ VM_FUNCTION(call_with_cc)
   if(expr == NULL) {
     return;
   }
+
+  if(thread->exprc >= VM_CONTEXT_STACK_SIZE) {
+    vm_signal_error(thread, VM_ERROR_STACK_OVERFLOW);
+    return;
+  }
+
   memcpy(&expr->argv[0], &argv[1], sizeof(vm_obj_t));
   expr->flags = VM_EXPR_HAVE_OBJECTS | VM_EXPR_CONTINUATION |
                 VM_EXPR_SAVE_FRAME;

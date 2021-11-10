@@ -74,6 +74,11 @@ static void
 execute_synthetic_expr(vm_thread_t *thread, vm_expr_t *expr,
 		       vm_obj_t *function, int result_dest)
 {
+  if(thread->exprc >= VM_CONTEXT_STACK_SIZE) {
+    vm_signal_error(thread, VM_ERROR_STACK_OVERFLOW);
+    return;
+  }
+
   /* Store the result of the synthetic expression in argument "result_dest"
      of the current expression. */
   thread->expr->eval_arg = result_dest;
@@ -137,6 +142,11 @@ VM_FUNCTION(map)
     current_expr->argv[current_expr->argc - 2].value.list = result_list;
   } else if(argc >= 4) {
     map_expr = thread->exprv[thread->exprc];
+    if(map_expr == NULL) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+      return;
+    }
+
     if(argv[argc - 2].type != VM_TYPE_LIST) {
       vm_thread_stack_free(map_expr);
       vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
