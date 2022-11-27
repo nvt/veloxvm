@@ -391,7 +391,7 @@ vm_native_init(void)
 const char *
 vm_native_get_os_version(void)
 {
-  static char os_version[80];
+  static char os_version[256];
   struct utsname name;
 
   /* Set the os_version string once only. */
