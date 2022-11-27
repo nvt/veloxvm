@@ -204,7 +204,6 @@ mark_thread_references(vm_thread_t *thread)
 void *
 vm_alloc(unsigned size)
 {
-  static unsigned sum;
   vm_thread_t *thread;
   int put_in_hash;
   void *ptr;
@@ -244,7 +243,6 @@ vm_alloc(unsigned size)
   }
 
   if(put_in_hash) {
-    sum += size;
     if(!vm_hash_update(&allocations, ptr, 0)) {
       free_vm_memory(ptr);
       return NULL;
