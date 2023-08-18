@@ -55,16 +55,16 @@
 #define MUTEX_HAS_OWNER   0x4
 
 typedef struct wait_thread {
-  vm_id_t thread_id;
   struct wait_thread *next;
+  vm_id_t thread_id;
 } wait_thread_t;
 
 typedef struct vm_mutex {
   const char *name;
-  uint8_t state;
-  vm_id_t owner_id;
   wait_thread_t *wait_list;
   vm_obj_t *obj;
+  vm_id_t owner_id;
+  uint8_t state;
 } vm_mutex_t;
 
 static void mutex_create(vm_obj_t *, const char *);

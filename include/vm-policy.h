@@ -87,19 +87,19 @@ struct vm_policy_file {
 };
 
 struct vm_policy_memory {
-  uint16_t limit;
   vm_policy_unit_t unit;
+  uint16_t limit;
 };
 
 struct vm_policy_net {
   const unsigned char *address;
-  uint8_t protocol;
   uint16_t port;
+  uint8_t protocol;
 };
 
 struct vm_policy_power {
-  uint16_t allocated_power;
   vm_policy_unit_t unit;
+  uint16_t allocated_power;
 };
 
 struct vm_policy_resources {
