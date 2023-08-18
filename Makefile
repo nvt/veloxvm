@@ -89,6 +89,7 @@ docker:
 	sudo docker build -f tools/docker/Dockerfile -t veloxvm .
 
 clean:
+	rm -rf $(VM_OBJ_DIR)
 	@$(MAKE) -C $(TOOLS_DIR) clean
 	@$(MAKE) -C $(POLICY_COMPILER_DIR) clean
 	@$(MAKE) -C $(SCRIPT_DIR) clean
