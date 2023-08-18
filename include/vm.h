@@ -83,11 +83,9 @@ typedef struct vm_symbol_bind {
 #define VM_PROGRAM_FLAG_SLOW_DOWN         0x8
 
 typedef struct vm_program {
-  vm_perf_attr_t perf_attr;
   vm_table_t strings;
   vm_table_t symbols;
   vm_table_t exprv;
-  vm_integer_t program_id;
   struct vm_program *next;
   const vm_policy_t *policy;
   char *name;
@@ -95,6 +93,8 @@ typedef struct vm_program {
 #if VM_INSTRUCTION_PROFILING
   unsigned long *exec_count;
 #endif
+  vm_perf_attr_t perf_attr;
+  vm_integer_t program_id;
   uint8_t nthreads;
   uint8_t flags;
 } vm_program_t;
@@ -165,12 +165,12 @@ typedef struct vm_thread {
   vm_expr_t *exprv[VM_CONTEXT_STACK_SIZE];
   vm_obj_t result;
   vm_obj_t specific_obj;
-  vm_id_t id;
   vm_expr_t *expr;
   vm_program_t *program;
   vm_error_t error;
   vm_thread_stats_t stats;
   vm_thread_status_t status;
+  vm_id_t id;
   uint8_t exprc;
 } vm_thread_t;
 

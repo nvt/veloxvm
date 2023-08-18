@@ -159,9 +159,9 @@ typedef enum vm_vector_flags {
 
 struct vm_obj;
 typedef struct vm_vector {
-  vm_integer_t length;
   struct vm_obj *elements;
   uint8_t *bytes;
+  vm_integer_t length;
   vm_vector_flags_t flags;
 } vm_vector_t;
 
@@ -225,10 +225,10 @@ typedef struct vm_list_item {
  * deallocation, and writing their textual representation.
  */
 typedef struct vm_ext_type {
-  vm_ext_type_id_t type_id;
   void (*copy)(vm_obj_t *, vm_obj_t *);
   void (*deallocate)(vm_obj_t *);
   void (*write)(vm_port_t *port, vm_obj_t *);
+  vm_ext_type_id_t type_id;
 } vm_ext_type_t;
 
 #endif /* !VM_OBJECTS_H */
