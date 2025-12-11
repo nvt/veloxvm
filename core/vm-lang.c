@@ -192,16 +192,26 @@ vm_return_from_function(vm_thread_t *thread, vm_obj_t *obj)
          will be at one level above the BIND expression. */
       thread->exprc = i;
       thread->expr = thread->exprv[i - 1];
-      VM_EVAL_SET_COMPLETED(thread, thread->expr->eval_arg);
+      /* For lambda frames (eval_arg == 255), don't mark as completed or copy result.
+         The result will be handled by the scheduler. */
+      if(thread->expr->eval_arg != 255) {
+        VM_EVAL_SET_COMPLETED(thread, thread->expr->eval_arg);
 
-      VM_DEBUG(VM_DEBUG_HIGH, "Return to frame %d, arg %d\n",
-               i - 1, thread->expr->eval_arg);
+        VM_DEBUG(VM_DEBUG_HIGH, "Return to frame %d, arg %d\n",
+                 i - 1, thread->expr->eval_arg);
 
-      if(obj != NULL) {
-        /* An argument was supplied to be passed as the result of the
-           function call from which we return. */
-        memcpy(&thread->expr->argv[thread->expr->eval_arg++],
-               obj, sizeof(vm_obj_t));
+        if(obj != NULL) {
+          /* An argument was supplied to be passed as the result of the
+             function call from which we return. */
+          memcpy(&thread->expr->argv[thread->expr->eval_arg++],
+                 obj, sizeof(vm_obj_t));
+        }
+      } else {
+        VM_DEBUG(VM_DEBUG_HIGH, "Return to lambda frame %d (eval_arg=255)\n", i - 1);
+        /* For lambda frames, result stays in thread->result */
+        if(obj != NULL) {
+          memcpy(&thread->result, obj, sizeof(vm_obj_t));
+        }
       }
 
       /* Deallocate the stack above that of the bind expression. */

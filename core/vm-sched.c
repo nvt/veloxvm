@@ -184,7 +184,10 @@ vm_sched_thread(vm_thread_t *thread)
     /* Make the requested evaluations of arguments. */
     for(i = 0; i < expr->argc; i++) {
       if(VM_EVAL_REQUESTED(thread, i) && !VM_EVAL_COMPLETED(thread, i)) {
-        expr->eval_arg = i;
+        /* Don't overwrite sentinel value 255 used for lambda frames */
+        if(expr->eval_arg != 255) {
+          expr->eval_arg = i;
+        }
         if(expr->argv[i].type == VM_TYPE_FORM) {
           if(i > 0 && expr->argv[i].value.form.type == VM_FORM_LAMBDA) {
             /* Lambda form arguments are evaluated to themselves. */
@@ -232,10 +235,14 @@ vm_sched_thread(vm_thread_t *thread)
     }
 
 restart:
-    vm_eval_expr(thread, expr);
-    if(thread->status == VM_THREAD_ERROR ||
-       thread->status == VM_THREAD_EXITING) {
-      return;
+    /* Don't call vm_eval_expr on completed lambda frames - argv[0] may be corrupted
+       with the return value, and trying to evaluate it causes crashes for symbols. */
+    if(!(IS_SET(expr->flags, VM_EXPR_LAMBDA) && VM_EVAL_COMPLETED_ALL(thread))) {
+      vm_eval_expr(thread, expr);
+      if(thread->status == VM_THREAD_ERROR ||
+         thread->status == VM_THREAD_EXITING) {
+        return;
+      }
     }
     /* A native function may have rewritten the expression stack,
        so the local expression pointer must be updated. */
@@ -258,6 +265,7 @@ restart:
     /* Replace the evaluated object with the result of the evaluation. */
     vm_thread_stack_pop(thread);
     expr = thread->expr;
+
     VM_EVAL_SET_COMPLETED(thread, expr->eval_arg);
     memmove(&expr->argv[expr->eval_arg], &thread->result, sizeof(vm_obj_t));
   } else if(expr->ip == expr->end) {
