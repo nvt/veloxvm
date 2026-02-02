@@ -85,7 +85,9 @@ calculate_system_power(void)
   power = 3 * (power / RTIMER_SECOND);
 #endif /* CONTIKI_TARGET_ZOUL */
 
-  power /= clock_seconds();
+  if(clock_seconds() > 0) {
+    power /= clock_seconds();
+  }
 
   return power;
 }

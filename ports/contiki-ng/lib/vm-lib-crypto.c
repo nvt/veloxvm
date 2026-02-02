@@ -52,7 +52,7 @@ static const struct cipher_pair cipher_map[] = {
   {"ROT13",   CIPHER_ROT13},
 };
 
-#define CRYPTO_CIPHER_COUNT (sizeof(cipher_map) / sizeof(cipher_map[0])
+#define CRYPTO_CIPHER_COUNT (sizeof(cipher_map) / sizeof(cipher_map[0]))
 
 VM_DECLARE_FUNCTION(encrypt);
 VM_DECLARE_FUNCTION(decrypt);
@@ -135,6 +135,7 @@ VM_FUNCTION(encrypt)
   enum cipher cipher;
   vm_vector_t *plaintext_vector;
   vm_vector_t *ciphertext_vector;
+  int i;
 
   if(argv[0].type != VM_TYPE_SYMBOL || argv[1].type != VM_TYPE_VECTOR ||
      VM_IS_CLEAR(argv[1].value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
@@ -154,11 +155,11 @@ VM_FUNCTION(encrypt)
   cipher = get_cipher_value(thread->program, &argv[0].value.symbol_ref);
   switch(cipher) {
   case CIPHER_AES_128:
-    aes_128_padded_encrypt(thread->result.vector->bytes,
-                           thread->result.vector->length);
+    aes_128_padded_encrypt(ciphertext_vector->bytes,
+                           ciphertext_vector->length);
     break;
   case CIPHER_ROT13:
-    for(i = 0; i < plaintext_vector; i++) {
+    for(i = 0; i < plaintext_vector->length; i++) {
       ciphertext_vector->bytes[i] = plaintext_vector->bytes[i] + 13;
     }
     break;
@@ -171,6 +172,9 @@ VM_FUNCTION(encrypt)
 VM_FUNCTION(decrypt)
 {
   enum cipher cipher;
+  vm_vector_t *plaintext_vector;
+  vm_vector_t *ciphertext_vector;
+  int i;
 
   if(argv[0].type != VM_TYPE_SYMBOL || argv[1].type != VM_TYPE_VECTOR ||
      VM_IS_CLEAR(argv[1].value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
@@ -178,7 +182,7 @@ VM_FUNCTION(decrypt)
     return;
   }
 
-  ciphertext_vector = argv[1]->value.vector;
+  ciphertext_vector = argv[1].value.vector;
 
   if(!vm_object_deep_copy(&argv[1], &thread->result)) {
     vm_signal_error(thread, VM_ERROR_HEAP);
@@ -193,7 +197,7 @@ VM_FUNCTION(decrypt)
     vm_signal_error(thread, VM_ERROR_UNIMPLEMENTED);
     break;
   case CIPHER_ROT13:
-    for(i = 0; i < ciphertext_vector; i++) {
+    for(i = 0; i < ciphertext_vector->length; i++) {
       plaintext_vector->bytes[i] = ciphertext_vector->bytes[i] - 13;
     }
     break;
@@ -206,8 +210,7 @@ VM_FUNCTION(decrypt)
 VM_FUNCTION(set_crypto_key)
 {
   enum cipher cipher;
-  vm_vector_t *plaintext_vector;
-  vm_vector_t *ciphertext_vector;
+  vm_vector_t *key_vector;
 
   if(argv[0].type != VM_TYPE_SYMBOL || argv[1].type != VM_TYPE_VECTOR ||
      VM_IS_CLEAR(argv[1].value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
@@ -215,7 +218,24 @@ VM_FUNCTION(set_crypto_key)
     return;
   }
 
+  key_vector = argv[1].value.vector;
   cipher = get_cipher_value(thread->program, &argv[0].value.symbol_ref);
+
+  switch(cipher) {
+  case CIPHER_AES_128:
+    if(key_vector->length != 16) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+      return;
+    }
+    aes_128_set_padded_key(key_vector->bytes, key_vector->length);
+    break;
+  case CIPHER_ROT13:
+    /* ROT13 does not use a key. */
+    break;
+  default:
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    break;
+  }
 }
 
 VM_FUNCTION(get_crypto_algorithms)
@@ -224,17 +244,16 @@ VM_FUNCTION(get_crypto_algorithms)
   vm_vector_t *vector;
 
   vector = vm_vector_create(&thread->result, CRYPTO_CIPHER_COUNT,
-                            VM_VECTOR_FLAG_REGULAR)
+                            VM_VECTOR_FLAG_REGULAR);
   if(vector == NULL) {
     vm_signal_error(thread, VM_ERROR_HEAP);
     return;
   }
 
   for(i = 0; i < CRYPTO_CIPHER_COUNT; i++) {
-      if(vm_string_create(&vector->elements[i], -1, cipher_map[i].cipher) == NULL) {
-        vm_signal_error(thread, VM_ERROR_HEAP);
-        return;
-      }
+    if(vm_string_create(&vector->elements[i], -1, cipher_map[i].sym_name) == NULL) {
+      vm_signal_error(thread, VM_ERROR_HEAP);
+      return;
     }
   }
 }
