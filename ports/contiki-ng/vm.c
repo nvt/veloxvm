@@ -41,6 +41,7 @@
 extern vm_lib_t vm_lib_leds;
 extern vm_lib_t vm_lib_radio;
 extern vm_lib_t vm_lib_rpl;
+extern vm_lib_t vm_lib_crypto;
 
 PROCESS(vm_process, VM_NAME);
 AUTOSTART_PROCESSES(&vm_process);
@@ -65,6 +66,7 @@ PROCESS_THREAD(vm_process, ev, data)
   vm_lib_register(&vm_lib_leds);
   vm_lib_register(&vm_lib_radio);
   vm_lib_register(&vm_lib_rpl);
+  vm_lib_register(&vm_lib_crypto);
 
   process_start(&vm_perfmon_process, NULL);
 

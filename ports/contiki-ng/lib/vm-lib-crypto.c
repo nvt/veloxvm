@@ -27,52 +27,68 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
  * OF THE POSSIBILITY OF SUCH DAMAGE.
  *
- * Author: Nicolas Tsiftes <nvt@acm.org>,
+ * Author: Nicolas Tsiftes <nvt@acm.org>
+ *
+ * Crypto library for VeloxVM using Contiki-NG crypto APIs.
+ *
+ * Every user-facing operation is a thin wrapper over a Contiki-NG
+ * driver. Algorithms are selected at the Scheme call site via a symbol
+ * so that adding a new suite is a dispatch change, not a new primitive.
+ * Confidentiality is exposed only through AEAD; there is intentionally
+ * no unauthenticated block-cipher surface.
+ *
+ * Provides:
+ *   (crypto-hash 'sha-256 data)
+ *                                         -> 32-byte digest vector
+ *   (crypto-mac 'hmac-sha-256 key data)
+ *                                         -> 32-byte MAC vector
+ *   (crypto-mac-verify 'hmac-sha-256 key data tag)
+ *                                         -> #t if tag matches, else #f
+ *   (crypto-aead-encrypt 'aes-128-ccm key nonce aad plaintext)
+ *                                         -> ciphertext || 16-byte tag
+ *   (crypto-aead-decrypt 'aes-128-ccm key nonce aad ciphertext-and-tag)
+ *                                         -> plaintext vector, or #f on
+ *                                            authentication failure
  */
 
 #include "contiki.h"
-#include "lib/aes-128.h"
+#include "lib/ccm-star.h"
+#include "lib/sha-256.h"
 
 #include "vm.h"
 #include "vm-lib.h"
 #include "vm-log.h"
 
-enum cipher {
-  CIPHER_AES_128 = 1,
-  CIPHER_ROT13   = 2
-};
+#include <string.h>
 
-struct cipher_pair {
-  const char *sym_name;
-  enum cipher cipher;
-};
+#define AES_128_KEY_LENGTH    16
+#define AES_CCM_NONCE_LENGTH  13
+#define AES_CCM_MIC_LENGTH    16
 
-static const struct cipher_pair cipher_map[] = {
-  {"AES-128", CIPHER_AES_128},
-  {"ROT13",   CIPHER_ROT13},
-};
-
-#define CRYPTO_CIPHER_COUNT (sizeof(cipher_map) / sizeof(cipher_map[0]))
-
-VM_DECLARE_FUNCTION(encrypt);
-VM_DECLARE_FUNCTION(decrypt);
-VM_DECLARE_FUNCTION(set_crypto_key);
-VM_DECLARE_FUNCTION(get_crypto_algorithms);
+VM_DECLARE_FUNCTION(crypto_hash);
+VM_DECLARE_FUNCTION(crypto_mac);
+VM_DECLARE_FUNCTION(crypto_mac_verify);
+VM_DECLARE_FUNCTION(crypto_aead_encrypt);
+VM_DECLARE_FUNCTION(crypto_aead_decrypt);
 
 static int load(vm_program_t *);
 static int unload(vm_program_t *);
 
+#define CRYPTO_ARG_TYPES (VM_TYPE_FLAG(VM_TYPE_SYMBOL) | \
+                          VM_TYPE_FLAG(VM_TYPE_STRING) | \
+                          VM_TYPE_FLAG(VM_TYPE_VECTOR))
+
 static const vm_procedure_t crypto_operators[] = {
-  VM_OPERATOR(encrypt,
-              VM_TYPE_FLAG(VM_TYPE_SYMBOL) | VM_TYPE_FLAG(VM_TYPE_VECTOR),
+  VM_OPERATOR(crypto_hash, CRYPTO_ARG_TYPES,
               VM_PROCEDURE_EVAL_ARGS, 2, 2),
-  VM_OPERATOR(decrypt,
-              VM_TYPE_FLAG(VM_TYPE_SYMBOL) | VM_TYPE_FLAG(VM_TYPE_VECTOR),
-              VM_PROCEDURE_EVAL_ARGS, 2, 2),
-  VM_OPERATOR(set_crypto_key,
-              VM_TYPE_FLAG(VM_TYPE_SYMBOL) | VM_TYPE_FLAG(VM_TYPE_VECTOR),
-              VM_PROCEDURE_EVAL_ARGS, 2, 2),
-  VM_OPERATOR(get_crypto_algorithms, 0, 0, 0)
+  VM_OPERATOR(crypto_mac, CRYPTO_ARG_TYPES,
+              VM_PROCEDURE_EVAL_ARGS, 3, 3),
+  VM_OPERATOR(crypto_mac_verify, CRYPTO_ARG_TYPES,
+              VM_PROCEDURE_EVAL_ARGS, 4, 4),
+  VM_OPERATOR(crypto_aead_encrypt, CRYPTO_ARG_TYPES,
+              VM_PROCEDURE_EVAL_ARGS, 5, 5),
+  VM_OPERATOR(crypto_aead_decrypt, CRYPTO_ARG_TYPES,
+              VM_PROCEDURE_EVAL_ARGS, 5, 5)
 };
 
 vm_lib_t vm_lib_crypto = {
@@ -81,179 +97,249 @@ vm_lib_t vm_lib_crypto = {
   .unload = unload,
   .operators = crypto_operators,
   .operator_count = sizeof(crypto_operators) / sizeof(crypto_operators[0]),
-  .symbols = (const char *[]){"encrypt", "decrypt", "set-crypto-key",
-                              "get-crypto-algorithms"},
-  .symbol_count = 4
+  .symbols = (const char *[]){"crypto-hash",
+                              "crypto-mac", "crypto-mac-verify",
+                              "crypto-aead-encrypt", "crypto-aead-decrypt"},
+  .symbol_count = 5
 };
 
 static int
 load(vm_program_t *program)
 {
-  vm_obj_t obj;
-
-  VM_PRINTF("Loading the crypto library\n");
-
-  /* Bind all library symbols to a dummy value. */
-  obj.type = VM_TYPE_BOOLEAN;
-  obj.value.boolean = VM_TRUE;
-
-  vm_lib_bind_symbol(program, "AES-128", &obj);
-  vm_lib_bind_symbol(program, "ROT13", &obj);
-
+  VM_DEBUG(VM_DEBUG_LOW, "Loading the crypto library");
   return 1;
 }
 
 static int
 unload(vm_program_t *program)
 {
-  VM_PRINTF("Unloading the crypto library\n");
+  VM_DEBUG(VM_DEBUG_LOW, "Unloading the crypto library");
   return 1;
 }
 
-static unsigned char
-get_cipher_value(vm_program_t *program, vm_symbol_ref_t *symref)
+/*
+ * Extract a byte pointer and length from a string or buffer-vector
+ * argument. Returns 1 on success, 0 on failure.
+ */
+static int
+get_data_bytes(vm_obj_t *obj, const uint8_t **data, size_t *len)
 {
-  const char *name;
-  int i;
-
-  name = vm_symbol_lookup(program, symref);
-  if(name == NULL) {
-    return 0;
+  if(obj->type == VM_TYPE_STRING) {
+    *data = (const uint8_t *)obj->value.string->str;
+    *len = obj->value.string->length;
+    return 1;
+  } else if(obj->type == VM_TYPE_VECTOR &&
+            VM_IS_SET(obj->value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
+    *data = obj->value.vector->bytes;
+    *len = obj->value.vector->length;
+    return 1;
   }
-
-  for(i = 0; i < CRYPTO_CIPHER_COUNT; i++) {
-    if(vm_strcasecmp(name, cipher_map[i].sym_name) == 0) {
-      return cipher_map[i].cipher;
-    }
-  }
-
   return 0;
 }
 
-VM_FUNCTION(encrypt)
+/*
+ * Return 1 if argv[0] is the symbol 'name', 0 otherwise.
+ */
+static int
+algorithm_is(vm_thread_t *thread, vm_obj_t *obj, const char *name)
 {
-  enum cipher cipher;
-  vm_vector_t *plaintext_vector;
-  vm_vector_t *ciphertext_vector;
-  int i;
+  const char *got;
 
-  if(argv[0].type != VM_TYPE_SYMBOL || argv[1].type != VM_TYPE_VECTOR ||
-     VM_IS_CLEAR(argv[1].value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
-    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-    return;
+  if(obj->type != VM_TYPE_SYMBOL) {
+    return 0;
   }
-
-  plaintext_vector = argv[1].value.vector;
-
-  if(!vm_object_deep_copy(&argv[1], &thread->result)) {
-    vm_signal_error(thread, VM_ERROR_HEAP);
-    return;
-  }
-
-  ciphertext_vector = thread->result.value.vector;
-
-  cipher = get_cipher_value(thread->program, &argv[0].value.symbol_ref);
-  switch(cipher) {
-  case CIPHER_AES_128:
-    aes_128_padded_encrypt(ciphertext_vector->bytes,
-                           ciphertext_vector->length);
-    break;
-  case CIPHER_ROT13:
-    for(i = 0; i < plaintext_vector->length; i++) {
-      ciphertext_vector->bytes[i] = plaintext_vector->bytes[i] + 13;
-    }
-    break;
-  default:
-    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-    break;
-  }
+  got = vm_symbol_lookup(thread->program, &obj->value.symbol_ref);
+  return got != NULL && vm_strcasecmp(got, name) == 0;
 }
 
-VM_FUNCTION(decrypt)
+/*
+ * Constant-time byte-wise comparison. Returns 1 if equal, 0 otherwise.
+ */
+static int
+ct_equal(const uint8_t *a, const uint8_t *b, size_t len)
 {
-  enum cipher cipher;
-  vm_vector_t *plaintext_vector;
-  vm_vector_t *ciphertext_vector;
-  int i;
+  uint8_t diff = 0;
+  size_t i;
 
-  if(argv[0].type != VM_TYPE_SYMBOL || argv[1].type != VM_TYPE_VECTOR ||
-     VM_IS_CLEAR(argv[1].value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
-    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-    return;
+  for(i = 0; i < len; i++) {
+    diff |= a[i] ^ b[i];
   }
-
-  ciphertext_vector = argv[1].value.vector;
-
-  if(!vm_object_deep_copy(&argv[1], &thread->result)) {
-    vm_signal_error(thread, VM_ERROR_HEAP);
-    return;
-  }
-
-  plaintext_vector = thread->result.value.vector;
-
-  cipher = get_cipher_value(thread->program, &argv[0].value.symbol_ref);
-  switch(cipher) {
-  case CIPHER_AES_128:
-    vm_signal_error(thread, VM_ERROR_UNIMPLEMENTED);
-    break;
-  case CIPHER_ROT13:
-    for(i = 0; i < ciphertext_vector->length; i++) {
-      plaintext_vector->bytes[i] = ciphertext_vector->bytes[i] - 13;
-    }
-    break;
-  default:
-    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-    break;
-  }
+  return diff == 0;
 }
 
-VM_FUNCTION(set_crypto_key)
+/*
+ * Allocate a buffer-vector of the given length as thread->result.
+ * Returns the vector on success, NULL on allocation failure.
+ */
+static vm_vector_t *
+alloc_buffer_result(vm_thread_t *thread, size_t len)
 {
-  enum cipher cipher;
-  vm_vector_t *key_vector;
+  vm_vector_t *v;
 
-  if(argv[0].type != VM_TYPE_SYMBOL || argv[1].type != VM_TYPE_VECTOR ||
-     VM_IS_CLEAR(argv[1].value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
-    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-    return;
+  v = vm_vector_create(&thread->result, len, VM_VECTOR_FLAG_BUFFER);
+  if(v == NULL) {
+    vm_signal_error(thread, VM_ERROR_HEAP);
   }
-
-  key_vector = argv[1].value.vector;
-  cipher = get_cipher_value(thread->program, &argv[0].value.symbol_ref);
-
-  switch(cipher) {
-  case CIPHER_AES_128:
-    if(key_vector->length != 16) {
-      vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
-      return;
-    }
-    aes_128_set_padded_key(key_vector->bytes, key_vector->length);
-    break;
-  case CIPHER_ROT13:
-    /* ROT13 does not use a key. */
-    break;
-  default:
-    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-    break;
-  }
+  return v;
 }
 
-VM_FUNCTION(get_crypto_algorithms)
+VM_FUNCTION(crypto_hash)
 {
-  int i;
-  vm_vector_t *vector;
+  const uint8_t *data;
+  size_t len;
+  vm_vector_t *result;
 
-  vector = vm_vector_create(&thread->result, CRYPTO_CIPHER_COUNT,
-                            VM_VECTOR_FLAG_REGULAR);
-  if(vector == NULL) {
-    vm_signal_error(thread, VM_ERROR_HEAP);
+  if(!algorithm_is(thread, &argv[0], "sha-256")) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+    return;
+  }
+  if(!get_data_bytes(&argv[1], &data, &len)) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
 
-  for(i = 0; i < CRYPTO_CIPHER_COUNT; i++) {
-    if(vm_string_create(&vector->elements[i], -1, cipher_map[i].sym_name) == NULL) {
-      vm_signal_error(thread, VM_ERROR_HEAP);
-      return;
-    }
+  result = alloc_buffer_result(thread, SHA_256_DIGEST_LENGTH);
+  if(result == NULL) {
+    return;
+  }
+  sha_256_hash(data, len, result->bytes);
+}
+
+VM_FUNCTION(crypto_mac)
+{
+  const uint8_t *key, *data;
+  size_t key_len, data_len;
+  vm_vector_t *result;
+
+  if(!algorithm_is(thread, &argv[0], "hmac-sha-256")) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+    return;
+  }
+  if(!get_data_bytes(&argv[1], &key, &key_len) ||
+     !get_data_bytes(&argv[2], &data, &data_len)) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+
+  result = alloc_buffer_result(thread, SHA_256_DIGEST_LENGTH);
+  if(result == NULL) {
+    return;
+  }
+  sha_256_hmac(key, key_len, data, data_len, result->bytes);
+}
+
+VM_FUNCTION(crypto_mac_verify)
+{
+  const uint8_t *key, *data, *tag;
+  size_t key_len, data_len, tag_len;
+  uint8_t expected[SHA_256_DIGEST_LENGTH];
+
+  if(!algorithm_is(thread, &argv[0], "hmac-sha-256")) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+    return;
+  }
+  if(!get_data_bytes(&argv[1], &key, &key_len) ||
+     !get_data_bytes(&argv[2], &data, &data_len) ||
+     !get_data_bytes(&argv[3], &tag, &tag_len)) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+  if(tag_len != SHA_256_DIGEST_LENGTH) {
+    VM_PUSH_BOOLEAN(VM_FALSE);
+    return;
+  }
+
+  sha_256_hmac(key, key_len, data, data_len, expected);
+  VM_PUSH_BOOLEAN(ct_equal(expected, tag, SHA_256_DIGEST_LENGTH)
+                    ? VM_TRUE : VM_FALSE);
+}
+
+VM_FUNCTION(crypto_aead_encrypt)
+{
+  const uint8_t *key, *nonce, *aad, *plaintext;
+  size_t key_len, nonce_len, aad_len, plain_len;
+  vm_vector_t *result;
+
+  if(!algorithm_is(thread, &argv[0], "aes-128-ccm")) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+    return;
+  }
+  if(!get_data_bytes(&argv[1], &key, &key_len) ||
+     !get_data_bytes(&argv[2], &nonce, &nonce_len) ||
+     !get_data_bytes(&argv[3], &aad, &aad_len) ||
+     !get_data_bytes(&argv[4], &plaintext, &plain_len)) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+  /* The Contiki-NG CCM* driver documents ceilings of 0xffff bytes
+     for the message and 0xfeff bytes for the associated data. */
+  if(key_len != AES_128_KEY_LENGTH ||
+     nonce_len != AES_CCM_NONCE_LENGTH ||
+     plain_len > 0xffff ||
+     aad_len > 0xfeff) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+    return;
+  }
+
+  result = alloc_buffer_result(thread, plain_len + AES_CCM_MIC_LENGTH);
+  if(result == NULL) {
+    return;
+  }
+  memcpy(result->bytes, plaintext, plain_len);
+
+  CCM_STAR.set_key(key);
+  CCM_STAR.aead(nonce,
+                result->bytes, plain_len,
+                aad, aad_len,
+                result->bytes + plain_len, AES_CCM_MIC_LENGTH,
+                1 /* forward = encrypt */);
+}
+
+VM_FUNCTION(crypto_aead_decrypt)
+{
+  const uint8_t *key, *nonce, *aad, *ct;
+  size_t key_len, nonce_len, aad_len, ct_len;
+  size_t plain_len;
+  uint8_t expected_tag[AES_CCM_MIC_LENGTH];
+  vm_vector_t *result;
+
+  if(!algorithm_is(thread, &argv[0], "aes-128-ccm")) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+    return;
+  }
+  if(!get_data_bytes(&argv[1], &key, &key_len) ||
+     !get_data_bytes(&argv[2], &nonce, &nonce_len) ||
+     !get_data_bytes(&argv[3], &aad, &aad_len) ||
+     !get_data_bytes(&argv[4], &ct, &ct_len)) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+  if(key_len != AES_128_KEY_LENGTH ||
+     nonce_len != AES_CCM_NONCE_LENGTH ||
+     ct_len < AES_CCM_MIC_LENGTH ||
+     aad_len > 0xfeff ||
+     ct_len - AES_CCM_MIC_LENGTH > 0xffff) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+    return;
+  }
+  plain_len = ct_len - AES_CCM_MIC_LENGTH;
+
+  result = alloc_buffer_result(thread, plain_len);
+  if(result == NULL) {
+    return;
+  }
+  memcpy(result->bytes, ct, plain_len);
+
+  CCM_STAR.set_key(key);
+  CCM_STAR.aead(nonce,
+                result->bytes, plain_len,
+                aad, aad_len,
+                expected_tag, AES_CCM_MIC_LENGTH,
+                0 /* forward = decrypt */);
+
+  if(!ct_equal(expected_tag, ct + plain_len, AES_CCM_MIC_LENGTH)) {
+    /* Authentication failed: wipe the candidate plaintext and return #f. */
+    memset(result->bytes, 0, plain_len);
+    VM_PUSH_BOOLEAN(VM_FALSE);
   }
 }
