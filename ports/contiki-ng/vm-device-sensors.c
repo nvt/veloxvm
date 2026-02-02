@@ -33,6 +33,13 @@
 #include "contiki.h"
 
 #include "vm.h"
+
+#if CONTIKI_TARGET_NATIVE
+/* The Contiki-NG native platform excludes lib/sensors.c from its build,
+   so the sensor device is compiled out entirely for that target. */
+const vm_port_io_t device_sensors = { 0 };
+#else
+
 #include "lib/sensors.h"
 
 #if PLATFORM_HAS_SHT11
@@ -86,4 +93,6 @@ const vm_port_io_t device_sensors = {
   .write = sensors_write,
   .close = NULL
 };
+
+#endif /* CONTIKI_TARGET_NATIVE */
 /*---------------------------------------------------------------------------*/

@@ -310,7 +310,11 @@ vm_native_init(void)
 const char *
 vm_native_get_os_version(void)
 {
+#ifdef CONTIKI_VERSION_STRING
   return CONTIKI_VERSION_STRING;
+#else
+  return "Contiki-NG";
+#endif
 }
 
 void
