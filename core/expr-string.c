@@ -219,6 +219,7 @@ VM_FUNCTION(list_to_string)
     }
     string->str[i] = item->obj.value.character;
   }
+  string->str[string->length] = '\0';
 }
 
 VM_FUNCTION(vector_to_string)
