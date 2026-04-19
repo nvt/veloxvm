@@ -144,10 +144,16 @@ static vm_symbol_t symbol_map[] = {
   SYM("bit-xor"), SYM("bit-shift"),
 
   /* Packet management functions. */
-  SYM("construct-packet"), SYM("deconstruct-packet")
+  SYM("construct-packet"), SYM("deconstruct-packet"),
+
+  /* Additional type predicates (R5RS compliance). */
+  SYM("symbol?"),
+
+  /* Type conversion functions (R5RS compliance). */
+  SYM("symbol->string")
 };
 
-#define CORE_SYMBOL_COUNT ARRAY_SIZE(symbol_map)
+#define CORE_SYMBOL_COUNT VM_ARRAY_SIZE(symbol_map)
 
 vm_obj_t *
 vm_symbol_resolve(vm_thread_t *thread, vm_symbol_ref_t *symbol_ref)

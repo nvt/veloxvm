@@ -59,7 +59,7 @@ get_port(vm_thread_t *thread, vm_integer_t argc,
     port = argv[0].value.port;
   }
 
-  if(IS_CLEAR(port->flags, VM_PORT_FLAG_OPEN)) {
+  if(VM_IS_CLEAR(port->flags, VM_PORT_FLAG_OPEN)) {
     vm_signal_error(thread, VM_ERROR_PORT_CLOSED);
     return NULL;
   }
@@ -70,13 +70,13 @@ get_port(vm_thread_t *thread, vm_integer_t argc,
 VM_FUNCTION(input_portp)
 {
   VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_PORT &&
-                  IS_SET(argv[0].value.port->flags, VM_PORT_FLAG_INPUT));
+                  VM_IS_SET(argv[0].value.port->flags, VM_PORT_FLAG_INPUT));
 }
 
 VM_FUNCTION(output_portp)
 {
   VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_PORT &&
-                  IS_SET(argv[0].value.port->flags, VM_PORT_FLAG_OUTPUT));
+                  VM_IS_SET(argv[0].value.port->flags, VM_PORT_FLAG_OUTPUT));
 }
 
 VM_FUNCTION(eof_objectp)
@@ -165,9 +165,9 @@ VM_FUNCTION(read_char)
 
   if(vm_native_read_char(port, &c) == 1) {
     VM_PUSH_CHARACTER(c);
-    CLEAR(thread->expr->flags, VM_EXPR_RESTART);
+    VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
   } else if(thread->status == VM_THREAD_WAITING) {
-    SET(thread->expr->flags, VM_EXPR_RESTART);
+    VM_SET_FLAG(thread->expr->flags, VM_EXPR_RESTART);
   }
 }
 
@@ -188,9 +188,9 @@ VM_FUNCTION(read)
   }
 
   if(thread->status == VM_THREAD_WAITING) {
-    SET(thread->expr->flags, VM_EXPR_RESTART);
+    VM_SET_FLAG(thread->expr->flags, VM_EXPR_RESTART);
   } else {
-    CLEAR(thread->expr->flags, VM_EXPR_RESTART);
+    VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
   }
 }
 
@@ -221,13 +221,13 @@ VM_FUNCTION(write_char)
 {
   vm_port_t *port;
 
-  if(IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SLOW_DOWN)) {
+  if(VM_IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SLOW_DOWN)) {
     vm_native_sleep(thread, VM_POLL_TIME);
-    SET(thread->expr->flags, VM_EXPR_RESTART);
+    VM_SET_FLAG(thread->expr->flags, VM_EXPR_RESTART);
     return;
   }
 
-  CLEAR(thread->expr->flags, VM_EXPR_RESTART);
+  VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
 
   if(argv[0].type != VM_TYPE_CHARACTER ||
      (argc == 2 && argv[1].type != VM_TYPE_PORT)) {
@@ -246,9 +246,9 @@ VM_FUNCTION(write_char)
   }
 
   if(thread->status == VM_THREAD_WAITING) {
-    SET(thread->expr->flags, VM_EXPR_RESTART);
+    VM_SET_FLAG(thread->expr->flags, VM_EXPR_RESTART);
   } else {
-    CLEAR(thread->expr->flags, VM_EXPR_RESTART);
+    VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
   }
 }
 
@@ -256,13 +256,13 @@ VM_FUNCTION(write)
 {
   vm_port_t *port;
 
-  if(IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SLOW_DOWN)) {
+  if(VM_IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SLOW_DOWN)) {
     vm_native_sleep(thread, VM_POLL_TIME);
-    SET(thread->expr->flags, VM_EXPR_RESTART);
+    VM_SET_FLAG(thread->expr->flags, VM_EXPR_RESTART);
     return;
   }
 
-  CLEAR(thread->expr->flags, VM_EXPR_RESTART);
+  VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
 
   if(argc == 2 && argv[1].type != VM_TYPE_PORT) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
@@ -281,13 +281,13 @@ VM_FUNCTION(display)
 {
   vm_port_t *port;
 
-  if(IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SLOW_DOWN)) {
+  if(VM_IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SLOW_DOWN)) {
     vm_native_sleep(thread, VM_POLL_TIME);
-    SET(thread->expr->flags, VM_EXPR_RESTART);
+    VM_SET_FLAG(thread->expr->flags, VM_EXPR_RESTART);
     return;
   }
 
-  CLEAR(thread->expr->flags, VM_EXPR_RESTART);
+  VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
 
   if(argc == 2 && argv[1].type != VM_TYPE_PORT) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);

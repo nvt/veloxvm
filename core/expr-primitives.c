@@ -122,7 +122,7 @@ VM_FUNCTION(bind)
 
     /* Instruct the scheduler to evaluate the actual lambda expression. */
     VM_EVAL_ARG(thread, argc - 1);
-    SET(thread->expr->flags, VM_EXPR_TAIL_CALL);
+    VM_SET_FLAG(thread->expr->flags, VM_EXPR_TAIL_CALL);
   } else {
     /* Evaluation finished. */
     VM_EVAL_STOP(thread);
@@ -140,7 +140,7 @@ VM_FUNCTION(begin)
   /* Defer the evaluation of the arguments in order to set
      the tail call flag when executing the last argument. */
   VM_EVAL_SET_REQUESTED_RANGE(thread, 1, thread->expr->argc);
-  SET(thread->expr->flags, VM_EXPR_TAIL_CALL);
+  VM_SET_FLAG(thread->expr->flags, VM_EXPR_TAIL_CALL);
   if(VM_EVAL_COMPLETED(thread, argc - 1)) {
     VM_PUSH(&argv[argc - 1]);
   }
@@ -159,7 +159,7 @@ VM_FUNCTION(if)
   if(use_arg >= argc) {
     VM_EVAL_STOP(thread);
   } else if(!VM_EVAL_ARG_DONE(thread, use_arg)) {
-    SET(thread->expr->flags, VM_EXPR_TAIL_CALL);
+    VM_SET_FLAG(thread->expr->flags, VM_EXPR_TAIL_CALL);
     VM_EVAL_ARG(thread, use_arg);
   } else {
     VM_PUSH(&argv[use_arg]);
@@ -184,7 +184,7 @@ VM_FUNCTION(define)
       return;
     }
 
-    if(IS_SET(thread->program->flags, VM_PROGRAM_FLAG_STRICT_ASSIGNMENT) &&
+    if(VM_IS_SET(thread->program->flags, VM_PROGRAM_FLAG_STRICT_ASSIGNMENT) &&
        thread->exprc > 1) {
       /*
        * Object definitions inside a BIND body are local to that body.
@@ -245,7 +245,7 @@ VM_FUNCTION(set)
     obj = vm_symbol_resolve(thread, &argv[0].value.symbol_ref);
     if(obj == NULL) {
       vm_signal_error(thread, VM_ERROR_SYMBOL_ID);
-    } else if(IS_CLEAR(thread->program->flags, VM_PROGRAM_FLAG_STRICT_ASSIGNMENT) ||
+    } else if(VM_IS_CLEAR(thread->program->flags, VM_PROGRAM_FLAG_STRICT_ASSIGNMENT) ||
               obj->type != VM_TYPE_NONE) {
       /* When strict assignment is configured, set! is only allowed if the
          symbol has been bound to an object location earlier. In that case,
@@ -286,7 +286,7 @@ VM_FUNCTION(and)
       /* We are about to evaluate the last argument. Allow tail call
          optimization because the evaluated argument will be the
          result of the AND expression. */
-      SET(thread->expr->flags, VM_EXPR_TAIL_CALL);
+      VM_SET_FLAG(thread->expr->flags, VM_EXPR_TAIL_CALL);
     }
     VM_EVAL_ARG(thread, last_eval_arg + 1);
   }
@@ -314,6 +314,11 @@ VM_FUNCTION(or)
     VM_EVAL_STOP(thread);
   } else {
     /* There are more arguments, and the previously evaluated one is false. */
+    if(last_eval_arg + 2 == argc) {
+      /* About to evaluate the last argument — its result is the result of
+         the OR expression, so propagate the tail-call flag. */
+      VM_SET_FLAG(thread->expr->flags, VM_EXPR_TAIL_CALL);
+    }
     VM_EVAL_ARG(thread, last_eval_arg + 1);
   }
 }
@@ -405,6 +410,7 @@ VM_FUNCTION(dynamic_wind)
 {
   int i;
 
+  /* Ensure all three arguments are evaluated */
   for(i = 0; i < 3; i++) {
     if(!VM_EVAL_ARG_DONE(thread, i)) {
       VM_EVAL_ARG(thread, i);
@@ -412,6 +418,11 @@ VM_FUNCTION(dynamic_wind)
     }
   }
 
+  /* Stub: we evaluate the three argument expressions (typically lambdas)
+     but never invoke the resulting procedures, and we push argv[1] — the
+     thunk procedure itself — as the result rather than the result of
+     calling it. TODO: invoke before/thunk/after in sequence, with
+     unwind-protect on after and re-entry hooks for continuations. */
   VM_PUSH(&argv[1]);
 }
 
@@ -486,6 +497,11 @@ VM_FUNCTION(booleanp)
 VM_FUNCTION(portp)
 {
   VM_PUSH_BOOLEAN(argv->type == VM_TYPE_PORT);
+}
+
+VM_FUNCTION(symbolp)
+{
+  VM_PUSH_BOOLEAN(argv->type == VM_TYPE_SYMBOL);
 }
 
 VM_FUNCTION(not)

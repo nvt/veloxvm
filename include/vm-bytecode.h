@@ -42,7 +42,7 @@
 #define VM_FILE_ID1 94
 #define VM_FILE_ID2 181
 
-#define VM_BYTECODE_VERSION 1
+#define VM_BYTECODE_VERSION 2
 
 #define VM_TOKEN_ATOM 0
 #define VM_TOKEN_FORM 1

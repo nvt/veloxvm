@@ -289,6 +289,22 @@ VM_FUNCTION(divide)
     return;
   }
 
+  /* R5RS: (/ n) with single argument returns reciprocal 1/n */
+  if(argc == 1) {
+    vm_integer_t temp;
+    if(quotient.numerator == 0) {
+      vm_signal_error(thread, VM_ERROR_DIV0);
+      return;
+    }
+    /* Compute reciprocal by swapping numerator and denominator */
+    temp = quotient.numerator;
+    quotient.numerator = quotient.denominator;
+    quotient.denominator = temp;
+    r_normalize(&quotient);
+    generate_result(thread, quotient);
+    return;
+  }
+
   while(argc-- > 1) {
     if(argv[argc].type == VM_TYPE_INTEGER) {
       i_to_r(argv[argc].value.integer, &r);
@@ -313,6 +329,12 @@ VM_FUNCTION(gcd)
   vm_integer_t result;
   int i;
 
+  /* R5RS: (gcd) with no arguments returns 0 */
+  if(argc == 0) {
+    VM_PUSH_INTEGER(0);
+    return;
+  }
+
   result = argv[0].value.integer;
   for(i = 1; i < argc; i++) {
     result = i_gcd(result, argv[i].value.integer);
@@ -324,6 +346,12 @@ VM_FUNCTION(lcm)
 {
   vm_integer_t result;
   int i;
+
+  /* R5RS: (lcm) with no arguments returns 1 */
+  if(argc == 0) {
+    VM_PUSH_INTEGER(1);
+    return;
+  }
 
   result = argv[0].value.integer;
   for(i = 1; i < argc && result != 0; i++) {
@@ -380,10 +408,23 @@ VM_FUNCTION(remainder)
 
 VM_FUNCTION(modulo)
 {
-  if(argv[1].value.integer == 0) {
+  vm_integer_t x, y, result;
+
+  x = argv[0].value.integer;
+  y = argv[1].value.integer;
+
+  if(y == 0) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
   } else {
-    VM_PUSH_INTEGER(argv[0].value.integer % argv[1].value.integer);
+    result = x % y;
+
+    /* R5RS: modulo result has same sign as divisor (y).
+       C's % has sign of dividend (x), so adjust if signs differ. */
+    if(result != 0 && ((result < 0) != (y < 0))) {
+      result += y;
+    }
+
+    VM_PUSH_INTEGER(result);
   }
 }
 

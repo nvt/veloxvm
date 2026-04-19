@@ -149,7 +149,7 @@ mark_object(vm_obj_t *obj)
     break;
   case VM_TYPE_STRING:
     if(!memory_is_marked(obj->value.string)) {
-      if(IS_SET(obj->value.string->flags, VM_STRING_FLAG_RESOLVED)) {
+      if(VM_IS_SET(obj->value.string->flags, VM_STRING_FLAG_RESOLVED)) {
         mark_memory(obj->value.string->str);
       }
       mark_memory(obj->value.string);

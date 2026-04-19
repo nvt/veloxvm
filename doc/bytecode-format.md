@@ -35,8 +35,8 @@ Each table is encoded as follows:
 ```
 Offset  Size  Description
 ------  ----  -----------
-0x00    1     Item count (N) - number of items in table (max 255)
-0x01    var   Table items (N entries)
+0x00    2     Item count (N) - number of items in table (max 65535, 16-bit)
+0x02    var   Table items (N entries)
 ```
 
 Each table item is encoded as:
@@ -44,13 +44,24 @@ Each table item is encoded as:
 ```
 Offset  Size  Description
 ------  ----  -----------
-0x00    1     Item length (L) - length of this item in bytes (max 255)
-0x01    L     Item data (raw bytes)
+0x00    2     Item length (L) - length of this item in bytes (max 65535, 16-bit)
+0x02    L     Item data (raw bytes)
 ```
 
 The loader performs two passes:
 1. First pass: calculate total table size by scanning all item lengths
 2. Second pass: allocate memory and read all item data
+
+**Platform-Specific Buffer Limits**: While the bytecode format supports 16-bit sizes (up to 65535 bytes per item), the actual maximum item size is platform-dependent and controlled by the `VM_TABLE_MAX_ITEM_SIZE` configuration parameter:
+
+- **Embedded systems** (Contiki, Contiki-NG): 255 bytes (default)
+  - Limited stack space requires small buffers
+  - Programs with items >255 bytes will fail to load
+- **POSIX systems**: 65535 bytes
+  - Ample memory allows full 16-bit range
+  - Can load large programs with complex expressions
+
+Compilers should be aware of target platform limits when generating bytecode.
 
 ## Bytecode Instruction Encoding
 
@@ -91,13 +102,12 @@ Object types (bits 2-0):
 For forms (function calls/expressions), the byte is encoded as:
 
 ```
-Bit 7:   1 (indicates FORM)
-Bits 6:  Reserved
-Bits 5-4: Form type (2 bits)
-Bits 3-0: Type-specific data
+Bit 7:    1 (indicates FORM)
+Bits 6-5: Form type (2 bits)
+Bits 4-0: Type-specific data
 ```
 
-Form types (bits 5-4):
+Form types (bits 6-5, extracted via `(byte >> 5) & 3`):
 - `0` - VM_FORM_INLINE - Inline function call
 - `1` - VM_FORM_LAMBDA - Lambda expression reference
 - `2` - VM_FORM_REF - Form reference
@@ -150,10 +160,16 @@ The denominator must not be zero (checked at load time).
 ```
 Byte 0, bits 6-3: unused
 Byte 0, bits 2-0: 4 (type = STRING)
-Byte 1:           string ID (index into string table)
+Byte 1, bit 7:    extended flag (0 = simple 7-bit ID, 1 = extended 15-bit ID)
+Byte 1, bits 6-0: string ID (bits 6-0 for simple form, bits 14-8 for extended form)
+[Byte 2]:         string ID (bits 7-0) - only if bit 7 of byte 1 is 1 (extended form)
 ```
 
-Strings are stored by reference to the string table. The string ID is an 8-bit index.
+Strings are stored by reference to the string table:
+- Simple form (ID < 128): 1 byte with bit 7=0, bits 6-0 = string ID
+- Extended form (ID >= 128): 2 bytes with bit 7=1, bits 6-0 = high 7 bits, byte 2 = low 8 bits
+- Supports up to 32767 strings (15-bit ID)
+
 String objects are marked as immutable (VM_STRING_FLAG_IMMUTABLE) and ID-based (VM_STRING_FLAG_ID).
 
 ### Character (VM_TYPE_CHARACTER)
@@ -172,43 +188,54 @@ Characters are single bytes.
 Byte 0, bits 6-3: unused
 Byte 0, bits 2-0: 5 (type = SYMBOL)
 Byte 1, bit 7:    scope (0 = core, 1 = app)
-Byte 1, bit 6:    extended flag (0 = 2-byte ID, 1 = 1-byte ID)
-Byte 1, bits 5-0: symbol ID (lower 6 bits)
-[Byte 2]:         symbol ID (lower 8 bits) - only if bit 6 of byte 1 is set
+Byte 1, bit 6:    extended flag (0 = simple 6-bit ID, 1 = extended 14-bit ID)
+Byte 1, bits 5-0: symbol ID (bits 5-0 for simple form, bits 13-8 for extended form)
+[Byte 2]:         symbol ID (bits 7-0) - only if bit 6 of byte 1 is 1 (extended form)
 ```
 
 Symbols reference entries in the symbol table:
 - **Scope**: VM_SYMBOL_SCOPE_CORE (0) for built-in symbols, VM_SYMBOL_SCOPE_APP (1) for application-defined symbols
-- **Symbol ID**: Can be 6 bits (0-63) or 14 bits (0-16383) for extended form
+- **Symbol ID encoding**:
+  - **Simple form** (bit 6 = 0): 6-bit ID (0-63) in bits 5-0 of byte 1 only
+  - **Extended form** (bit 6 = 1): 14-bit ID (0-16383) split across bits 5-0 of byte 1 (high bits) and all 8 bits of byte 2 (low bits)
 
 ### Form - Inline (VM_FORM_INLINE)
 
 ```
-Byte 0, bit 7:    1 (FORM token)
-Byte 0, bits 6:   unused
-Byte 0, bits 5-4: 0 (INLINE form type)
-Byte 0, bits 3-0: unused
-Byte 1, bits 7-6: unused
-Byte 1, bits 5-0: argument count (0-63)
+Single byte encoding:
+Bit 7:    1 (FORM token)
+Bits 6-5: 00 (INLINE form type)
+Bits 5-0: argument count (0-63, includes operator + arguments)
 ```
+
+**IMPORTANT**: The inline form instruction must appear FIRST in the bytecode sequence, followed by the operator and then the arguments. For example, the expression `(+ 10 20)` is encoded as:
+1. Inline form byte (0x83 for argc=3)
+2. Symbol for operator `+`
+3. Integer 10
+4. Integer 20
 
 Inline forms represent direct function calls with the argument count specified.
 The form ID is 0 for inline forms (the instruction is executed directly without a form table lookup).
+
+The argc is extracted as `(byte & 63)`, which is bits 5-0, allowing values 0-63.
 
 ### Form - Lambda/Reference (VM_FORM_LAMBDA or VM_FORM_REF)
 
 ```
 Byte 0, bit 7:    1 (FORM token)
-Byte 0, bit 6:    unused
-Byte 0, bits 5-4: 1 (LAMBDA) or 2 (REF)
+Byte 0, bits 6-5: 01 (LAMBDA) or 10 (REF)
+Byte 0, bit 4:    simple flag (1 = simple 4-bit ID, 0 = extended 12-bit ID)
 Byte 0, bits 3-0: expression ID (lower 4 bits)
-Byte 1, bit 4:    extended flag (0 = extended 12-bit ID, 1 = 4-bit ID)
-[Byte 2]:         expression ID (lower 8 bits) - only if bit 4 of byte 1 is 0
+[Byte 1]:         expression ID (upper 8 bits) - only if bit 4 of byte 0 is 0
 ```
 
 Expression IDs reference entries in the expression table:
-- **Short form**: 4-bit expression ID (0-15) when bit 4 of byte 1 is set
-- **Extended form**: 12-bit expression ID (0-4095) using byte 0 bits 3-0 as high nibble and byte 2 as low byte
+- **Simple form**: 4-bit expression ID (0-15) when bit 4 is 1
+  - Example: `0xD0` = form ref to expr 0 (binary: `11010000`)
+  - Example: `0xD1` = form ref to expr 1 (binary: `11010001`)
+- **Extended form**: 12-bit expression ID (0-4095) when bit 4 is 0
+  - Bits 3-0 of byte 0 contain lower 4 bits
+  - Byte 1 contains upper 8 bits
 
 ## Instruction Pointer Management
 
@@ -348,61 +375,61 @@ The Scheme compiler maps symbol names to these indices:
 A Scheme expression `(+ 1 2)` compiles to bytecode that might be stored in the expression table as:
 
 ```
+; IMPORTANT: Inline form comes FIRST
+; Inline form with 3 items (operator + 2 arguments)
+Byte 0: 0x83  (bit 7=1 [FORM], bits 6-5=00 [INLINE], bits 5-0=000011 [argc=3])
+
 ; Symbol for '+' (core scope, ID 0)
-Byte 0: 0x05  (bit 7=0 [ATOM], bits 2-0=101 [SYMBOL])
-Byte 1: 0x00  (bit 7=0 [core scope], bit 6=1 [6-bit ID], bits 5-0=000000 [ID 0])
+Byte 1: 0x05  (bit 7=0 [ATOM], bits 2-0=101 [SYMBOL])
+Byte 2: 0x00  (bit 7=0 [core scope], bit 6=0 [simple form], bits 5-0=000000 [ID 0])
 
 ; Integer 1
-Byte 2: 0x09  (bit 7=0 [ATOM], bits 2-0=001 [INTEGER])
-Byte 3: 0x01  (1 byte size, positive)
-Byte 4: 0x01  (value = 1)
+Byte 3: 0x09  (bit 7=0 [ATOM], bits 2-0=001 [INTEGER])
+Byte 4: 0x01  (1 byte size, positive)
+Byte 5: 0x01  (value = 1)
 
 ; Integer 2
-Byte 5: 0x09  (bit 7=0 [ATOM], bits 2-0=001 [INTEGER])
-Byte 6: 0x01  (1 byte size, positive)
-Byte 7: 0x02  (value = 2)
-
-; Inline form with 3 items (operator + 2 arguments)
-Byte 8: 0x80  (bit 7=1 [FORM], bits 5-4=00 [INLINE])
-Byte 9: 0x03  (argc = 3)
+Byte 6: 0x09  (bit 7=0 [ATOM], bits 2-0=001 [INTEGER])
+Byte 7: 0x01  (1 byte size, positive)
+Byte 8: 0x02  (value = 2)
 ```
 
 When this expression executes:
-1. VM reads the symbol for `+` → resolves to operators[0] (the add procedure)
-2. VM reads integer 1 → pushes on stack
-3. VM reads integer 2 → pushes on stack
-4. VM encounters inline form with argc=3
-5. VM pops 3 values (symbol + 2 args), evaluates symbol to procedure
-6. VM calls the add procedure with 2 integer arguments
-7. Result (3) is pushed back on stack
+1. VM reads the inline form → knows to expect 3 items (argc=3)
+2. VM reads the symbol for `+` → resolves to operators[0] (the add procedure)
+3. VM reads integer 1 → evaluates to 1
+4. VM reads integer 2 → evaluates to 2
+5. VM calls the add procedure with 2 integer arguments
+6. Result (3) is pushed back on stack
 
 ### Example: Encoding `(cons 'a '())`
 
 A call to `cons` with quoted arguments:
 
 ```
-; Assume 'cons' has symbol ID 17 in operators table
+; Assume 'cons' has symbol ID 41 in operators table
 
-; Symbol for 'cons' (core scope, ID 17)
-Byte 0: 0x05  (SYMBOL type)
-Byte 1: 0x11  (core scope, 6-bit ID=17)
+; IMPORTANT: Inline form comes FIRST
+; Inline form with 3 items (operator + 2 arguments)
+Byte 0: 0x83  (bit 7=1 [FORM], bits 6-5=00 [INLINE], bits 5-0=000011 [argc=3])
+
+; Symbol for 'cons' (core scope, ID 41)
+Byte 1: 0x05  (SYMBOL type)
+Byte 2: 0x29  (bit 7=0 [core scope], bit 6=0 [simple form], bits 5-0=101001 [ID=41])
 
 ; Quote form wrapping symbol 'a' (application scope)
 ; ... quoted symbol encoding ...
 
 ; Quote form wrapping empty list
 ; ... quoted empty list encoding ...
-
-; Inline form with 3 items
-Byte N: 0x80  (FORM INLINE)
-Byte N+1: 0x03  (argc = 3)
 ```
 
 The VM evaluates this by:
-1. Resolving `cons` symbol → operators[17]
-2. Evaluating quoted arguments (returns them unevaluated)
-3. Calling the cons operator with 2 arguments
-4. Returning the new pair
+1. Reading inline form → knows to expect 3 items (argc=3)
+2. Resolving `cons` symbol → operators[41]
+3. Evaluating quoted arguments (returns them unevaluated)
+4. Calling the cons operator with 2 arguments
+5. Returning the new pair
 
 ### Special Forms vs Regular Procedures
 
@@ -451,8 +478,13 @@ Byte 1: 0x05  (string table index)
 ### Example 5: Inline Form with 3 Arguments
 
 ```
-Byte 0: 0x80  (bit 7=1 [FORM], bits 5-4=00 [INLINE])
-Byte 1: 0x03  (bits 5-0=000011 [argc=3])
+Byte 0: 0x83  (bit 7=1 [FORM], bits 6-5=00 [INLINE], bits 5-0=000011 [argc=3])
+```
+
+### Example 6: Form Reference to Expression 0
+
+```
+Byte 0: 0xD0  (bit 7=1 [FORM], bits 6-5=10 [REF], bit 4=1 [simple], bits 3-0=0000 [expr ID 0])
 ```
 
 ## Design Rationale

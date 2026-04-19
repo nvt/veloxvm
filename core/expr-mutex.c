@@ -197,8 +197,8 @@ VM_FUNCTION(mutex_state)
 
   EXTRACT_MUTEX(thread, argv[0], mutex);
 
-  if(IS_SET(mutex->state, MUTEX_LOCKED)) {
-    if(IS_SET(mutex->state, MUTEX_HAS_OWNER)) {
+  if(VM_IS_SET(mutex->state, MUTEX_LOCKED)) {
+    if(VM_IS_SET(mutex->state, MUTEX_HAS_OWNER)) {
       /* The mutex is locked; return the owner thread. */
       owner = vm_thread_get(mutex->owner_id);
       if(owner == NULL) {
@@ -217,7 +217,7 @@ VM_FUNCTION(mutex_state)
    * the ABANDONED or NOT-ABANDONED symbol depending on whether the
    * owner thread has been terminated.
    */
-  if(IS_SET(mutex->state, MUTEX_ABANDONED)) {
+  if(VM_IS_SET(mutex->state, MUTEX_ABANDONED)) {
     /* TO DO: Fix symbol injection. */
     (void)0;
   } else {
@@ -233,11 +233,11 @@ VM_FUNCTION(mutex_lock)
 
   EXTRACT_MUTEX(thread, argv[0], mutex);
 
-  if(IS_CLEAR(mutex->state, MUTEX_LOCKED)) {
-    SET(mutex->state, MUTEX_LOCKED);
+  if(VM_IS_CLEAR(mutex->state, MUTEX_LOCKED)) {
+    VM_SET_FLAG(mutex->state, MUTEX_LOCKED);
     mutex->owner_id = thread->id;
 
-    if(IS_SET(mutex->state, MUTEX_ABANDONED)) {
+    if(VM_IS_SET(mutex->state, MUTEX_ABANDONED)) {
       /* The mutex has been abandoned, so an "abandoned mutex exception"
          must be raised in the locking thread after locking the mutex. */
 
@@ -310,5 +310,5 @@ VM_FUNCTION(mutex_unlock)
 
   /* There was no thread that could lock the mutex, so we place it in
      the unlocked state. */
-  CLEAR(mutex->state, MUTEX_LOCKED);
+  VM_CLEAR_FLAG(mutex->state, MUTEX_LOCKED);
 }

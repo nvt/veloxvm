@@ -347,7 +347,7 @@ vm_native_close_port(vm_port_t *port)
     port->io->close(port);
   }
 
-  if(IS_SET(port->flags, VM_PORT_FLAG_SOCKET)) {
+  if(VM_IS_SET(port->flags, VM_PORT_FLAG_SOCKET)) {
     free_socket(port->opaque_desc);
   }
 
@@ -477,16 +477,16 @@ vm_native_resolve(vm_thread_t *thread, const char *hostname)
 #define DNS_PORT 53
 
   if(!vm_policy_check_resources(thread, VM_POLICY_RESOURCE_DNS)) {
-    CLEAR(thread->expr->flags, VM_EXPR_RESTART);
+    VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
     return -1;
   }
 
   vm_policy_check_bandwidth(thread);
 
-  if(IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SLOW_DOWN)) {
+  if(VM_IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SLOW_DOWN)) {
     attribute_bandwidth(thread, 0);
     vm_native_sleep(thread, VM_POLL_TIME);
-    SET(thread->expr->flags, VM_EXPR_RESTART);
+    VM_SET_FLAG(thread->expr->flags, VM_EXPR_RESTART);
     return 0;
   }
 
@@ -498,7 +498,7 @@ vm_native_resolve(vm_thread_t *thread, const char *hostname)
     vm_vector_create(&thread->result, sizeof(uip_ipaddr_t),
                      VM_VECTOR_FLAG_REGULAR);
     ip_to_vector(ip_addr, thread->result.value.vector);
-    CLEAR(thread->expr->flags, VM_EXPR_RESTART);
+    VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
     return 1;
   case RESOLV_STATUS_UNCACHED:
   case RESOLV_STATUS_EXPIRED:
@@ -514,11 +514,11 @@ vm_native_resolve(vm_thread_t *thread, const char *hostname)
     resolv_query(hostname);
   case RESOLV_STATUS_RESOLVING:
     vm_native_sleep(thread, VM_POLL_TIME);
-    SET(thread->expr->flags, VM_EXPR_RESTART);
+    VM_SET_FLAG(thread->expr->flags, VM_EXPR_RESTART);
     return 0;
   default:
     /* An error occurred if we reach this point. */
-    CLEAR(thread->expr->flags, VM_EXPR_RESTART);
+    VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
     return -1;
   }
 }
@@ -658,7 +658,7 @@ vm_native_write_buffer(vm_port_t *port, const char *buf, size_t len)
     if(ret < 0) {
       vm_signal_error(port->thread, VM_ERROR_IO);
       vm_set_error_string(port->thread, "port write failed");
-    } else if(port != NULL && IS_SET(port->flags, VM_PORT_FLAG_SOCKET)) {
+    } else if(port != NULL && VM_IS_SET(port->flags, VM_PORT_FLAG_SOCKET)) {
       sock = port->opaque_desc;
       attribute_bandwidth(port->thread, len);
       vm_policy_check_bandwidth(port->thread);

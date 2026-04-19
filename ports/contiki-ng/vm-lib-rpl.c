@@ -71,7 +71,7 @@ vm_lib_t vm_lib_rpl = {
   .load = load,
   .unload = unload,
   .operators = rpl_operators,
-  .operator_count = ARRAY_SIZE(rpl_operators),
+  .operator_count = VM_ARRAY_SIZE(rpl_operators),
   .symbols = (const char *[]){"rpl-is-root?", "rpl-create-dag",
                               "rpl-in-dag?"},
   .symbol_count = 3
@@ -114,7 +114,7 @@ get_libval(vm_program_t *program, vm_symbol_ref_t *symref)
     return 0;
   }
 
-  for(i = 0; i < ARRAY_SIZE(sym_to_libval_map); i++) {
+  for(i = 0; i < VM_ARRAY_SIZE(sym_to_libval_map); i++) {
     if(vm_strcasecmp(name, sym_to_libval_map[i].sym_name) == 0) {
       return sym_to_libval_map[i].libval;
     }

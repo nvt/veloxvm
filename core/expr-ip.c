@@ -53,7 +53,7 @@ find_protocol(const char *protocol)
     return NULL;
   }
 
-  for(i = 0; i < ARRAY_SIZE(protocols); i++) {
+  for(i = 0; i < VM_ARRAY_SIZE(protocols); i++) {
     if(strcmp(protocol, protocols[i].name) == 0) {
       return &protocols[i];
     }
@@ -157,7 +157,7 @@ VM_FUNCTION(peer_name)
 
   port = argv[0].value.port;
 
-  if(IS_SET(port->flags, VM_PORT_FLAG_SOCKET)) {
+  if(VM_IS_SET(port->flags, VM_PORT_FLAG_SOCKET)) {
     vm_native_get_peer_name(thread, port, &thread->result);
   } else {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);

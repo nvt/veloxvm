@@ -133,9 +133,9 @@ print_bytecode(uint8_t *bytes, unsigned length)
 static int
 read_table(vm_table_t *table, int handle)
 {
-  char buf[255]; /* The buffer size is limited by the 8-bit length specifier. */
-  uint8_t item_count;
-  uint8_t item_length;
+  char buf[VM_TABLE_MAX_ITEM_SIZE]; /* The buffer size is configurable per platform. */
+  uint16_t item_count;
+  uint16_t item_length;
   int i;
   uint32_t table_size;
   vm_loader_offset_t saved_offset;
@@ -156,6 +156,13 @@ read_table(vm_table_t *table, int handle)
   for(i = 0; i < item_count; i++) {
     item_length = 0;
     READ_CHECK(handle, &item_length, sizeof(item_length));
+
+    if(item_length > VM_TABLE_MAX_ITEM_SIZE) {
+      VM_DEBUG(VM_DEBUG_LOW, "Item size (%u) exceeds maximum (%u)",
+               item_length, VM_TABLE_MAX_ITEM_SIZE);
+      return 0;
+    }
+
     if(VM_LOADER_SEEK_RELATIVE(handle, item_length) == (vm_loader_offset_t)-1) {
       VM_DEBUG(VM_DEBUG_LOW, "loader:seek failed");
       return 0;
@@ -167,7 +174,7 @@ read_table(vm_table_t *table, int handle)
       return 0;
     }
 
-    table_size += (uint32_t)item_length + 1;
+    table_size += (uint32_t)item_length + 2;
   }
   VM_DEBUG(VM_DEBUG_MEDIUM, "Allocating a table of %u bytes", table_size);
 

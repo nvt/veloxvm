@@ -83,7 +83,7 @@ VM_FUNCTION(vectorp)
 VM_FUNCTION(bufferp)
 {
   VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_VECTOR &&
-                  IS_SET(argv[0].value.vector->flags, VM_VECTOR_FLAG_BUFFER));
+                  VM_IS_SET(argv[0].value.vector->flags, VM_VECTOR_FLAG_BUFFER));
 }
 
 VM_FUNCTION(vector_merge)
@@ -109,7 +109,7 @@ VM_FUNCTION(vector_merge)
 
   for(i = 0, j = 0; i < argc; i++) {
     if(argv[i].type == VM_TYPE_VECTOR) {
-      if(IS_SET(argv[i].value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
+      if(VM_IS_SET(argv[i].value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
         for(k = 0; k < argv[i].value.vector->length; k++) {
           vector->elements[j + k].type = VM_TYPE_INTEGER;
           vector->elements[j + k].value.integer = argv[i].value.vector->bytes[k];
@@ -147,7 +147,7 @@ VM_FUNCTION(vector_ref)
     vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
     vm_set_error_object(thread, &argv[1]);
   } else {
-    if(IS_SET(vector->flags, VM_VECTOR_FLAG_BUFFER)) {
+    if(VM_IS_SET(vector->flags, VM_VECTOR_FLAG_BUFFER)) {
       VM_PUSH_CHARACTER(vector->bytes[k]);
     } else {
       VM_PUSH(&vector->elements[k]);
@@ -192,7 +192,7 @@ VM_FUNCTION(vector_to_list)
     return;
   }
 
-  if(IS_SET(vector->flags, VM_VECTOR_FLAG_BUFFER)) {
+  if(VM_IS_SET(vector->flags, VM_VECTOR_FLAG_BUFFER)) {
     ch.type = VM_TYPE_CHARACTER;
     for(i = 0; i < vector->length; i++) {
       ch.value.character = vector->bytes[i];
@@ -288,7 +288,7 @@ VM_FUNCTION(buffer_append)
   }
 
   dst_vector = argv[0].value.vector;
-  if(IS_CLEAR(dst_vector->flags, VM_VECTOR_FLAG_BUFFER)) {
+  if(VM_IS_CLEAR(dst_vector->flags, VM_VECTOR_FLAG_BUFFER)) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
@@ -313,7 +313,7 @@ VM_FUNCTION(buffer_append)
     break;
   case VM_TYPE_VECTOR:
     vector = argv[2].value.vector;
-    if(IS_CLEAR(vector->flags, VM_VECTOR_FLAG_BUFFER)) {
+    if(VM_IS_CLEAR(vector->flags, VM_VECTOR_FLAG_BUFFER)) {
       vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
       return;
     }

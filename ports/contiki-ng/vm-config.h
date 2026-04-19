@@ -78,6 +78,13 @@
 #define VM_INSTRUCTION_PROFILING 0
 #endif
 
+/* Maximum size of a single table item when loading bytecode.
+   This limits the stack buffer size in vm-loader.c.
+   Embedded systems have limited stack space - keep this small. */
+#ifndef VM_TABLE_MAX_ITEM_SIZE
+#define VM_TABLE_MAX_ITEM_SIZE 255
+#endif
+
 /* Maximum number of I/O ports that can be in use simultaneously. */
 #ifndef VM_PORT_AMOUNT
 #define VM_PORT_AMOUNT 20

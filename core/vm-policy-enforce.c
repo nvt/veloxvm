@@ -73,8 +73,8 @@ static void
 reaction_slowdown(vm_thread_t *thread, vm_policy_type_t type,
                   vm_policy_rule_t *rule)
 {
-  if(IS_CLEAR(thread->program->flags, VM_PROGRAM_FLAG_SLOW_DOWN)) {
-    SET(thread->program->flags, VM_PROGRAM_FLAG_SLOW_DOWN);
+  if(VM_IS_CLEAR(thread->program->flags, VM_PROGRAM_FLAG_SLOW_DOWN)) {
+    VM_SET_FLAG(thread->program->flags, VM_PROGRAM_FLAG_SLOW_DOWN);
     VM_DEBUG(VM_DEBUG_MEDIUM, "Forcing the app to slow down");
   }
 }
@@ -122,7 +122,7 @@ vm_policy_check_bandwidth(vm_thread_t *thread)
   uint32_t bps;
 #endif
 
-  if(IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SYSTRACE)) {
+  if(VM_IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SYSTRACE)) {
     VM_PRINTF("SYSTRACE %s %s\n", thread->program->name, "BANDWIDTH");
     return VM_TRUE;
   }
@@ -143,7 +143,7 @@ vm_policy_check_bandwidth(vm_thread_t *thread)
     }
   }
 
-  CLEAR(thread->program->flags, VM_PROGRAM_FLAG_SLOW_DOWN);
+  VM_CLEAR_FLAG(thread->program->flags, VM_PROGRAM_FLAG_SLOW_DOWN);
 
   return VM_TRUE;
 #endif /* VM_SUPERUSER_MODE */
@@ -164,7 +164,7 @@ vm_policy_check_cpu(vm_program_t *program, unsigned cpu_usage)
   if(cpu_usage > program->perf_attr.max_cpu_usage) {
     program->perf_attr.max_cpu_usage = cpu_usage;
 
-    if(IS_SET(program->flags, VM_PROGRAM_FLAG_SYSTRACE)) {
+    if(VM_IS_SET(program->flags, VM_PROGRAM_FLAG_SYSTRACE)) {
       VM_PRINTF("SYSTRACE %s %s %u\n", program->name, "CPU",
 		(unsigned)program->perf_attr.max_cpu_usage);
       return VM_TRUE;
@@ -234,7 +234,7 @@ vm_policy_check_file(vm_thread_t *thread, const char *path, unsigned mode)
   vm_policy_rule_t *rule;
 #endif
 
-  if(IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SYSTRACE)) {
+  if(VM_IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SYSTRACE)) {
     VM_PRINTF("SYSTRACE %s %s %s %c\n", thread->program->name, "FS",
 	      path, mode == VM_PORT_FLAG_INPUT ? 'r' : 'w');
     return VM_TRUE;
@@ -273,7 +273,7 @@ vm_policy_check_net(vm_thread_t *thread,
   uint8_t address[16];
 #endif
 
-  if(IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SYSTRACE)) {
+  if(VM_IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SYSTRACE)) {
     VM_PRINTF("SYSTRACE %s %s %u\n", thread->program->name, "NET", port);
     return VM_TRUE;
   }
@@ -324,7 +324,7 @@ vm_policy_check_power(vm_thread_t *thread)
 
   power = vm_native_calculate_power(thread->program);
 
-  if(IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SYSTRACE)) {
+  if(VM_IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SYSTRACE)) {
     VM_PRINTF("SYSTRACE %s %s\n", thread->program->name, "POWER %u", power);
     return VM_TRUE;
   }
@@ -352,7 +352,7 @@ vm_policy_check_power(vm_thread_t *thread)
     allocated_power = (90 * allocated_power) / 100;
   }
 
-  slowdown_enabled = IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SLOW_DOWN);
+  slowdown_enabled = VM_IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SLOW_DOWN);
   power_overuse = thread->program->perf_attr.power_overuse;
 
   if(power_overuse >= allocated_power) {
@@ -364,7 +364,7 @@ vm_policy_check_power(vm_thread_t *thread)
   if(power <= power_limit) {
     thread->program->perf_attr.power_overuse = 0;
     if(slowdown_enabled) {
-      CLEAR(thread->program->flags, VM_PROGRAM_FLAG_SLOW_DOWN);
+      VM_CLEAR_FLAG(thread->program->flags, VM_PROGRAM_FLAG_SLOW_DOWN);
       VM_DEBUG(VM_DEBUG_MEDIUM,
                "No longer exceeding the power budget (%lu <= %lu)",
                (unsigned long)power, (unsigned long)power_limit);
@@ -402,7 +402,7 @@ vm_policy_check_resources(vm_thread_t *thread, unsigned flags)
   vm_policy_rule_t *rule;
 #endif
 
-  if(IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SYSTRACE)) {
+  if(VM_IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SYSTRACE)) {
     VM_PRINTF("SYSTRACE %s %s ", thread->program->name, "RESOURCES");
     if(flags & VM_POLICY_RESOURCE_SUPERUSER) {
       VM_PRINTF("SUPERUSER\n");
@@ -452,7 +452,7 @@ vm_policy_check_threads(vm_thread_t *thread)
   vm_policy_rule_t *rule;
 #endif
 
-  if(IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SYSTRACE)) {
+  if(VM_IS_SET(thread->program->flags, VM_PROGRAM_FLAG_SYSTRACE)) {
     VM_PRINTF("SYSTRACE %s %s %u\n", thread->program->name, "THREADS",
 	      (unsigned)thread->program->nthreads);
     return VM_TRUE;

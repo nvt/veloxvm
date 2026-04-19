@@ -209,7 +209,7 @@ vm_policy_init_program(vm_program_t *program)
 #endif
 
 #if VM_SYSTRACE
-  SET(program->flags, VM_PROGRAM_FLAG_SYSTRACE);
+  VM_SET_FLAG(program->flags, VM_PROGRAM_FLAG_SYSTRACE);
 #endif
 }
 

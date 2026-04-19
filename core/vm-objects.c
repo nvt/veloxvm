@@ -88,9 +88,9 @@ vm_string_create(vm_obj_t *obj, vm_integer_t length, const char *str)
 char *
 vm_string_resolve(vm_thread_t *thread, vm_string_t *string)
 {
-  if(IS_SET(string->flags, VM_STRING_FLAG_ID) &&
-     IS_CLEAR(string->flags, VM_STRING_FLAG_RESOLVED)) {
-    SET(string->flags, VM_STRING_FLAG_RESOLVED | VM_STRING_FLAG_IMMUTABLE);
+  if(VM_IS_SET(string->flags, VM_STRING_FLAG_ID) &&
+     VM_IS_CLEAR(string->flags, VM_STRING_FLAG_RESOLVED)) {
+    VM_SET_FLAG(string->flags, VM_STRING_FLAG_RESOLVED | VM_STRING_FLAG_IMMUTABLE);
 
     if(thread == NULL) {
       thread = vm_current_thread();
@@ -113,7 +113,7 @@ vm_vector_create(vm_obj_t *obj, vm_integer_t length, vm_vector_flags_t flags)
 {
   vm_vector_t *vector;
 
-  if(length <= 0) {
+  if(length < 0) {
     return 0;
   }
 
@@ -126,7 +126,11 @@ vm_vector_create(vm_obj_t *obj, vm_integer_t length, vm_vector_flags_t flags)
   vector->flags = flags;
   vector->length = length;
 
-  if(IS_SET(vector->flags, VM_VECTOR_FLAG_BUFFER)) {
+  if(length == 0) {
+    /* Zero-length vector: no elements/bytes to allocate */
+    vector->elements = NULL;
+    vector->bytes = NULL;
+  } else if(VM_IS_SET(vector->flags, VM_VECTOR_FLAG_BUFFER)) {
     vector->bytes = vm_alloc(sizeof(uint8_t) * vector->length);
     if(vector->bytes == NULL) {
       return NULL;
@@ -151,7 +155,7 @@ vm_vector_set(vm_obj_t *vector, vm_integer_t index, vm_obj_t *obj)
     return -1;
   }
 
-  if(IS_SET(vector->value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
+  if(VM_IS_SET(vector->value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
     switch(obj->type) {
     case VM_TYPE_INTEGER:
       vector->value.vector->bytes[index] = obj->value.integer & 0xff;

@@ -67,7 +67,7 @@ vm_lib_t vm_lib_radio = {
   .load = load,
   .unload = unload,
   .operators = radio_operators,
-  .operator_count = ARRAY_SIZE(radio_operators),
+  .operator_count = VM_ARRAY_SIZE(radio_operators),
   .symbols = (const char *[]){"get-cca-threshold", "set-cca-threshold",
                               "get-channel", "set-channel",
                               "get-rssi", "get-txpower", "set-txpower"},

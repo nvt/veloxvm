@@ -35,9 +35,32 @@
 VM_FUNCTION(equal)
 {
   vm_integer_t i;
+  vm_rational_t r1, r2;
 
   for(i = 1; i < argc; i++) {
-    if(argv[i - 1].value.integer != argv[i].value.integer) {
+    /* Convert both arguments to rationals for comparison */
+    if(argv[i - 1].type == VM_TYPE_INTEGER) {
+      r1.numerator = argv[i - 1].value.integer;
+      r1.denominator = 1;
+    } else if(argv[i - 1].type == VM_TYPE_RATIONAL) {
+      r1 = *argv[i - 1].value.rational;
+    } else {
+      VM_PUSH_BOOLEAN(0);
+      return;
+    }
+
+    if(argv[i].type == VM_TYPE_INTEGER) {
+      r2.numerator = argv[i].value.integer;
+      r2.denominator = 1;
+    } else if(argv[i].type == VM_TYPE_RATIONAL) {
+      r2 = *argv[i].value.rational;
+    } else {
+      VM_PUSH_BOOLEAN(0);
+      return;
+    }
+
+    /* Compare using cross-multiplication to handle different denominators */
+    if(r1.numerator * r2.denominator != r2.numerator * r1.denominator) {
       VM_PUSH_BOOLEAN(0);
       return;
     }
@@ -49,9 +72,32 @@ VM_FUNCTION(equal)
 VM_FUNCTION(different)
 {
   vm_integer_t i;
+  vm_rational_t r1, r2;
 
   for(i = 1; i < argc; i++) {
-    if(argv[i - 1].value.integer == argv[i].value.integer) {
+    /* Convert both arguments to rationals for comparison */
+    if(argv[i - 1].type == VM_TYPE_INTEGER) {
+      r1.numerator = argv[i - 1].value.integer;
+      r1.denominator = 1;
+    } else if(argv[i - 1].type == VM_TYPE_RATIONAL) {
+      r1 = *argv[i - 1].value.rational;
+    } else {
+      VM_PUSH_BOOLEAN(0);
+      return;
+    }
+
+    if(argv[i].type == VM_TYPE_INTEGER) {
+      r2.numerator = argv[i].value.integer;
+      r2.denominator = 1;
+    } else if(argv[i].type == VM_TYPE_RATIONAL) {
+      r2 = *argv[i].value.rational;
+    } else {
+      VM_PUSH_BOOLEAN(0);
+      return;
+    }
+
+    /* Compare using cross-multiplication - return false if any pair is equal */
+    if(r1.numerator * r2.denominator == r2.numerator * r1.denominator) {
       VM_PUSH_BOOLEAN(0);
       return;
     }

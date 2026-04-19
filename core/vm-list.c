@@ -59,7 +59,7 @@ vm_list_destroy(vm_list_t *list)
 
   /* Do not free the items of derived lists (e.g, those
      constructed from a CDR call). */
-  if(IS_SET(list->flags, VM_LIST_FLAG_ORIGINAL)) {
+  if(VM_IS_SET(list->flags, VM_LIST_FLAG_ORIGINAL)) {
     current = list->head;
     while(current != NULL) {
       next = current->next;
@@ -168,13 +168,13 @@ vm_list_set_cdr(vm_list_t *list, vm_obj_t *obj)
       list->length = 1 + obj->value.list->length;
       list->tail = obj->value.list->tail;
     }
-    CLEAR(list->flags, VM_LIST_FLAG_PAIR);
+    VM_CLEAR_FLAG(list->flags, VM_LIST_FLAG_PAIR);
   } else {
     memcpy(&list->head->next->obj, obj, sizeof(vm_obj_t));
     list->tail = list->head->next;
     list->tail->next = NULL;
     list->length = 2;
-    SET(list->flags, VM_LIST_FLAG_PAIR);
+    VM_SET_FLAG(list->flags, VM_LIST_FLAG_PAIR);
   }
 
   return VM_TRUE;
