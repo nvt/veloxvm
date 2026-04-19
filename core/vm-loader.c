@@ -168,9 +168,10 @@ read_table(vm_table_t *table, int handle)
       return 0;
     }
 
-    if(table_size > VM_TABLE_MAX_BYTES) {
-      VM_DEBUG(VM_DEBUG_LOW, "Maximum table size exceeded (%lu > %lu)",
-               (unsigned long)table_size, (unsigned long)VM_TABLE_MAX_BYTES);
+    if((uint32_t)item_length + 2 > VM_TABLE_MAX_BYTES - table_size) {
+      VM_DEBUG(VM_DEBUG_LOW, "Maximum table size exceeded (%lu + %u > %lu)",
+               (unsigned long)table_size, (unsigned)item_length + 2,
+               (unsigned long)VM_TABLE_MAX_BYTES);
       return 0;
     }
 
