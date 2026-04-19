@@ -338,7 +338,7 @@ vm_load_program(const char *name)
 
 #if VM_INSTRUCTION_PROFILING
   program->exec_count = VM_MALLOC(sizeof(*program->exec_count) *
-                                  VM_TABLE_SIZE(program->exprv);
+                                  VM_TABLE_SIZE(program->exprv));
   if(program->exec_count == NULL) {
     VM_DEBUG(VM_DEBUG_MEDIUM, "Unable to allocate profiling data");
     return 0;
