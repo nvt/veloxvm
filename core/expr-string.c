@@ -332,6 +332,10 @@ VM_FUNCTION(string_append)
 
   for(i = result_length = 0; i < argc; i++) {
     string = argv[i].value.string;
+    if(string->length > VM_STRING_MAX_LENGTH - result_length) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+      return;
+    }
     result_length += string->length;
   }
 
