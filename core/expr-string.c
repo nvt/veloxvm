@@ -213,7 +213,6 @@ VM_FUNCTION(list_to_string)
 
   for(i = 0, item = list->head; item != NULL; i++, item = item->next) {
     if(item->obj.type != VM_TYPE_CHARACTER) {
-      vm_free(string->str);
       vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
       return;
     }
