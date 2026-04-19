@@ -60,7 +60,7 @@
   '(+ - * / gcd lcm numerator denominator quotient remainder modulo
     = /= < <= > >= zero?
 ;; Primitive functions.
-    bind return begin if define set! and or apply quote
+    bind bind_function return begin if define set! and or apply quote
     number? integer? rational? real? complex? exact? inexact? procedure?
     boolean? port? not eq? eqv? equal?
 ;; System functions.
@@ -70,6 +70,7 @@
     list cons push pop car cdr list-ref list-tail append remove reverse
     length null? list? pair? set-car! set-cdr! memq memv member
     assq assv assoc
+    list-enumerate list-zip list-index
 ;; Higher-order list functions.
     map filter for-each reduce count
 ;; Character functions.
@@ -78,7 +79,7 @@
 ;; String functions.
     make-string string string? string-length string-ref
     string-set! string->list list->string vector->string string-fill!
-    string-compare substring string-append string-copy string-split
+    string-compare substring string-append string-copy string-split string-join
     number->string string->number
 ;; Exception and condition functions.
     guard raise
@@ -103,13 +104,16 @@
     incoming-client? addr->string resolve-hostname
 ; Floating-point mathematics functions.
     floor ceiling round truncate exp log sin cos tan asin acos atan
-    sqrt expt exact-to-inexact inexact-to-exact
+    sqrt expt exact->inexact inexact->exact
 ;; Continuations functions.
     call-with-current-continuation values call-with-values dynamic-wind eval
 ;; Bit manipulation functions.
     bit-and bit-or bit-invert bit-not bit-xor bit-shift
 ;; Data packet functions.
-    construct-packet deconstruct-packet))
+    construct-packet deconstruct-packet
+;; Symbol functions.
+    symbol?
+    symbol->string))
 
 ;; The following values are stored in the first two bytes of a VM app
 ;; to be able to identify the app.
