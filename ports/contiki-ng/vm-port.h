@@ -37,7 +37,7 @@
 #include "lib/random.h"
 #include "net/ipv6/udp-socket.h"
 
-#include "heapmem.h"
+#include "lib/heapmem.h"
 #include "vm-file.h"
 
 #define VM_MALLOC vm_native_alloc
