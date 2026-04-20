@@ -30,9 +30,14 @@
  * Author: Nicolas Tsiftes <nvt@acm.org>,
  */
 
+#include "contiki.h"
+
 #include "vm.h"
 #include "lib/sensors.h"
+
+#if PLATFORM_HAS_SHT11
 #include "dev/sht11/sht11-sensor.h"
+#endif
 
 /*---------------------------------------------------------------------------*/
 static int
@@ -56,17 +61,16 @@ sensors_read(vm_port_t *port, vm_obj_t *obj)
     return 0;
   }
 
-#ifdef SHT11_SENSOR_TEMP
+#if PLATFORM_HAS_SHT11
   obj->value.integer = sensor->value(SHT11_SENSOR_TEMP);
   if(obj->value.integer != -1) {
     /* Switch object type only if we received a valid value. */
     obj->type = VM_TYPE_INTEGER;
   }
+  return 1;
 #else
   return 0;
 #endif
-
-  return 1;
 }
 /*---------------------------------------------------------------------------*/
 static int
