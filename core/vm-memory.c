@@ -83,6 +83,12 @@ static vm_mempool_t object_pool;
 static unsigned allocated_since_gc;
 static vm_memory_stats_t mem_stats;
 
+/*
+ * GC disable counter - when > 0, garbage collection is disabled.
+ * Uses a counter to support nested disable/enable calls.
+ */
+static int gc_disabled = 0;
+
 static void
 free_vm_memory(void *ptr)
 {
@@ -302,12 +308,31 @@ vm_free_all(void)
 }
 
 void
+vm_gc_disable(void)
+{
+  gc_disabled++;
+}
+
+void
+vm_gc_enable(void)
+{
+  if(gc_disabled > 0) {
+    gc_disabled--;
+  }
+}
+
+void
 vm_gc(void)
 {
   unsigned i;
   unsigned deallocated;
   vm_thread_t *thread;
   void *free_ptr;
+
+  /* Don't run GC if it has been disabled */
+  if(gc_disabled > 0) {
+    return;
+  }
 
   if(allocated_since_gc < VM_GC_MIN_ALLOCATED) {
     /* The loaded programs have not yet allocated enough memory for

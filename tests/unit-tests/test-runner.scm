@@ -74,15 +74,14 @@
                   *suite-stats*))
       #f)
 
-  ;; Calculate totals
-  (let ((total-passed 0)
-        (total-failed 0)
-        (total-skipped 0))
-    (for-each (lambda (suite-stat)
-                (set! total-passed (+ total-passed (cadr suite-stat)))
-                (set! total-failed (+ total-failed (caddr suite-stat)))
-                (set! total-skipped (+ total-skipped (cadddr suite-stat))))
-              *suite-stats*)
+  ;; Calculate totals using recursive helper (for-each is broken in VeloxVM)
+  (define (sum-stats stats passed failed skipped)
+    (if (null? stats)
+        (report-summary *suite-stats* passed failed skipped)
+        (let ((suite-stat (car stats)))
+          (sum-stats (cdr stats)
+                     (+ passed (cadr suite-stat))
+                     (+ failed (caddr suite-stat))
+                     (+ skipped (cadddr suite-stat))))))
 
-    ;; Report summary
-    (report-summary *suite-stats* total-passed total-failed total-skipped)))
+  (sum-stats *suite-stats* 0 0 0))

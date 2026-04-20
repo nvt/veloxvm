@@ -2,7 +2,7 @@
 
 ## Overview
 
-VeloxVM provides 193 core instructions (procedures/operators) that implement a Scheme-based runtime for IoT applications. Instructions are organized into functional categories and follow Scheme R5RS naming conventions with extensions for IoT-specific operations.
+VeloxVM provides 199 core instructions (procedures/operators) that implement a Scheme-based runtime for IoT applications. Instructions are organized into functional categories and follow Scheme R5RS naming conventions with extensions for IoT-specific operations.
 
 All instructions are implemented as procedures in the operators table defined in `core/vm-procedures.c`. Additional platform-specific instructions are available through loadable libraries on Contiki/Contiki-NG ports.
 
@@ -15,7 +15,7 @@ Each instruction is defined with the following properties:
 - **Argument Count**: Minimum and maximum number of arguments (-1 = variadic)
 - **Flags**: VM_PROCEDURE_EVAL_ARGS (arguments evaluated before call) or 0 (special form)
 
-## Core Instruction Set (193 Instructions)
+## Core Instruction Set (199 Instructions)
 
 ### Arithmetic Operations (11 instructions)
 
@@ -23,12 +23,12 @@ Basic mathematical operations on integers and rationals:
 
 | Instruction | Args | Description | Returns |
 |-------------|------|-------------|---------|
-| `+` (add) | 0-∞ | Add numbers. Zero args returns 0. | Integer or rational (normalized) |
-| `-` (subtract) | 1-∞ | Subtract numbers. One arg negates it. | Integer or rational (normalized) |
-| `*` (multiply) | 0-∞ | Multiply numbers. Zero args returns 1. | Integer or rational (normalized) |
-| `/` (divide) | 1-∞ | Divide numbers. | Integer or rational (normalized) |
-| `gcd` | 0-∞ | Greatest common divisor. | Integer |
-| `lcm` | 0-∞ | Least common multiple. | Integer |
+| `+` (add) | 0+ | Add numbers. Zero args returns 0. | Integer or rational (normalized) |
+| `-` (subtract) | 1+ | Subtract numbers. One arg negates it. | Integer or rational (normalized) |
+| `*` (multiply) | 0+ | Multiply numbers. Zero args returns 1. | Integer or rational (normalized) |
+| `/` (divide) | 1+ | Divide numbers. | Integer or rational (normalized) |
+| `gcd` | 0+ | Greatest common divisor. | Integer |
+| `lcm` | 0+ | Least common multiple. | Integer |
 | `numerator` | 1 | Get numerator of rational or integer. | Integer |
 | `denominator` | 1 | Get denominator of rational (1 for integers). | Integer |
 | `quotient` | 2 | Integer division quotient. | Integer |
@@ -72,12 +72,12 @@ Numeric and general comparisons:
 
 | Instruction | Args | Description | Returns |
 |-------------|------|-------------|---------|
-| `=` (equal) | 0-∞ | Numeric equality. | Boolean (#t or #f) |
-| `!=` (different) | 0-∞ | Numeric inequality. | Boolean (#t or #f) |
-| `<` (less_than) | 0-∞ | Less than comparison. | Boolean (#t or #f) |
-| `<=` (less_than_equal) | 0-∞ | Less than or equal. | Boolean (#t or #f) |
-| `>` (greater_than) | 0-∞ | Greater than comparison. | Boolean (#t or #f) |
-| `>=` (greater_than_equal) | 0-∞ | Greater than or equal. | Boolean (#t or #f) |
+| `=` (equal) | 0+ | Numeric equality. | Boolean (#t or #f) |
+| `!=` (different) | 0+ | Numeric inequality. | Boolean (#t or #f) |
+| `<` (less_than) | 0+ | Less than comparison. | Boolean (#t or #f) |
+| `<=` (less_than_equal) | 0+ | Less than or equal. | Boolean (#t or #f) |
+| `>` (greater_than) | 0+ | Greater than comparison. | Boolean (#t or #f) |
+| `>=` (greater_than_equal) | 0+ | Greater than or equal. | Boolean (#t or #f) |
 | `zero?` (zerop) | 1 | Test if number is zero. | Boolean (#t or #f) |
 
 **Note**: Comparisons accept rationals by comparing numerators if denominators are equal.
@@ -90,14 +90,14 @@ Core language constructs that control evaluation:
 
 | Instruction | Args | Eval Args | Description | Returns |
 |-------------|------|-----------|-------------|---------|
-| `bind` | ∞ | No | Bind variables in lambda. | Result of body expression |
+| `bind` | 0+ | No | Bind variables in lambda. | Result of body expression |
 | `return` | 0-1 | Yes | Return from procedure. | Exits function with value (or unspecified) |
-| `begin` | ∞ | No | Sequential evaluation. | Result of last expression |
+| `begin` | 0+ | No | Sequential evaluation. | Result of last expression |
 | `if` | 2-3 | No | Conditional expression. | Result of chosen branch |
 | `define` | 1-2 | No | Define variable or procedure. | Unspecified (side effect only) |
 | `set!` | 2 | No | Mutate variable binding. | Unspecified (side effect only) |
-| `and` | ∞ | No | Logical AND (short-circuit). | #f or value of last expression |
-| `or` | ∞ | No | Logical OR (short-circuit). | First true value or #f |
+| `and` | 0+ | No | Logical AND (short-circuit). | #f or value of last expression |
+| `or` | 0+ | No | Logical OR (short-circuit). | First true value or #f |
 | `apply` | 2 | No | Apply procedure to argument list. | Result of procedure call |
 | `quote` | 1 | No | Prevent evaluation. | Unevaluated argument |
 | `call/cc` | 0 | No | Call with current continuation. | Result of continuation call |
@@ -123,22 +123,22 @@ Test object types:
 | `inexact?` | 1 | Test if inexact number. | Boolean (#t or #f) |
 | `procedure?` | 1 | Test if procedure. | Boolean (#t or #f) |
 | `boolean?` | 1 | Test if boolean. | Boolean (#t or #f) |
-| `symbol?` | 1 | Test if symbol (R5RS §6.3.3). | Boolean (#t or #f) |
+| `symbol?` | 1 | Test if symbol (R5RS section 6.3.3). | Boolean (#t or #f) |
 | `port?` | 1 | Test if I/O port. | Boolean (#t or #f) |
 | `not` | 1 | Logical negation. | Boolean (#t or #f) |
-| `eq?` | ∞ | Test object identity. | Boolean (#t or #f) |
-| `eqv?` | ∞ | Test equivalence. | Boolean (#t or #f) |
-| `equal?` | ∞ | Test structural equality. | Boolean (#t or #f) |
+| `eq?` | 0+ | Test object identity. | Boolean (#t or #f) |
+| `eqv?` | 0+ | Test equivalence. | Boolean (#t or #f) |
+| `equal?` | 0+ | Test structural equality. | Boolean (#t or #f) |
 
 **Implementation**: `core/expr-primitives.c`
 
-### List Operations (24 instructions)
+### List Operations (28 instructions)
 
 Fundamental list manipulation:
 
 | Instruction | Args | Description | Returns |
 |-------------|------|-------------|---------|
-| `list` | ∞ | Create list from arguments. | List |
+| `list` | 0+ | Create list from arguments. | List |
 | `cons` | 2 | Construct pair (prepend to list). | Pair (list with car and cdr) |
 | `push` | 2 | Push element onto list. | New list with element prepended |
 | `pop` | 1 | Pop element from list. | First element of list |
@@ -146,10 +146,11 @@ Fundamental list manipulation:
 | `cdr` | 1 | Get rest of pair/list. | Rest of list or cdr value |
 | `list-ref` | 2 | Get element at index. | Element at index (any type) |
 | `list-tail` | 2 | Get sublist starting at index. | List starting at index |
-| `append` | 2-∞ | Concatenate lists. | New concatenated list |
+| `slice` | 3 | Extract slice from sequence (seq, start, end). Supports negative indices. | List, string, or vector (slice from start to end) |
+| `append` | 2+ | Concatenate lists. | New concatenated list |
 | `remove` | 2 | Remove element from list. | New list without element |
 | `reverse` | 1 | Reverse list. | Reversed list |
-| `length` | 1 | Get list length. | Integer (list length) |
+| `length` | 1 | Get sequence length (works with lists and strings). | Integer (length) |
 | `null?` | 1 | Test if empty list. | Boolean (#t or #f) |
 | `list?` | 1 | Test if proper list. | Boolean (#t or #f) |
 | `pair?` | 1 | Test if pair. | Boolean (#t or #f) |
@@ -161,6 +162,14 @@ Fundamental list manipulation:
 | `assq` | 2 | Association list lookup using eq?. | Matching pair or #f |
 | `assv` | 2 | Association list lookup using eqv?. | Matching pair or #f |
 | `assoc` | 2 | Association list lookup using equal?. | Matching pair or #f |
+| `list-enumerate` | 1 | Create (index, element) pairs from list. | List of pairs: ((0 . elem0) (1 . elem1) ...) |
+| `list-zip` | 2 | Pair elements from two lists. | List of pairs: ((elem1-0 . elem2-0) ...) |
+| `list-index` | 2 | Find first occurrence of element in list. | Integer (index) or -1 if not found |
+
+**Notes**:
+- The `slice` instruction is polymorphic and works with lists, strings, and vectors.
+- Python-style negative indices are supported: -1 means last element, -2 means second to last, etc.
+- Out-of-range indices are automatically clamped to valid bounds.
 
 **Implementation**: `core/expr-list.c`
 
@@ -170,11 +179,11 @@ Functional programming primitives:
 
 | Instruction | Args | Description | Returns |
 |-------------|------|-------------|---------|
-| `map` | 2-∞ | Apply procedure to each element. | List of results |
-| `filter` | 2-∞ | Filter list by predicate. | List of matching elements |
-| `for-each` | 2-∞ | Apply procedure for side effects. | Unspecified (side effect only) |
-| `reduce` | 2-∞ | Fold list from left. | Accumulated result value |
-| `count` | 2-∞ | Count elements matching predicate. | Integer (count) |
+| `map` | 2+ | Apply procedure to each element. | List of results |
+| `filter` | 2+ | Filter list by predicate. | List of matching elements |
+| `for-each` | 2+ | Apply procedure for side effects. | Unspecified (side effect only) |
+| `reduce` | 2+ | Fold list from left. | Accumulated result value |
+| `count` | 2+ | Count elements matching predicate. | Integer (count) |
 
 **Implementation**: `core/expr-list.c`
 
@@ -194,14 +203,14 @@ Character manipulation:
 
 **Implementation**: `core/expr-char.c`
 
-### String Operations (18 instructions)
+### String Operations (19 instructions)
 
 String creation and manipulation:
 
 | Instruction | Args | Description | Returns |
 |-------------|------|-------------|---------|
 | `make-string` | 1-2 | Create string of length, optionally filled. | String |
-| `string` | 0-∞ | Create string from characters. | String |
+| `string` | 0+ | Create string from characters. | String |
 | `string?` | 1 | Test if string. | Boolean (#t or #f) |
 | `string-length` | 1 | Get string length. | Integer (length) |
 | `string-ref` | 2 | Get character at index. | Character |
@@ -212,12 +221,13 @@ String creation and manipulation:
 | `string-fill!` | 1 | Fill string with character. | Unspecified (side effect only) |
 | `string-compare` | 2 | Compare strings. | Integer (-1, 0, or 1) |
 | `substring` | 3 | Extract substring. | String (substring) |
-| `string-append` | 1-∞ | Concatenate strings. | String (concatenated) |
+| `string-append` | 1+ | Concatenate strings. | String (concatenated) |
 | `string-copy` | 1 | Copy string. | String (new copy) |
 | `string-split` | 2 | Split string by delimiter. | List of strings |
+| `string-join` | 2 | Join list of strings with separator. | String (joined) |
 | `number->string` | 1-2 | Convert number to string. | String (representation) |
 | `string->number` | 1-2 | Parse number from string. | Integer, rational, or #f |
-| `symbol->string` | 1 | Convert symbol to string (R5RS §6.3.3). | String (symbol name) |
+| `symbol->string` | 1 | Convert symbol to string (R5RS section 6.3.3). | String (symbol name) |
 
 **Implementation**: `core/expr-string.c`
 
@@ -228,10 +238,10 @@ Array/buffer operations:
 | Instruction | Args | Description | Returns |
 |-------------|------|-------------|---------|
 | `make-vector` | 1-2 | Create vector of length, optionally filled. | Vector |
-| `vector` | 1-∞ | Create vector from arguments. | Vector |
+| `vector` | 1+ | Create vector from arguments. | Vector |
 | `vector?` | 1 | Test if vector. | Boolean (#t or #f) |
 | `buffer?` | 1 | Test if byte buffer. | Boolean (#t or #f) |
-| `vector-merge` | 2-∞ | Merge vectors. | Vector (merged) |
+| `vector-merge` | 2+ | Merge vectors. | Vector (merged) |
 | `vector-length` | 1 | Get vector length. | Integer (length) |
 | `vector-ref` | 2 | Get element at index. | Element at index (any type) |
 | `vector-set!` | 3 | Set element at index. | Unspecified (side effect only) |
@@ -295,7 +305,7 @@ VM and system information:
 | `load-program` | 1 | Load VM program from file. | Unspecified or error |
 | `import` | 1 | Import library. | Boolean (#t) or error |
 | `get-devices` | 0 | Get available devices. | Vector of device descriptors |
-| `print` | 1-∞ | Print objects to output. | Unspecified (side effect only) |
+| `print` | 1+ | Print objects to output. | Unspecified (side effect only) |
 | `random` | 0-1 | Generate random number. | Integer (random value) |
 | `time` | 0 | Get current time. | Vector [seconds, milliseconds] |
 | `get-programs` | 0 | Get loaded programs. | List of program objects |
@@ -391,11 +401,11 @@ Additional instructions available when importing platform libraries on Contiki-b
 
 | Instruction | Args | Description | Returns |
 |-------------|------|-------------|---------|
-| `leds-on` | 1-∞ | Turn on LEDs (symbols: LEDRed, LEDGreen, LEDBlue, LEDAll). | Unspecified (side effect only) |
-| `leds-off` | 1-∞ | Turn off LEDs. | Unspecified (side effect only) |
-| `leds-set` | 1-∞ | Set LED state. | Unspecified (side effect only) |
+| `leds-on` | 1+ | Turn on LEDs (symbols: LEDRed, LEDGreen, LEDBlue, LEDAll). | Unspecified (side effect only) |
+| `leds-off` | 1+ | Turn off LEDs. | Unspecified (side effect only) |
+| `leds-set` | 1+ | Set LED state. | Unspecified (side effect only) |
 | `leds-get` | 0 | Get current LED state. | Integer (LED bit mask) |
-| `leds-toggle` | 1-∞ | Toggle LEDs. | Unspecified (side effect only) |
+| `leds-toggle` | 1+ | Toggle LEDs. | Unspecified (side effect only) |
 
 **Implementation**: `ports/contiki-ng/vm-lib-leds.c`, `ports/contiki/vm-lib-leds.c`
 
@@ -446,7 +456,7 @@ Special forms like `if`, `and`, `or`, `quote`, `define`, and `set!` use normal o
 
 Instructions are accessed through symbol bindings:
 
-1. **Core symbols** (scope = VM_SYMBOL_SCOPE_CORE): Built-in procedures in the operators table (0-190)
+1. **Core symbols** (scope = VM_SYMBOL_SCOPE_CORE): Built-in procedures in the operators table (0-198)
 2. **App symbols** (scope = VM_SYMBOL_SCOPE_APP): User-defined lambdas and imported library procedures
 3. **Lambda procedures**: User-defined functions stored as VM_TYPE_FORM objects
 

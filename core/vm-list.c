@@ -76,10 +76,15 @@ vm_list_copy(vm_list_t *list)
 {
   vm_list_t *copy;
 
+  /* Disable GC during allocation to prevent premature collection */
+  vm_gc_disable();
+
   copy = vm_list_create();
   if(copy != NULL) {
     memcpy(copy, list, sizeof(vm_list_t));
   }
+
+  vm_gc_enable();
 
   return copy;
 }
@@ -119,12 +124,25 @@ vm_list_cdr(vm_list_t *list, int copy)
   }
 
   if(copy) {
+    /* Disable GC during allocation to prevent premature collection
+       of the new list structure before it's stored */
+    vm_gc_disable();
+
     cdr_list = vm_alloc(sizeof(vm_list_t));
     if(cdr_list != NULL) {
       cdr_list->head = list->head->next;
       cdr_list->length = list->length - 1;
       cdr_list->flags = list->flags & ~VM_LIST_FLAG_ORIGINAL;
+
+      /* Set tail: if resulting list is empty, tail is NULL; otherwise same as original */
+      if(cdr_list->length == 0 || cdr_list->head == NULL) {
+        cdr_list->tail = NULL;
+      } else {
+        cdr_list->tail = list->tail;
+      }
     }
+
+    vm_gc_enable();
   } else {
     if(list->length == 1) {
       list->head = NULL;

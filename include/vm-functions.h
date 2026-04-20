@@ -51,7 +51,8 @@ VM_DECLARE_FUNCTION(current_input_port);
 VM_DECLARE_FUNCTION(current_output_port);
 VM_DECLARE_FUNCTION(open_input_file);
 VM_DECLARE_FUNCTION(open_output_file);
-VM_DECLARE_FUNCTION(close_port);
+VM_DECLARE_FUNCTION(close_input_port);
+VM_DECLARE_FUNCTION(close_output_port);
 VM_DECLARE_FUNCTION(read_char);
 VM_DECLARE_FUNCTION(read);
 VM_DECLARE_FUNCTION(peek_char);
@@ -87,6 +88,7 @@ VM_DECLARE_FUNCTION(zerop);
 
 /* Primitive functions. */
 VM_DECLARE_FUNCTION(bind);
+VM_DECLARE_FUNCTION(bind_function);
 VM_DECLARE_FUNCTION(return);
 VM_DECLARE_FUNCTION(begin);
 VM_DECLARE_FUNCTION(if);
@@ -127,6 +129,7 @@ VM_DECLARE_FUNCTION(car);
 VM_DECLARE_FUNCTION(cdr);
 VM_DECLARE_FUNCTION(list_ref);
 VM_DECLARE_FUNCTION(list_tail);
+VM_DECLARE_FUNCTION(slice);
 VM_DECLARE_FUNCTION(append);
 VM_DECLARE_FUNCTION(remove);
 VM_DECLARE_FUNCTION(reverse);
@@ -142,6 +145,9 @@ VM_DECLARE_FUNCTION(member);
 VM_DECLARE_FUNCTION(assq);
 VM_DECLARE_FUNCTION(assv);
 VM_DECLARE_FUNCTION(assoc);
+VM_DECLARE_FUNCTION(list_enumerate);
+VM_DECLARE_FUNCTION(list_zip);
+VM_DECLARE_FUNCTION(list_index);
 
 /* Higher-order list functions. */
 VM_DECLARE_FUNCTION(map);
@@ -177,6 +183,7 @@ VM_DECLARE_FUNCTION(string_to_list);
 VM_DECLARE_FUNCTION(list_to_string);
 VM_DECLARE_FUNCTION(string_copy);
 VM_DECLARE_FUNCTION(string_split);
+VM_DECLARE_FUNCTION(string_join);
 VM_DECLARE_FUNCTION(number_to_string);
 VM_DECLARE_FUNCTION(string_to_number);
 VM_DECLARE_FUNCTION(symbol_to_string);

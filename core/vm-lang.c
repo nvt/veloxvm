@@ -199,42 +199,54 @@ vm_return_from_function(vm_thread_t *thread, vm_obj_t *obj)
 {
   int i;
   int j;
+  int old_exprc;
 
   for(i = thread->exprc - 1; i >= 0; i--) {
-    if(thread->exprv[i]->procedure != NULL &&
-       thread->exprv[i]->procedure->operator == op_bind) {
-      /* Prepare a jump to the expression that called the function, which
-         will be at one level above the BIND expression. */
-      thread->exprc = i;
-      thread->expr = thread->exprv[i - 1];
-      /* For lambda frames (eval_arg == 255), don't mark as completed or copy result.
-         The result will be handled by the scheduler. */
-      if(thread->expr->eval_arg != 255) {
-        VM_EVAL_SET_COMPLETED(thread, thread->expr->eval_arg);
+    if(thread->exprv[i]->procedure != NULL) {
+      /* Check if this is a bind_function frame (actual function boundary).
+       * Skip regular bind frames (control flow: while loops, let-expansion).
+       * This allows return to properly unwind through nested control structures
+       * and exit at the actual function that contains the return statement.
+       */
+      if(thread->exprv[i]->procedure->operator == op_bind_function) {
+        /* This is a function boundary - stop here and unwind */
+        old_exprc = thread->exprc;
 
-        VM_DEBUG(VM_DEBUG_HIGH, "Return to frame %d, arg %d\n",
-                 i - 1, thread->expr->eval_arg);
+        /* Prepare a jump to the expression that called the function, which
+           will be at one level above the BIND expression. */
+        thread->exprc = i;
+        thread->expr = thread->exprv[i - 1];
+        /* For lambda frames (eval_arg == 255), don't mark as completed or copy result.
+           The result will be handled by the scheduler. */
+        if(thread->expr->eval_arg != 255) {
+          VM_EVAL_SET_COMPLETED(thread, thread->expr->eval_arg);
 
-        if(obj != NULL) {
-          /* An argument was supplied to be passed as the result of the
-             function call from which we return. */
-          memcpy(&thread->expr->argv[thread->expr->eval_arg++],
-                 obj, sizeof(vm_obj_t));
+          VM_DEBUG(VM_DEBUG_HIGH, "Return to frame %d, arg %d\n",
+                   i - 1, thread->expr->eval_arg);
+
+          if(obj != NULL) {
+            /* An argument was supplied to be passed as the result of the
+               function call from which we return. */
+            memcpy(&thread->expr->argv[thread->expr->eval_arg++],
+                   obj, sizeof(vm_obj_t));
+          }
+        } else {
+          VM_DEBUG(VM_DEBUG_HIGH, "Return to lambda frame %d (eval_arg=255)\n", i - 1);
+          /* For lambda frames, result stays in thread->result */
+          if(obj != NULL) {
+            memcpy(&thread->result, obj, sizeof(vm_obj_t));
+          }
         }
-      } else {
-        VM_DEBUG(VM_DEBUG_HIGH, "Return to lambda frame %d (eval_arg=255)\n", i - 1);
-        /* For lambda frames, result stays in thread->result */
-        if(obj != NULL) {
-          memcpy(&thread->result, obj, sizeof(vm_obj_t));
+
+        /* Deallocate the stack from the old top down to and including the bind frame.
+           This properly cleans up all frames that were unwound by the return. */
+        for(j = old_exprc - 1; j >= i; j--) {
+          vm_thread_stack_free(thread->exprv[j]);
         }
-      }
 
-      /* Deallocate the stack above that of the bind expression. */
-      for(j = thread->exprc - 1; j > i; j--) {
-        vm_thread_stack_free(thread->exprv[j]);
+        return;
       }
-
-      return;
+      /* else: this was a regular bind frame (control flow), keep searching */
     }
   }
 

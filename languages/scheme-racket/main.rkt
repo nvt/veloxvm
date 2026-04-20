@@ -49,7 +49,7 @@
 
     ;; CL-Style: Accumulate bytes from each top-level expression into expression 0
     ;; Don't wrap in begin - compile each expression and concatenate their bytes
-    ;; IMPORTANT: Compile directly into bc (not temp-bc) so nested expressions get correct IDs!
+    ;; Compile directly into bc (not temp-bc) so nested expressions get correct IDs!
     (let* ([accumulated-bytes
             (apply append
               (for/list ([expr optimized])

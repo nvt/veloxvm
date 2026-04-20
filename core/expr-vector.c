@@ -186,8 +186,12 @@ VM_FUNCTION(vector_to_list)
 
   vector = argv[0].value.vector;
 
+  /* Disable GC during list construction */
+  vm_gc_disable();
+
   list = vm_list_create();
   if(list == NULL) {
+    vm_gc_enable();
     vm_signal_error(thread, VM_ERROR_HEAP);
     return;
   }
@@ -197,6 +201,7 @@ VM_FUNCTION(vector_to_list)
     for(i = 0; i < vector->length; i++) {
       ch.value.character = vector->bytes[i];
       if(!vm_list_insert_tail(list, &ch)) {
+        vm_gc_enable();
         vm_signal_error(thread, VM_ERROR_HEAP);
         return;
       }
@@ -204,12 +209,14 @@ VM_FUNCTION(vector_to_list)
   } else {
     for(i = 0; i < vector->length; i++) {
       if(!vm_list_insert_tail(list, vector->elements + i)) {
+        vm_gc_enable();
         vm_signal_error(thread, VM_ERROR_HEAP);
         return;
       }
     }
   }
 
+  vm_gc_enable();
   VM_PUSH_LIST(list);
 }
 
