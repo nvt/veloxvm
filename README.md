@@ -37,7 +37,6 @@ devices---either in RAM or in ROM.
 
 * POSIX systems such as Linux, *BSD, macOS, and Windows with Cygwin
   (ports/posix)
-* [Contiki OS](http://www.contiki-os.org/) (ports/contiki)
 * [Contiki-NG](https://www.contiki-ng.org/) (ports/contiki-ng)
 
 ## Docker setup
@@ -116,19 +115,17 @@ run "sbcl --load sbcl-compile.lisp".
 
    E.g., <code>bin/vm apps/math.vm</code>
 
-## Trying out VeloxVM in Contiki OS and Contiki-NG
+## Trying out VeloxVM in Contiki-NG
 
 1. Enter the port directory.
 
-  For Contiki OS: <code>cd ports/contiki</code>
-
-  For Contiki-NG: <code>cd ports/contiki-ng</code>
+  <code>cd ports/contiki-ng</code>
 
 2. Generate a RAM image of the bytecode for an app, in this case "math".
 
   <code>./create-vm-in-ram.sh math</code>
 
-3. Build a Contiki firmware with Velox included.
+3. Build a Contiki-NG firmware with Velox included.
 
   This step requires that we select an appropriate OS platform to build the
   VM for. We will use the Zoul platform, because it has sufficient RAM and ROM
