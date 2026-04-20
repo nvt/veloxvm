@@ -50,6 +50,7 @@ int vm_native_get_peer_name(vm_thread_t *, vm_port_t *, vm_obj_t *);
 void vm_native_accept_client(vm_thread_t *, vm_port_t *, vm_obj_t *);
 void vm_native_incoming_clientp(vm_thread_t *, vm_port_t *, vm_obj_t *);
 int vm_native_resolve(vm_thread_t *, const char *hostname);
+int vm_native_parse_address(const char *str, uint8_t *bytes, size_t *len);
 vm_port_t *vm_native_open_file(vm_thread_t *, const char *, int);
 int vm_native_read(vm_port_t *, vm_obj_t *);
 int vm_native_read_char(vm_port_t *, vm_character_t *);

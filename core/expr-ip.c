@@ -90,15 +90,42 @@ VM_FUNCTION(make_client)
   }
 
   if(argv[1].type == VM_TYPE_STRING) {
-    status = vm_native_resolve(thread, argv[1].value.string->str);
-    if(status > 0) {
-      addr = thread->result.value.vector;
-    } else if(status == 0) {
+    uint8_t bytes[16];
+    size_t addr_len;
+    const char *addr_str = vm_string_resolve(thread, argv[1].value.string);
+
+    if(addr_str == NULL) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
       return;
-    } else if(status < 0) {
-      vm_signal_error(thread, VM_ERROR_SOCKET);
-      vm_set_error_string(thread, "unable to resolve hostname");
-      return;
+    }
+
+    if(vm_native_parse_address(addr_str, bytes, &addr_len)) {
+      size_t i;
+      vm_vector_t *vector;
+
+      vector = vm_vector_create(&thread->result, addr_len,
+                                VM_VECTOR_FLAG_REGULAR);
+      if(vector == NULL) {
+        vm_signal_error(thread, VM_ERROR_HEAP);
+        return;
+      }
+      for(i = 0; i < addr_len; i++) {
+        vector->elements[i].type = VM_TYPE_INTEGER;
+        vector->elements[i].value.integer = bytes[i];
+      }
+      addr = vector;
+    } else {
+      status = vm_native_resolve(thread, (char *)addr_str);
+      if(status > 0) {
+        addr = thread->result.value.vector;
+      } else if(status == 0) {
+        return;
+      } else {
+        vm_signal_error(thread, VM_ERROR_SOCKET);
+        vm_set_error_string(thread,
+                            "unable to parse address or resolve hostname");
+        return;
+      }
     }
   } else {
     addr = argv[1].value.vector;
