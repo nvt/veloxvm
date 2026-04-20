@@ -270,7 +270,7 @@ register_devices(void)
   /* Register the Contiki File System device. */
   if(vm_device_register("cfs",
                         &device_cfs, VM_PORT_FLAG_INPUT | VM_PORT_FLAG_OUTPUT) == 0) {
-    VM_DEBUG(VM_DEBUG_LOW, "Failed to register %s", "leds");
+    VM_DEBUG(VM_DEBUG_LOW, "Failed to register %s", "cfs");
   }
 
   /* Register the LEDs device. */
@@ -310,7 +310,11 @@ vm_native_init(void)
 const char *
 vm_native_get_os_version(void)
 {
+#ifdef CONTIKI_VERSION_STRING
   return CONTIKI_VERSION_STRING;
+#else
+  return "Contiki-NG";
+#endif
 }
 
 void
@@ -442,6 +446,9 @@ vm_native_get_peer_name(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
   uip_ipaddr_t *peeraddr;
 
   sock = port->opaque_desc;
+  if(sock == NULL || sock->socket.udp_conn == NULL) {
+    return 0;
+  }
   peeraddr = &sock->socket.udp_conn->ripaddr;
 
   vector = vm_vector_create(obj, sizeof(peeraddr->u8), VM_VECTOR_FLAG_REGULAR);
@@ -692,6 +699,9 @@ vm_native_strdup(const char *src)
 
   size = strlen(src) + 1;
   dst = VM_MALLOC(size);
+  if(dst == NULL) {
+    return NULL;
+  }
   return memcpy(dst, src, size);
 }
 

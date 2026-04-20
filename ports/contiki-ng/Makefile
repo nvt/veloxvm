@@ -22,8 +22,8 @@ DEFAULT_POLICY_FILE = ../../core/policies/vm-policy-defs-default.c
 
 CFLAGS += -DVM_BUNDLE -I../../include -DVM_PORT=$(VM_PORT) -DPROJECT_CONF_H=\"project-conf.h\"
 
-PROJECTDIRS = ../../control ../../core ../../core/policies
-PROJECT_SOURCEFILES = ${filter-out vm.c,${notdir ${wildcard ../../core/*.c ../../control/*.c *.c}}}
+PROJECTDIRS = ../../control ../../core ../../core/policies lib
+PROJECT_SOURCEFILES = ${filter-out vm.c,${notdir ${wildcard ../../core/*.c ../../control/*.c *.c lib/*.c}}}
 
 ifeq ($(wildcard $(CUSTOM_POLICY_FILE)),)
 	PROJECT_SOURCEFILES += ${notdir ${wildcard $(DEFAULT_POLICY_FILE)}}
