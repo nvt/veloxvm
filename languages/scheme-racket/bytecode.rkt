@@ -184,19 +184,30 @@
       [(eq? (car prims) sym) idx]
       [else (loop (cdr prims) (+ idx 1))])))
 
-(define (encode-symbol sym bc)
-  ;; Check if this is a VM primitive (core scope) or user symbol (app scope)
-  (let ([prim-id (get-primitive-id sym)])
-    (if prim-id
-        ;; Core symbol - encode with primitive ID, no symbol table
-        (encode-symbol-with-id prim-id 0)  ; scope=0 (core)
-        ;; App symbol - add to symbol table
-        (let ([idx (add-symbol bc sym)])
-          (encode-symbol-with-id idx 1)))))  ; scope=1 (app)
+(define (encode-symbol sym bc [env '()])
+  ;; Check if this is a lambda parameter, VM primitive (core scope), or user symbol (app scope)
+  ;; Check environment FIRST to handle cases where parameter names shadow primitives
+  (cond
+    ;; Lambda parameter - look up existing ID, or add if first reference
+    ;; The symbol might not be in the table yet if this is the bind_function parameter list
+    [(member sym env)
+     (let* ([existing-symbols (bytecode-symbols bc)]
+            [idx (index-of existing-symbols sym)])
+       (if idx
+           (encode-symbol-with-id idx 1)  ; scope=1 (app), existing
+           (encode-symbol-with-id (add-symbol bc sym) 1)))]  ; scope=1 (app), newly added
+    ;; VM primitive - use core scope
+    [(get-primitive-id sym)
+     => (lambda (prim-id)
+          (encode-symbol-with-id prim-id 0))]  ; scope=0 (core)
+    ;; User symbol - use app scope
+    [else
+     (let ([idx (add-symbol bc sym)])
+       (encode-symbol-with-id idx 1))]))
 
 (define (encode-symbol-with-id idx scope)
   ;; Encode symbol given its ID and scope
-  ;; IMPORTANT: bit 6=0 for simple form (1 byte ID), bit 6=1 for extended form (2 byte ID)
+  ;; bit 6=0 for simple form (1 byte ID), bit 6=1 for extended form (2 byte ID)
   (let ([header (pack-atom-header 0 VM-TYPE-SYMBOL)])
     (if (< idx 64)
         ;; Simple form: 1 byte with scope bit (7), extended=0 bit (6), and ID (5-0)

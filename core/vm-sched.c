@@ -81,6 +81,58 @@ cut_tail_call_frames(vm_thread_t *thread)
         }
       }
 
+      /* By the time a tail call reaches here, bind_function has already
+       * executed and created a new binding frame above frame i with the
+       * recursive call's parameter values. Save those values, cut the
+       * stack back to frame i, and copy them onto the surviving frame
+       * before continuing. Handles simple and mutual recursion. */
+      int old_bind_frame_idx = -1;
+      int k;
+      vm_obj_t *saved_bindings = NULL;
+      int num_saved_bindings = 0;
+
+      /* Find the bind frame directly below i - this is the OLD binding */
+      for(j = i - 1; j > 0; j--) {
+        if(thread->exprv[j]->bindc > 0) {
+          old_bind_frame_idx = j;
+          break;
+        }
+      }
+
+      /* Find and save the NEW binding values from the topmost bind frame.
+       * The newest bindings are at or near the top of the stack. */
+      if(old_bind_frame_idx >= 0) {
+        /* Search from the top of the stack downward for a bind frame with
+         * the same symbols as the old frame */
+        for(j = thread->exprc - 1; j > i; j--) {
+          if(thread->exprv[j]->bindc > 0 &&
+             thread->exprv[j]->bindc == thread->exprv[old_bind_frame_idx]->bindc) {
+            /* Check if symbols match */
+            int matches = 1;
+            for(k = 0; k < thread->exprv[old_bind_frame_idx]->bindc; k++) {
+              if(thread->exprv[j]->bindv[k].symbol_id !=
+                 thread->exprv[old_bind_frame_idx]->bindv[k].symbol_id) {
+                matches = 0;
+                break;
+              }
+            }
+            if(matches) {
+              /* Save these binding values before we free the frames */
+              num_saved_bindings = thread->exprv[j]->bindc;
+              saved_bindings = VM_MALLOC(sizeof(vm_obj_t) * num_saved_bindings);
+              if(saved_bindings) {
+                for(k = 0; k < num_saved_bindings; k++) {
+                  memcpy(&saved_bindings[k],
+                         &thread->exprv[j]->bindv[k].obj,
+                         sizeof(vm_obj_t));
+                }
+              }
+              break;
+            }
+          }
+        }
+      }
+
       /* Reduce the stack by thread->exprc - 1 - i frames. */
       for(j = thread->exprc - 2; j >= i; j--) {
         vm_thread_stack_free(thread->exprv[j]);
@@ -88,6 +140,24 @@ cut_tail_call_frames(vm_thread_t *thread)
       thread->exprv[i] = thread->exprv[thread->exprc - 1];
       thread->exprc = i + 1;
       thread->expr = thread->exprv[i];
+
+      /* Restore the saved binding values to the old bind frame */
+      if(saved_bindings != NULL && old_bind_frame_idx >= 0) {
+        for(k = 0; k < num_saved_bindings; k++) {
+          memcpy(&thread->exprv[old_bind_frame_idx]->bindv[k].obj,
+                 &saved_bindings[k],
+                 sizeof(vm_obj_t));
+        }
+        VM_FREE(saved_bindings);
+      }
+
+      /* Reset execution state for tail-optimized frame.
+       * When reusing a frame for tail recursion, we reset its state to force
+       * re-reading bytecode from the expression table. */
+      VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_HAVE_OBJECTS);
+      thread->expr->eval_completed = 0;
+      thread->expr->eval_requested = 0;
+      thread->expr->ip = VM_TABLE_GET(thread->program->exprv, thread->expr->expr_id);
       return;
     }
   }

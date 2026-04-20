@@ -130,8 +130,82 @@ VM_FUNCTION(bind)
   }
 }
 
+VM_FUNCTION(bind_function)
+{
+  /* Identical implementation to bind(), but marks function boundaries.
+   * This allows the return primitive to distinguish between actual functions
+   * and control flow constructs (while loops, let-expansion, etc.).
+   * The return primitive will unwind past regular bind frames but stop at
+   * bind_function frames.
+   */
+  vm_expr_t *calling_expr;
+  int i;
+
+  if(thread->expr->eval_completed == 1) {
+    /* Initiate the evaluation of the bind expression. */
+
+    if(argc > 1) {
+      /*
+       * The bind expression uses all arguments in the calling expression
+       * to bind the symbols specified as argument to the bind
+       * expression. In addition, the bind operator requires a final
+       * argument that is an expression to execute after the symbols have
+       * been bound.
+       */
+
+      if(thread->exprc < 2) {
+	/* Bind cannot execute if there is not a calling expression. */
+	vm_signal_error(thread, VM_ERROR_BYTECODE);
+	return;
+      }
+
+      calling_expr = thread->exprv[thread->exprc - 2];
+      if(calling_expr->argc + 1 != thread->expr->argc) {
+	/* There must be enough objects in the calling expression to bind
+	   the symbols specified as arguments to the called bind
+	   expression. */
+	vm_signal_error(thread, VM_ERROR_BYTECODE);
+	return;
+      }
+
+      /* Create a stack for the argument symbol bindings. */
+      thread->expr->bindv = VM_MALLOC(sizeof(vm_symbol_bind_t) * (argc - 1));
+      if(thread->expr->bindv == NULL) {
+        vm_signal_error(thread, VM_ERROR_HEAP);
+        return;
+      }
+
+      /* Bind the supplied arguments to the symbols of the bind expression. */
+      for(i = 0; i < argc - 1; i++) {
+        if(argv[i].type != VM_TYPE_SYMBOL) {
+          vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+          return;
+        }
+        vm_symbol_bind(thread, &argv[i].value.symbol_ref,
+                       &calling_expr->argv[i + 1]);
+        if(thread->status == VM_THREAD_ERROR) {
+          return;
+        }
+      }
+    }
+
+    /* Instruct the scheduler to evaluate the actual lambda expression. */
+    VM_EVAL_ARG(thread, argc - 1);
+    VM_SET_FLAG(thread->expr->flags, VM_EXPR_TAIL_CALL);
+  } else {
+    /* Evaluation finished. */
+    VM_EVAL_STOP(thread);
+    VM_PUSH(&argv[argc - 1]);
+  }
+}
+
 VM_FUNCTION(return)
 {
+  /* Push the return value to thread->result before unwinding.
+     This ensures the value is available after stack manipulation. */
+  if(argc > 0) {
+    VM_PUSH(&argv[0]);
+  }
   vm_return_from_function(thread, argc > 0 ? &argv[0] : NULL);
 }
 
@@ -315,7 +389,7 @@ VM_FUNCTION(or)
   } else {
     /* There are more arguments, and the previously evaluated one is false. */
     if(last_eval_arg + 2 == argc) {
-      /* About to evaluate the last argument — its result is the result of
+      /* About to evaluate the last argument -- its result is the result of
          the OR expression, so propagate the tail-call flag. */
       VM_SET_FLAG(thread->expr->flags, VM_EXPR_TAIL_CALL);
     }
@@ -419,8 +493,8 @@ VM_FUNCTION(dynamic_wind)
   }
 
   /* Stub: we evaluate the three argument expressions (typically lambdas)
-     but never invoke the resulting procedures, and we push argv[1] — the
-     thunk procedure itself — as the result rather than the result of
+     but never invoke the resulting procedures, and we push argv[1] -- the
+     thunk procedure itself -- as the result rather than the result of
      calling it. TODO: invoke before/thunk/after in sequence, with
      unwind-protect on after and re-entry hooks for continuations. */
   VM_PUSH(&argv[1]);

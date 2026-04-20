@@ -14,15 +14,16 @@
 ;; Compile single expression
 ;; expr: Scheme s-expression
 ;; bc: bytecode structure (mutable)
+;; env: lexical environment (list of lambda parameter symbols)
 ;; Returns: expr-encoding
-(define (compile-expr expr bc)
+(define (compile-expr expr bc [env '()])
   (cond
     ;; ========================================================================
     ;; Atoms
     ;; ========================================================================
 
     [(not (pair? expr))
-     (compile-atom expr bc)]
+     (compile-atom expr bc env)]
 
     ;; ========================================================================
     ;; Special Forms
@@ -30,48 +31,48 @@
 
     ;; Quote
     [(eq? (car expr) 'quote)
-     (compile-quote (cadr expr) bc)]
+     (compile-quote (cadr expr) bc env)]
 
     ;; Lambda
     [(eq? (car expr) 'lambda)
-     (compile-lambda (cadr expr) (cddr expr) bc)]
+     (compile-lambda (cadr expr) (cddr expr) bc env)]
 
     ;; If
     [(eq? (car expr) 'if)
-     (compile-if (cdr expr) bc)]
+     (compile-if (cdr expr) bc env)]
 
     ;; Define
     [(eq? (car expr) 'define)
-     (compile-define (cdr expr) bc)]
+     (compile-define (cdr expr) bc env)]
 
     ;; Set!
     [(eq? (car expr) 'set!)
-     (compile-set (cadr expr) (caddr expr) bc)]
+     (compile-set (cadr expr) (caddr expr) bc env)]
 
     ;; Begin
     [(eq? (car expr) 'begin)
-     (compile-begin (cdr expr) bc)]
+     (compile-begin (cdr expr) bc env)]
 
     ;; And
     [(eq? (car expr) 'and)
-     (compile-and (cdr expr) bc)]
+     (compile-and (cdr expr) bc env)]
 
     ;; Or
     [(eq? (car expr) 'or)
-     (compile-or (cdr expr) bc)]
+     (compile-or (cdr expr) bc env)]
 
     ;; ========================================================================
     ;; Function Application
     ;; ========================================================================
 
     [else
-     (compile-application expr bc)]))
+     (compile-application expr bc env)]))
 
 ;; ============================================================================
 ;; Atom Compilation
 ;; ============================================================================
 
-(define (compile-atom atom bc)
+(define (compile-atom atom bc [env '()])
   (cond
     ;; Number
     [(number? atom)
@@ -89,7 +90,7 @@
 
     ;; Symbol
     [(symbol? atom)
-     (encode-symbol atom bc)]
+     (encode-symbol atom bc env)]
 
     ;; Boolean
     [(boolean? atom)
@@ -110,7 +111,7 @@
 ;; Special Form Compilation (stubs for now)
 ;; ============================================================================
 
-(define (compile-quote datum bc)
+(define (compile-quote datum bc [env '()])
   ;; Quote is a VM special form that doesn't evaluate its argument
   ;; We must encode it as: inline(2) + quote-symbol + datum
   ;; The quote operator receives the unevaluated datum and returns it as-is
@@ -125,79 +126,82 @@
     [(and (list? datum) (not (null? datum)))
      ;; Non-empty list: rewrite to list constructor with quoted elements
      ;; This matches CL compiler behavior: (quote (a b)) => (list (quote a) (quote b))
-     (compile-expr `(list ,@(map (lambda (e) `(quote ,e)) datum)) bc)]
+     (compile-expr `(list ,@(map (lambda (e) `(quote ,e)) datum)) bc env)]
     [(null? datum)
      ;; Empty list: rewrite '() to (list) to create VM_TYPE_LIST object
      ;; This ensures '() is distinct from #f per R5RS requirements
-     (compile-expr '(list) bc)]
+     (compile-expr '(list) bc env)]
     [(vector? datum)
      ;; Vector literal: rewrite to vector constructor with quoted elements
      ;; (quote #(a b c)) => (vector (quote a) (quote b) (quote c))
      (let ([elements (vector->list datum)])
        (if (null? elements)
            ;; Empty vector
-           (compile-expr '(vector) bc)
+           (compile-expr '(vector) bc env)
            ;; Non-empty vector
-           (compile-expr `(vector ,@(map (lambda (e) `(quote ,e)) elements)) bc)))]
+           (compile-expr `(vector ,@(map (lambda (e) `(quote ,e)) elements)) bc env)))]
     [else
      ;; Atom: encode as inline form (quote datum)
-     (let* ([quote-enc (encode-symbol 'quote bc)]
-            [datum-enc (compile-atom datum bc)]
+     (let* ([quote-enc (encode-symbol 'quote bc env)]
+            [datum-enc (compile-atom datum bc env)]
             [all-bytes (append (expr-encoding-data (encode-form-inline 2))
                                (expr-encoding-data quote-enc)
                                (expr-encoding-data datum-enc))])
        (expr-encoding 'form all-bytes))]))
 
-(define (compile-lambda args body bc)
+(define (compile-lambda args body bc [env '()])
   ;; (lambda (args...) body...)
-  ;; Compile as: (bind args... (begin body...)) or (bind args... body)
+  ;; Compile as: (bind_function args... (begin body...)) or (bind_function args... body)
+  ;; Use bind_function to mark actual function boundaries (enables proper return unwinding)
   ;; Store in expression table and return a lambda form reference
-  (let* ([bind-expr (if (> (length body) 1)
+  ;; Extend env with lambda parameters when compiling body
+  (let* ([extended-env (append args env)]  ; Add lambda parameters to env
+         [bind-expr (if (> (length body) 1)
                         ;; Multiple body expressions: wrap in begin
-                        `(bind ,@args (begin ,@body))
+                        `(bind_function ,@args (begin ,@body))
                         ;; Single body expression
-                        `(bind ,@args ,@body))]
-         ;; Compile the bind expression directly into main bc
+                        `(bind_function ,@args ,@body))]
+         ;; Compile the bind expression directly into main bc with extended env
          ;; This ensures all form references are correct from the start
-         [bind-enc (compile-expr bind-expr bc)]
+         [bind-enc (compile-expr bind-expr bc extended-env)]
          ;; Add to main bc and get its index
          [expr-id (length (bytecode-expressions bc))]
          [_ (add-expr bc bind-enc)])
     ;; Return lambda form referencing the bind expression
     (encode-form-lambda expr-id)))
 
-(define (compile-if args bc)
+(define (compile-if args bc [env '()])
   ;; (if test consequent [alternate])
   ;; Compile as a call to the 'if primitive
-  ;; IMPORTANT: Inline form comes FIRST, then operator, then arguments
-  ;; IMPORTANT: For nested expressions, store as separate expressions and use form refs
+  ;; Inline form comes FIRST, then operator, then arguments
+  ;; For nested expressions, store as separate expressions and use form refs
   (let* ([test (car args)]
          [consequent (cadr args)]
          [alternate (if (null? (cddr args)) #f (caddr args))]
          [argc (if alternate 4 3)]  ; if + test + consequent [+ alternate]
-         [if-enc (encode-symbol 'if bc)]
+         [if-enc (encode-symbol 'if bc env)]
          ;; Compile test - if it's nested, store separately
          [test-enc (if (pair? test)
-                       (let* ([nested (compile-expr test bc)]
+                       (let* ([nested (compile-expr test bc env)]
                               [expr-id (length (bytecode-expressions bc))])
                          (add-expr bc nested)
                          (encode-form-ref expr-id))
-                       (compile-expr test bc))]
+                       (compile-expr test bc env))]
          ;; Compile consequent - if it's nested, store separately
          [cons-enc (if (pair? consequent)
-                       (let* ([nested (compile-expr consequent bc)]
+                       (let* ([nested (compile-expr consequent bc env)]
                               [expr-id (length (bytecode-expressions bc))])
                          (add-expr bc nested)
                          (encode-form-ref expr-id))
-                       (compile-expr consequent bc))]
+                       (compile-expr consequent bc env))]
          ;; Compile alternate - if it's nested, store separately
          [alt-enc (if alternate
                       (if (pair? alternate)
-                          (let* ([nested (compile-expr alternate bc)]
+                          (let* ([nested (compile-expr alternate bc env)]
                                  [expr-id (length (bytecode-expressions bc))])
                             (add-expr bc nested)
                             (encode-form-ref expr-id))
-                          (compile-expr alternate bc))
+                          (compile-expr alternate bc env))
                       #f)]
          [all-bytes (if alternate
                         (append (expr-encoding-data (encode-form-inline argc))
@@ -211,10 +215,10 @@
                                 (expr-encoding-data cons-enc)))])
     (expr-encoding 'form all-bytes)))
 
-(define (compile-define args bc)
+(define (compile-define args bc [env '()])
   ;; (define var expr) or (define (name args...) body...)
   ;; Compile as a call to the 'define primitive
-  ;; IMPORTANT: Inline form comes FIRST, then operator, then arguments
+  ;; Inline form comes FIRST, then operator, then arguments
   (let ([first-arg (car args)])
     (if (pair? first-arg)
         ;; Function definition: (define (name args...) body...)
@@ -222,9 +226,9 @@
         (let* ([name (car first-arg)]
                [params (cdr first-arg)]
                [body (cdr args)]
-               [define-enc (encode-symbol 'define bc)]
-               [name-enc (encode-symbol name bc)]
-               [lambda-enc (compile-lambda params body bc)]
+               [define-enc (encode-symbol 'define bc env)]
+               [name-enc (encode-symbol name bc env)]
+               [lambda-enc (compile-lambda params body bc env)]
                [all-bytes (append (expr-encoding-data (encode-form-inline 3))
                                   (expr-encoding-data define-enc)
                                   (expr-encoding-data name-enc)
@@ -233,56 +237,56 @@
         ;; Variable definition: (define var expr)
         (let* ([var first-arg]
                [val (cadr args)]
-               [define-enc (encode-symbol 'define bc)]
-               [var-enc (encode-symbol var bc)]
+               [define-enc (encode-symbol 'define bc env)]
+               [var-enc (encode-symbol var bc env)]
                ;; If value is a nested expression (but not lambda), store separately and use form ref
                ;; Lambdas are special: compile-lambda already handles storing bind expressions
                [val-enc (if (and (pair? val) (not (eq? (car val) 'lambda)))
-                           (let* ([nested (compile-expr val bc)]
+                           (let* ([nested (compile-expr val bc env)]
                                   [expr-id (length (bytecode-expressions bc))])
                              (add-expr bc nested)
                              (encode-form-ref expr-id))
-                           (compile-expr val bc))]
+                           (compile-expr val bc env))]
                [all-bytes (append (expr-encoding-data (encode-form-inline 3))
                                   (expr-encoding-data define-enc)
                                   (expr-encoding-data var-enc)
                                   (expr-encoding-data val-enc))])
           (expr-encoding 'form all-bytes)))))
 
-(define (compile-set var val bc)
+(define (compile-set var val bc [env '()])
   ;; (set! var val)
   ;; Compile as a call to the 'set! primitive
-  ;; IMPORTANT: Inline form comes FIRST, then operator, then arguments
-  (let* ([set-enc (encode-symbol 'set! bc)]
-         [var-enc (encode-symbol var bc)]
+  ;; Inline form comes FIRST, then operator, then arguments
+  (let* ([set-enc (encode-symbol 'set! bc env)]
+         [var-enc (encode-symbol var bc env)]
          ;; If value is a nested expression (but not lambda), store separately and use form ref
          [val-enc (if (and (pair? val) (not (eq? (car val) 'lambda)))
-                     (let* ([nested (compile-expr val bc)]
+                     (let* ([nested (compile-expr val bc env)]
                             [expr-id (length (bytecode-expressions bc))])
                        (add-expr bc nested)
                        (encode-form-ref expr-id))
-                     (compile-expr val bc))]
+                     (compile-expr val bc env))]
          [all-bytes (append (expr-encoding-data (encode-form-inline 3))
                             (expr-encoding-data set-enc)
                             (expr-encoding-data var-enc)
                             (expr-encoding-data val-enc))])
     (expr-encoding 'form all-bytes)))
 
-(define (compile-begin exprs bc)
+(define (compile-begin exprs bc [env '()])
   ;; (begin expr1 expr2 ... exprN)
   ;; Compile as a call to the 'begin primitive
-  ;; IMPORTANT: Inline form comes FIRST, then operator, then arguments
-  ;; IMPORTANT: For nested expressions, store as separate expressions and use form refs
+  ;; Inline form comes FIRST, then operator, then arguments
+  ;; For nested expressions, store as separate expressions and use form refs
   (let* ([argc (+ 1 (length exprs))]  ; begin symbol + expressions
-         [begin-enc (encode-symbol 'begin bc)]
+         [begin-enc (encode-symbol 'begin bc env)]
          ;; Handle nested expressions - store them separately and use form refs
          [expr-encs (map (lambda (e)
                            (if (pair? e)
-                               (let* ([nested (compile-expr e bc)]
+                               (let* ([nested (compile-expr e bc env)]
                                       [expr-id (length (bytecode-expressions bc))])
                                  (add-expr bc nested)
                                  (encode-form-ref expr-id))
-                               (compile-expr e bc)))
+                               (compile-expr e bc env)))
                          exprs)]
          ;; Concatenate: FORM FIRST, then begin, then exprs
          [all-bytes (append (expr-encoding-data (encode-form-inline argc))
@@ -290,68 +294,68 @@
                             (apply append (map expr-encoding-data expr-encs)))])
     (expr-encoding 'form all-bytes)))
 
-(define (compile-and exprs bc)
+(define (compile-and exprs bc [env '()])
   ;; (and expr1 expr2 ... exprN)
   ;; Compile as a call to the 'and primitive
-  ;; IMPORTANT: Inline form comes FIRST, then operator, then arguments
-  ;; IMPORTANT: For nested expressions, store as separate expressions and use form refs
+  ;; Inline form comes FIRST, then operator, then arguments
+  ;; For nested expressions, store as separate expressions and use form refs
   (let* ([argc (+ 1 (length exprs))]  ; and symbol + expressions
-         [and-enc (encode-symbol 'and bc)]
+         [and-enc (encode-symbol 'and bc env)]
          ;; Handle nested expressions
          [expr-encs (map (lambda (e)
                            (if (pair? e)
-                               (let* ([nested (compile-expr e bc)]
+                               (let* ([nested (compile-expr e bc env)]
                                       [expr-id (length (bytecode-expressions bc))])
                                  (add-expr bc nested)
                                  (encode-form-ref expr-id))
-                               (compile-expr e bc)))
+                               (compile-expr e bc env)))
                          exprs)]
          [all-bytes (append (expr-encoding-data (encode-form-inline argc))
                             (expr-encoding-data and-enc)
                             (apply append (map expr-encoding-data expr-encs)))])
     (expr-encoding 'form all-bytes)))
 
-(define (compile-or exprs bc)
+(define (compile-or exprs bc [env '()])
   ;; (or expr1 expr2 ... exprN)
   ;; Compile as a call to the 'or primitive
-  ;; IMPORTANT: Inline form comes FIRST, then operator, then arguments
-  ;; IMPORTANT: For nested expressions, store as separate expressions and use form refs
+  ;; Inline form comes FIRST, then operator, then arguments
+  ;; For nested expressions, store as separate expressions and use form refs
   (let* ([argc (+ 1 (length exprs))]  ; or symbol + expressions
-         [or-enc (encode-symbol 'or bc)]
+         [or-enc (encode-symbol 'or bc env)]
          ;; Handle nested expressions
          [expr-encs (map (lambda (e)
                            (if (pair? e)
-                               (let* ([nested (compile-expr e bc)]
+                               (let* ([nested (compile-expr e bc env)]
                                       [expr-id (length (bytecode-expressions bc))])
                                  (add-expr bc nested)
                                  (encode-form-ref expr-id))
-                               (compile-expr e bc)))
+                               (compile-expr e bc env)))
                          exprs)]
          [all-bytes (append (expr-encoding-data (encode-form-inline argc))
                             (expr-encoding-data or-enc)
                             (apply append (map expr-encoding-data expr-encs)))])
     (expr-encoding 'form all-bytes)))
 
-(define (compile-application expr bc)
+(define (compile-application expr bc [env '()])
   ;; Function application: (func arg1 arg2 ...)
-  ;; IMPORTANT: Inline form comes FIRST, then operator and arguments!
+  ;; Inline form comes FIRST, then operator and arguments!
   ;; For nested expressions (non-atoms), use form references instead of embedding
   (let* ([func (car expr)]
          [args (cdr expr)]
          [total-count (+ 1 (length args))]  ; func + args
          ;; Compile function (usually a symbol, so it's an atom)
-         [func-enc (compile-expr func bc)]
+         [func-enc (compile-expr func bc env)]
          ;; For each argument, check if it's a nested expression
          [arg-encs (map (lambda (arg)
                           (if (and (pair? arg) (not (eq? (car arg) 'lambda)))
                               ;; Nested expression (but not lambda): compile it, add to table, return form ref
                               ;; Lambdas are special: compile-lambda already handles storing bind expressions
-                              (let* ([nested-enc (compile-expr arg bc)]
+                              (let* ([nested-enc (compile-expr arg bc env)]
                                      [expr-id (length (bytecode-expressions bc))])
                                 (add-expr bc nested-enc)  ; Add to table
                                 (encode-form-ref expr-id)) ; Return form reference
                               ;; Atom or lambda: compile normally (lambda returns its own form encoding)
-                              (compile-expr arg bc)))
+                              (compile-expr arg bc env)))
                         args)]
          ;; Concatenate: FORM FIRST, then func, then args
          [all-bytes (append (expr-encoding-data (encode-form-inline total-count))

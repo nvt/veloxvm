@@ -145,7 +145,12 @@ VM_FUNCTION(open_output_file)
   }
 }
 
-VM_FUNCTION(close_port)
+VM_FUNCTION(close_input_port)
+{
+  vm_native_close_port(argv[0].value.port);
+}
+
+VM_FUNCTION(close_output_port)
 {
   vm_native_close_port(argv[0].value.port);
 }

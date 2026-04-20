@@ -1,2 +1,0 @@
-println(filter(lambda(x) { x > 10; }, [39, 4, -5, 0, -100, 8, 15]));
-println(filter(number?, ["Hi", 0, map, lambda(n) { n * n; }, 8, 9]));

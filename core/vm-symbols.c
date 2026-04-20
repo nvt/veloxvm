@@ -65,8 +65,9 @@ static vm_symbol_t symbol_map[] = {
   SYM("<="), SYM(">"), SYM(">="), SYM("zero?"),
 
   /* Primitive functions. */
-  SYM("bind"), SYM("return"), SYM("begin"), SYM("if"), SYM("define"),
-  SYM("set!"), SYM("and"), SYM("or"), SYM("apply"), SYM("quote"),
+  SYM("bind"), SYM("bind_function"), SYM("return"), SYM("begin"), SYM("if"),
+  SYM("define"), SYM("set!"), SYM("and"), SYM("or"), SYM("apply"),
+  SYM("quote"),
   SYM("number?"), SYM("integer?"), SYM("rational?"), SYM("real?"),
   SYM("complex?"), SYM("exact?"), SYM("inexact?"), SYM("procedure?"),
   SYM("boolean?"), SYM("port?"), SYM("not"), SYM("eq?"), SYM("eqv?"),
@@ -79,10 +80,12 @@ static vm_symbol_t symbol_map[] = {
 
   /* List functions. */
   SYM("list"), SYM("cons"), SYM("push"), SYM("POP"), SYM("car"), SYM("cdr"),
-  SYM("list-ref"), SYM("list-tail"), SYM("append"), SYM("remove"),
+  SYM("list-ref"), SYM("list-tail"), SYM("slice"),
+  SYM("append"), SYM("remove"),
   SYM("reverse"), SYM("length"), SYM("null?"), SYM("list?"), SYM("pair?"),
   SYM("set-car!"), SYM("set-cdr!"), SYM("memq"), SYM("memv"), SYM("member"),
   SYM("assq"), SYM("assv"), SYM("assoc"),
+  SYM("list-enumerate"), SYM("list-zip"), SYM("list-index"),
 
   /* Higher-order list functions. */
   SYM("map"), SYM("filter"), SYM("for-each"), SYM("reduce"), SYM("count"),
@@ -96,8 +99,8 @@ static vm_symbol_t symbol_map[] = {
   SYM("string-ref"), SYM("string-set!"), SYM("string->list"),
   SYM("list->string"), SYM("vector->string"), SYM("string-fill!"),
   SYM("string-compare"), SYM("substring"), SYM("string-append"),
-  SYM("string-copy"), SYM("string-split"), SYM("number->string"),
-  SYM("string->number"),
+  SYM("string-copy"), SYM("string-split"), SYM("string-join"),
+  SYM("number->string"), SYM("string->number"),
 
   /* Exception and condition functions. */
   SYM("guard"), SYM("raise"),
@@ -127,13 +130,13 @@ static vm_symbol_t symbol_map[] = {
   SYM("write-char"), SYM("write"), SYM("display"), SYM("with-input-from-file"),
   SYM("with-output-to-file"), SYM("make-client"), SYM("make-server"),
   SYM("peer-name"), SYM("accept-client"), SYM("incoming-client?"),
-  SYM("addr->string"), SYM("resolve_hostname"),
+  SYM("addr->string"), SYM("resolve-hostname"),
 
   /* Mathematical functions using floats. */
   SYM("floor"), SYM("ceiling"), SYM("round"), SYM("truncate"), SYM("exp"),
   SYM("log"), SYM("sin"), SYM("cos"), SYM("tan"), SYM("asin"), SYM("acos"),
-  SYM("atan"), SYM("sqrt"), SYM("expt"), SYM("exact-to-inexact"),
-  SYM("inexact-to-exact"),
+  SYM("atan"), SYM("sqrt"), SYM("expt"), SYM("exact->inexact"),
+  SYM("inexact->exact"),
 
   /* Evaluation control functions. */
   SYM("call-with-current-continuation"), SYM("values"), SYM("call-with-values"),
@@ -176,7 +179,6 @@ vm_symbol_resolve(vm_thread_t *thread, vm_symbol_ref_t *symbol_ref)
         }
       }
     }
-
     /* If no stack binding was found, we return the top-level definition of a symbol, or NULL if it
        doesn't exist. */
     return &thread->program->symbol_bindings[symbol_ref->symbol_id];
@@ -197,9 +199,10 @@ vm_symbol_bind(vm_thread_t *thread, vm_symbol_ref_t *symbol_ref, vm_obj_t *obj)
 {
   vm_symbol_bind_t *sym_bind;
 
-  sym_bind = &thread->expr->bindv[thread->expr->bindc++];
+  sym_bind = &thread->expr->bindv[thread->expr->bindc];
   sym_bind->symbol_id = symbol_ref->symbol_id;
   memcpy(&sym_bind->obj, obj, sizeof(vm_obj_t));
+  thread->expr->bindc++;
 }
 
 const char *

@@ -48,24 +48,25 @@
 
 ;; VM Primitives in exact order matching vm-procedures.c operator table
 ;; This list MUST match the operator order exactly to ensure
-;; correct primitive ID encoding. Total: 192 primitives.
+;; correct primitive ID encoding. Total: 199 primitives.
 (define vm-primitives
   '(+ - * / gcd lcm numerator denominator quotient remainder modulo
     = /= < <= > >= zero?
-    bind return begin if define set! and or apply quote
+    bind bind_function return begin if define set! and or apply quote
     number? integer? rational? real? complex? exact? inexact? procedure?
     boolean? port? not eq? eqv? equal?
     system-info load-program import get-devices print random time
     get-programs program-info exit
-    list cons push pop car cdr list-ref list-tail append remove reverse
+    list cons push pop car cdr list-ref list-tail slice append remove reverse
     length null? list? pair? set-car! set-cdr! memq memv member
     assq assv assoc
+    list-enumerate list-zip list-index
     map filter for-each reduce count
     char? char-compare char-class char->integer integer->char
     char-upcase char-downcase
     make-string string string? string-length string-ref
     string-set! string->list list->string vector->string string-fill!
-    string-compare substring string-append string-copy string-split
+    string-compare substring string-append string-copy string-split string-join
     number->string string->number
     guard raise
     thread-create! thread-fork! thread-id thread-join!

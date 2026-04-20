@@ -208,7 +208,7 @@ public class VeloxCompiler {
 	    "<=", ">", ">=", "zero?",
 
 	    /* Primitive functions. */
-	    "bind", "return", "begin", "if", "define",
+	    "bind", "bind_function", "return", "begin", "if", "define",
 	    "set!", "and", "or", "apply", "quote",
 	    "number?", "integer?", "rational?", "real?",
 	    "complex?", "exact?", "inexact?", "procedure?",

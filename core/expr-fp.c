@@ -128,18 +128,25 @@ VM_FUNCTION(map)
     map_expr->flags = VM_EXPR_HAVE_OBJECTS;
     map_expr->argc = 2;
 
+    /* Disable GC while creating list and updating argc/argv to prevent
+       GC from marking uninitialized argv slots */
+    vm_gc_disable();
+
     /* Create two new arguments that store the resulting list and the
        intermediate result of the mapping on each element. */
     current_expr->argc += 2;
 
     result_list = vm_list_create();
     if(result_list == NULL) {
+      vm_gc_enable();
       vm_thread_stack_free(map_expr);
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
     current_expr->argv[current_expr->argc - 2].type = VM_TYPE_LIST;
     current_expr->argv[current_expr->argc - 2].value.list = result_list;
+
+    vm_gc_enable();
   } else if(argc >= 4) {
     map_expr = thread->exprv[thread->exprc];
     if(map_expr == NULL) {
@@ -216,18 +223,25 @@ VM_FUNCTION(filter)
     filter_expr->flags = VM_EXPR_HAVE_OBJECTS;
     filter_expr->argc = 2;
 
+    /* Disable GC while creating list and updating argc/argv to prevent
+       GC from marking uninitialized argv slots */
+    vm_gc_disable();
+
     /* Create two new arguments that store the resulting list and the
        intermediate result of the mapping on each element. */
     current_expr->argc += 2;
 
     result_list = vm_list_create();
     if(result_list == NULL) {
+      vm_gc_enable();
       vm_thread_stack_free(filter_expr);
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
     current_expr->argv[current_expr->argc - 2].type = VM_TYPE_LIST;
     current_expr->argv[current_expr->argc - 2].value.list = result_list;
+
+    vm_gc_enable();
   } else if(argc >= 4) {
     filter_expr = thread->exprv[thread->exprc];
     if(argv[argc - 2].type != VM_TYPE_LIST) {
@@ -336,7 +350,7 @@ VM_FUNCTION(for_each)
     return;
   }
 
-  execute_synthetic_expr(thread, foreach_expr, &argv[0], 3);
+  execute_synthetic_expr(thread, foreach_expr, &argv[0], current_expr->argc - 1);
 }
 
 VM_FUNCTION(reduce)
@@ -345,6 +359,7 @@ VM_FUNCTION(reduce)
   vm_expr_t *current_expr;
   vm_expr_t *reduce_expr;
   vm_obj_t *obj;
+  int skip_first_element;
 
   if(needs_further_eval(thread, argc, argv)) {
     memset(&argv[argc], 0, sizeof(vm_obj_t));
@@ -358,9 +373,10 @@ VM_FUNCTION(reduce)
 
   list = argv[1].value.list;
   current_expr = thread->expr;
+  skip_first_element = 0;
 
   if(argc == 2) {
-    /* Initiate the REDUCE operation. */
+    /* Initiate the REDUCE operation without initial value. */
     reduce_expr = vm_thread_stack_alloc(thread);
     if(reduce_expr == NULL) {
       return;
@@ -374,6 +390,7 @@ VM_FUNCTION(reduce)
        the reduction. */
     current_expr->argc++;
 
+    /* Use first element as initial value. */
     obj = vm_list_car(list);
     if(obj == NULL) {
       current_expr->argv[current_expr->argc - 1].type = VM_TYPE_NONE;
@@ -381,10 +398,44 @@ VM_FUNCTION(reduce)
       memcpy(&reduce_expr->argv[1], obj, sizeof(vm_obj_t));
     }
     current_expr->eval_arg = current_expr->argc - 1;
+    skip_first_element = 1;  /* Skip the element we used as initial value */
   } else if(argc == 3) {
     reduce_expr = thread->exprv[thread->exprc];
-    /* Continue the REDUCE operation. */
-    memcpy(&reduce_expr->argv[1], &argv[2], sizeof(vm_obj_t));   
+
+    /* Check if this is a continuation (reduce_expr exists and has SAVE_FRAME flag)
+       or a new call (reduce_expr is NULL or doesn't have SAVE_FRAME). */
+    if(reduce_expr == NULL || !VM_IS_SET(reduce_expr->flags, VM_EXPR_SAVE_FRAME)) {
+      /* Initiate the REDUCE operation WITH initial value. */
+      reduce_expr = vm_thread_stack_alloc(thread);
+      if(reduce_expr == NULL) {
+        return;
+      }
+      reduce_expr->flags = VM_EXPR_HAVE_OBJECTS;
+      reduce_expr->argc = 3;
+
+      memcpy(&reduce_expr->argv[0], &argv[0], sizeof(vm_obj_t));
+
+      /* Create a new argument that stores the intermediate result. */
+      current_expr->argc++;
+
+      /* Use provided initial value. */
+      memcpy(&reduce_expr->argv[1], &argv[2], sizeof(vm_obj_t));
+      current_expr->eval_arg = current_expr->argc - 1;
+      skip_first_element = 0;  /* Process from first element */
+    } else {
+      /* Continue the REDUCE operation (2-arg version). */
+      memcpy(&reduce_expr->argv[1], &argv[2], sizeof(vm_obj_t));
+      skip_first_element = 1;  /* Skip the processed element */
+    }
+  } else if(argc == 4) {
+    /* Continue the REDUCE operation (3-arg version). */
+    reduce_expr = thread->exprv[thread->exprc];
+    if(reduce_expr == NULL) {
+      vm_signal_error(thread, VM_ERROR_INTERNAL);
+      return;
+    }
+    memcpy(&reduce_expr->argv[1], &argv[3], sizeof(vm_obj_t));
+    skip_first_element = 1;  /* Skip the processed element */
   } else {
     vm_signal_error(thread, VM_ERROR_INTERNAL);
     return;
@@ -395,18 +446,21 @@ VM_FUNCTION(reduce)
   if(list->length == 0) {
     /* We have processed all objects in the list. */
     VM_EVAL_STOP(thread);
-    VM_PUSH(&argv[2]);
+    /* Push the accumulated result (last argument). */
+    VM_PUSH(&argv[argc - 1]);
     vm_thread_stack_free(reduce_expr);
     return;
   }
 
   /* Process the next element in the list upon the next
      invocation of REDUCE. */
-  list = argv[1].value.list = vm_list_cdr(list, 1);
-  if(list == NULL) {
-    vm_thread_stack_free(reduce_expr);
-    vm_signal_error(thread, VM_ERROR_HEAP);
-    return;
+  if(skip_first_element) {
+    list = argv[1].value.list = vm_list_cdr(list, 1);
+    if(list == NULL) {
+      vm_thread_stack_free(reduce_expr);
+      vm_signal_error(thread, VM_ERROR_HEAP);
+      return;
+    }
   }
 
   obj = vm_list_car(list);
@@ -415,12 +469,13 @@ VM_FUNCTION(reduce)
   } else {
     /* We have processed all objects in the list. */
     VM_EVAL_STOP(thread);
-    VM_PUSH(&argv[2]);
+    /* Push the accumulated result (last argument). */
+    VM_PUSH(&argv[argc - 1]);
     vm_thread_stack_free(reduce_expr);
     return;
   }
 
-  execute_synthetic_expr(thread, reduce_expr, &argv[0], 3);
+  execute_synthetic_expr(thread, reduce_expr, &argv[0], current_expr->argc - 1);
 }
 
 VM_FUNCTION(count)

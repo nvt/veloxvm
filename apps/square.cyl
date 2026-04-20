@@ -1,5 +1,0 @@
-numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-function square(x) { x * x; }
-function nice_print(x) { println("Squared number: ", x); }
-squared_numbers = map(square, numbers);
-for_each(nice_print, squared_numbers);

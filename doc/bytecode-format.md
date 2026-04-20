@@ -280,15 +280,15 @@ Note: Types 8-14 are runtime types created during execution and do not have dire
 
 ### Symbol-Based Instruction Encoding
 
-VeloxVM's 191 built-in instructions (see `doc/instruction-set.md`) are accessed through the symbol mechanism. Each built-in instruction corresponds to a core symbol that references an entry in the operators table defined in `core/vm-procedures.c`.
+VeloxVM's 199 built-in instructions (see `doc/instruction-set.md`) are accessed through the symbol mechanism. Each built-in instruction corresponds to a core symbol that references an entry in the operators table defined in `core/vm-procedures.c`.
 
 ### Core vs Application Symbols
 
 Symbols have two scopes:
 
 1. **Core Scope (0)**: Built-in VM instructions
-   - Symbol IDs 0-190 map directly to the operators table
-   - Examples: `+` (add), `cons`, `car`, `string-append`, `thread-create`
+   - Symbol IDs 0-198 map directly to the operators table
+   - Examples: `+` (add), `cons`, `car`, `slice`, `string-append`, `thread-create`
    - Defined in `vm_procedure_lookup()` at core/vm-procedures.c:399
 
 2. **Application Scope (1)**: User-defined functions and imported libraries
@@ -360,14 +360,14 @@ static const vm_procedure_t operators[] = {
   VM_OPERATOR(subtract, ...),      // Index 1: symbol ID for '-'
   VM_OPERATOR(multiply, ...),      // Index 2: symbol ID for '*'
   VM_OPERATOR(divide, ...),        // Index 3: symbol ID for '/'
-  // ... 187 more operators
+  // ... 194 more operators
 };
 ```
 
 The Scheme compiler maps symbol names to these indices:
-- `+` → symbol ID 0 (core scope)
-- `-` → symbol ID 1 (core scope)
-- `cons` → symbol ID (whatever index it appears at)
+- `+` -> symbol ID 0 (core scope)
+- `-` -> symbol ID 1 (core scope)
+- `cons` -> symbol ID (whatever index it appears at)
 - etc.
 
 ### Example: Encoding `(+ 1 2)`
@@ -395,10 +395,10 @@ Byte 8: 0x02  (value = 2)
 ```
 
 When this expression executes:
-1. VM reads the inline form → knows to expect 3 items (argc=3)
-2. VM reads the symbol for `+` → resolves to operators[0] (the add procedure)
-3. VM reads integer 1 → evaluates to 1
-4. VM reads integer 2 → evaluates to 2
+1. VM reads the inline form -> knows to expect 3 items (argc=3)
+2. VM reads the symbol for `+` -> resolves to operators[0] (the add procedure)
+3. VM reads integer 1 -> evaluates to 1
+4. VM reads integer 2 -> evaluates to 2
 5. VM calls the add procedure with 2 integer arguments
 6. Result (3) is pushed back on stack
 
@@ -425,8 +425,8 @@ Byte 2: 0x29  (bit 7=0 [core scope], bit 6=0 [simple form], bits 5-0=101001 [ID=
 ```
 
 The VM evaluates this by:
-1. Reading inline form → knows to expect 3 items (argc=3)
-2. Resolving `cons` symbol → operators[41]
+1. Reading inline form -> knows to expect 3 items (argc=3)
+2. Resolving `cons` symbol -> operators[41]
 3. Evaluating quoted arguments (returns them unevaluated)
 4. Calling the cons operator with 2 arguments
 5. Returning the new pair

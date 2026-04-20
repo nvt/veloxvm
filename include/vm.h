@@ -48,7 +48,7 @@
 #include "vm-types.h"
 
 #define VM_NAME "VeloxVM"
-#define VM_VERSION_MAJOR 1
+#define VM_VERSION_MAJOR 2
 #define VM_VERSION_MINOR 0
 #define VM_COPYRIGHT "Copyright 2012-2017 RISE SICS AB"
 
@@ -258,6 +258,8 @@ void *vm_alloc(unsigned);
 void vm_free(void *);
 void vm_free_all(void);
 void vm_gc(void);
+void vm_gc_disable(void);
+void vm_gc_enable(void);
 void vm_memory_get_stats(vm_memory_stats_t *);
 int vm_memory_init(void);
 

@@ -4,6 +4,11 @@ obj
 obj_*
 tests/unit-tests/build
 
+# Compiled application binaries
+apps/**/bin/
+tests/apps/**/bin/
+benchmarks/**/bin/
+
 # Tool binaries
 tools/create-ram-module
 tools/read-debug

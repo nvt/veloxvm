@@ -179,8 +179,12 @@ VM_FUNCTION(string_to_list)
 
   string = argv[0].value.string;
 
+  /* Disable GC during list construction */
+  vm_gc_disable();
+
   list = vm_list_create();
   if(list == NULL) {
+    vm_gc_enable();
     vm_signal_error(thread, VM_ERROR_HEAP);
     return;
   }
@@ -189,11 +193,13 @@ VM_FUNCTION(string_to_list)
   for(i = 0; i < string->length; i++) {
     obj.value.character = string->str[i];
     if(!vm_list_insert_tail(list, &obj)) {
+      vm_gc_enable();
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
   }
 
+  vm_gc_enable();
   VM_PUSH_LIST(list);
 }
 
@@ -392,8 +398,12 @@ VM_FUNCTION(string_split)
     return;
   }
 
+  /* Disable GC during list construction */
+  vm_gc_disable();
+
   list = vm_list_create();
   if(list == NULL) {
+    vm_gc_enable();
     vm_signal_error(thread, VM_ERROR_HEAP);
     return;
   }
@@ -413,13 +423,94 @@ VM_FUNCTION(string_split)
 
     if(vm_string_create(&obj, tok_len, p) == NULL ||
        !vm_list_insert_tail(list, &obj)) {
+      vm_gc_enable();
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
     p += tok_len;
   }
 
+  vm_gc_enable();
   VM_PUSH_LIST(list);
+}
+
+VM_FUNCTION(string_join)
+{
+  vm_string_t *separator;
+  vm_list_t *list;
+  vm_list_item_t *item;
+  vm_string_t *result;
+  vm_integer_t total_length;
+  vm_integer_t num_separators;
+  int offset;
+
+  /* Validate argument types */
+  if(argv[0].type != VM_TYPE_STRING || argv[1].type != VM_TYPE_LIST) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+
+  separator = argv[0].value.string;
+  list = argv[1].value.list;
+
+  /* Empty list returns empty string */
+  if(list->length == 0) {
+    result = vm_string_create(&thread->result, 0, "");
+    if(result == NULL) {
+      vm_signal_error(thread, VM_ERROR_HEAP);
+    }
+    return;
+  }
+
+  /* Calculate total length needed */
+  total_length = 0;
+  num_separators = list->length - 1;
+
+  for(item = list->head; item != NULL; item = item->next) {
+    if(item->obj.type != VM_TYPE_STRING) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+      return;
+    }
+    if(item->obj.value.string->length > VM_STRING_MAX_LENGTH - total_length) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+      return;
+    }
+    total_length += item->obj.value.string->length;
+  }
+
+  /* Add separator lengths with overflow check. */
+  if(separator->length != 0 &&
+     num_separators > (VM_STRING_MAX_LENGTH - total_length) / separator->length) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+    return;
+  }
+  total_length += num_separators * separator->length;
+
+  /* Create result string */
+  result = vm_string_create(&thread->result, total_length, NULL);
+  if(result == NULL) {
+    vm_signal_error(thread, VM_ERROR_HEAP);
+    return;
+  }
+
+  /* Join strings with separator */
+  offset = 0;
+  for(item = list->head; item != NULL; item = item->next) {
+    vm_string_t *str = item->obj.value.string;
+
+    /* Copy the string */
+    memcpy(result->str + offset, str->str, str->length);
+    offset += str->length;
+
+    /* Add separator if not the last item */
+    if(item->next != NULL) {
+      memcpy(result->str + offset, separator->str, separator->length);
+      offset += separator->length;
+    }
+  }
+
+  result->str[result->length] = '\0';
+  thread->result.type = VM_TYPE_STRING;
 }
 
 VM_FUNCTION(number_to_string)
