@@ -248,7 +248,7 @@ static const vm_procedure_t operators[] = {
 
   /* Vector functions. */
   VM_OPERATOR(make_vector, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 1, 2),
-  VM_OPERATOR(vector, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 1, -1),
+  VM_OPERATOR(vector, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 0, -1),
   VM_OPERATOR(vectorp, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 1, 1),
   VM_OPERATOR(bufferp, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 1, 1),
   VM_OPERATOR(vector_merge, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 2, -1),
@@ -262,7 +262,7 @@ static const vm_procedure_t operators[] = {
 	      VM_PROCEDURE_EVAL_ARGS, 1, 1),
   VM_OPERATOR(list_to_vector, VM_TYPE_FLAG(VM_TYPE_LIST),
 	      VM_PROCEDURE_EVAL_ARGS, 1, 1),
-  VM_OPERATOR(vector_fill, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(vector_fill, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 2, 2),
   VM_OPERATOR(make_buffer, VM_TYPE_FLAG(VM_TYPE_INTEGER),
               VM_PROCEDURE_EVAL_ARGS, 1, 1),
   VM_OPERATOR(buffer_append, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 3, 3),
@@ -384,6 +384,13 @@ static const vm_procedure_t operators[] = {
               VM_PROCEDURE_EVAL_ARGS, 2, 2),
   VM_OPERATOR(deconstruct_packet, VM_TYPE_FLAG(VM_TYPE_VECTOR),
               VM_PROCEDURE_EVAL_ARGS, 2, 2),
+
+  /* Additional type predicates (R5RS compliance). */
+  VM_OPERATOR(symbolp, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 1, 1),
+
+  /* Type conversion functions (R5RS compliance). */
+  VM_OPERATOR(symbol_to_string, VM_TYPE_FLAG(VM_TYPE_SYMBOL),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
 };
 
 #define MAX_COMMON_SYMBOL_ID 127
@@ -392,7 +399,7 @@ static const vm_procedure_t operators[] = {
 unsigned
 vm_procedure_count(void)
 {
-  return ARRAY_SIZE(operators);
+  return VM_ARRAY_SIZE(operators);
 }
 
 const vm_procedure_t *
@@ -410,7 +417,7 @@ vm_procedure_lookup(vm_program_t *program, vm_symbol_ref_t *symbol_ref)
   vm_obj_t *obj;
 
   if(symbol_ref->scope == VM_SYMBOL_SCOPE_CORE) {
-    if(symbol_ref->symbol_id >= ARRAY_SIZE(operators)) {
+    if(symbol_ref->symbol_id >= VM_ARRAY_SIZE(operators)) {
       return NULL;
     }
     /* The symbol refers to a core function. */

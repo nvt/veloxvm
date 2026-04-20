@@ -147,6 +147,15 @@ vm_raise_exception(vm_thread_t *thread, vm_obj_t *obj)
   for(i = thread->exprc - 1; i >= 0; i--) {
     if(thread->exprv[i]->procedure != NULL &&
        thread->exprv[i]->procedure->operator == op_guard) {
+
+      /* R6RS/R7RS compliance: Skip guards that are currently executing
+         their handler clauses. Exceptions raised from within a handler
+         should propagate to the next outer guard, not be caught by the
+         same guard again (which would cause infinite loops). */
+      if(thread->exprv[i]->flags & VM_EXPR_GUARD_IN_HANDLER) {
+        continue;  /* Look for an outer guard */
+      }
+
       /* Prepare a jump to the guard expression. */
       thread->exprc = i + 1;
       thread->expr = thread->exprv[i];
@@ -166,6 +175,12 @@ vm_raise_exception(vm_thread_t *thread, vm_obj_t *obj)
       for(j = thread->exprc - 1; j > i; j--) {
         vm_thread_stack_free(thread->exprv[j]);
       }
+
+      /* Mark this guard as now executing its handler (not its body).
+         This prevents this guard from catching exceptions raised within
+         the handler itself. The flag will be cleared when the guard
+         completes and returns. */
+      thread->expr->flags |= VM_EXPR_GUARD_IN_HANDLER;
 
       /* Evaluate the guard handler. */
       VM_EVAL_SET_REQUESTED(thread, 2);
@@ -192,16 +207,26 @@ vm_return_from_function(vm_thread_t *thread, vm_obj_t *obj)
          will be at one level above the BIND expression. */
       thread->exprc = i;
       thread->expr = thread->exprv[i - 1];
-      VM_EVAL_SET_COMPLETED(thread, thread->expr->eval_arg);
+      /* For lambda frames (eval_arg == 255), don't mark as completed or copy result.
+         The result will be handled by the scheduler. */
+      if(thread->expr->eval_arg != 255) {
+        VM_EVAL_SET_COMPLETED(thread, thread->expr->eval_arg);
 
-      VM_DEBUG(VM_DEBUG_HIGH, "Return to frame %d, arg %d\n",
-               i - 1, thread->expr->eval_arg);
+        VM_DEBUG(VM_DEBUG_HIGH, "Return to frame %d, arg %d\n",
+                 i - 1, thread->expr->eval_arg);
 
-      if(obj != NULL) {
-        /* An argument was supplied to be passed as the result of the
-           function call from which we return. */
-        memcpy(&thread->expr->argv[thread->expr->eval_arg++],
-               obj, sizeof(vm_obj_t));
+        if(obj != NULL) {
+          /* An argument was supplied to be passed as the result of the
+             function call from which we return. */
+          memcpy(&thread->expr->argv[thread->expr->eval_arg++],
+                 obj, sizeof(vm_obj_t));
+        }
+      } else {
+        VM_DEBUG(VM_DEBUG_HIGH, "Return to lambda frame %d (eval_arg=255)\n", i - 1);
+        /* For lambda frames, result stays in thread->result */
+        if(obj != NULL) {
+          memcpy(&thread->result, obj, sizeof(vm_obj_t));
+        }
       }
 
       /* Deallocate the stack above that of the bind expression. */
@@ -278,7 +303,7 @@ vm_write_object(vm_port_t *port, vm_obj_t *obj)
     vm_write(port, "(");
     for(i = 0, item = obj->value.list->head; item != NULL; i++) {
       if(item->next == NULL &&
-         IS_SET(obj->value.list->flags, VM_LIST_FLAG_PAIR)) {
+         VM_IS_SET(obj->value.list->flags, VM_LIST_FLAG_PAIR)) {
         vm_write(port, ". ");
       }
       vm_write_object(port, (vm_obj_t *)&item->obj);
@@ -297,9 +322,9 @@ vm_write_object(vm_port_t *port, vm_obj_t *obj)
     nested_print = 0;
     break;
   case VM_TYPE_VECTOR:
-    if(IS_SET(obj->value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
+    if(VM_IS_SET(obj->value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
       output_raw = port != NULL &&
-                   IS_CLEAR(port->flags, VM_PORT_FLAG_CONSOLE);
+                   VM_IS_CLEAR(port->flags, VM_PORT_FLAG_CONSOLE);
 
       if(output_raw) {
         vm_native_write_buffer(port, (const char *)obj->value.vector->bytes,
@@ -345,8 +370,21 @@ vm_write_object(vm_port_t *port, vm_obj_t *obj)
 int
 vm_is_procedure(vm_thread_t *thread, vm_obj_t *obj)
 {
+  vm_obj_t *resolved_obj;
+
   if(obj->type == VM_TYPE_SYMBOL) {
-    return vm_procedure_lookup(thread->program, &obj->value.symbol_ref) != NULL;
+    /* First check if it's a built-in procedure */
+    if(vm_procedure_lookup(thread->program, &obj->value.symbol_ref) != NULL) {
+      return 1;
+    }
+
+    /* Not a built-in, check if it's a variable holding a procedure */
+    resolved_obj = vm_symbol_resolve(thread, &obj->value.symbol_ref);
+    if(resolved_obj != NULL) {
+      /* Recursively check if the resolved value is a procedure */
+      return vm_is_procedure(thread, resolved_obj);
+    }
+    return 0;
   }
 
   return (obj->type == VM_TYPE_FORM &&
@@ -370,8 +408,9 @@ vm_objects_equal(vm_thread_t *thread, vm_obj_t *obj1, vm_obj_t *obj2)
   case VM_TYPE_INTEGER:
     return obj1->value.integer == obj2->value.integer;
   case VM_TYPE_RATIONAL:
-    return memcmp(&obj1->value.rational, &obj2->value.rational,
-                  sizeof(vm_rational_t)) == 0;
+    /* Compare the actual rational structures, not their pointers */
+    return obj1->value.rational->numerator == obj2->value.rational->numerator &&
+           obj1->value.rational->denominator == obj2->value.rational->denominator;
   case VM_TYPE_STRING:
     string1 = obj1->value.string;
     string2 = obj2->value.string;

@@ -160,13 +160,13 @@ VM_FUNCTION(string_set)
   string = argv[0].value.string;
   k = argv[1].value.integer;
 
-  if(IS_SET(string->flags, VM_STRING_FLAG_IMMUTABLE)) {
+  if(VM_IS_SET(string->flags, VM_STRING_FLAG_IMMUTABLE)) {
     vm_signal_error(thread, VM_ERROR_WRITE_PROHIBITED);
   } else if(k < 0 || k >= string->length) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
     vm_set_error_object(thread, &argv[1]);
   } else {
-    string->str[k] = argv[1].value.character;
+    string->str[k] = argv[2].value.character;
   }
 }
 
@@ -228,19 +228,28 @@ VM_FUNCTION(vector_to_string)
   vm_integer_t i;
 
   vector = argv[0].value.vector;
-  if(IS_CLEAR(vector->flags, VM_VECTOR_FLAG_BUFFER)) {
-    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-    return;
-  }
 
+  /* Create string with same length as vector */
   string = vm_string_create(&thread->result, vector->length, NULL);
   if(string == NULL) {
     vm_signal_error(thread, VM_ERROR_HEAP);
     return;
   }
 
-  for(i = 0; i < vector->length; i++) {
-    string->str[i] = vector->bytes[i];
+  /* Handle buffer vectors (byte arrays) */
+  if(VM_IS_SET(vector->flags, VM_VECTOR_FLAG_BUFFER)) {
+    for(i = 0; i < vector->length; i++) {
+      string->str[i] = vector->bytes[i];
+    }
+  } else {
+    /* Handle regular vectors - must contain only characters */
+    for(i = 0; i < vector->length; i++) {
+      if(vector->elements[i].type != VM_TYPE_CHARACTER) {
+        vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+        return;
+      }
+      string->str[i] = vector->elements[i].value.character;
+    }
   }
 }
 
@@ -255,7 +264,7 @@ VM_FUNCTION(string_fill)
   }
 
   string = argv[0].value.string;
-  if(IS_SET(string->flags, VM_STRING_FLAG_IMMUTABLE)) {
+  if(VM_IS_SET(string->flags, VM_STRING_FLAG_IMMUTABLE)) {
     vm_signal_error(thread, VM_ERROR_WRITE_PROHIBITED);
   } else {
     memset(string->str, argv[1].value.character, string->length);
@@ -346,10 +355,18 @@ VM_FUNCTION(string_append)
 VM_FUNCTION(string_copy)
 {
   vm_string_t *copy, *original;
+  char *resolved_str;
 
   original = argv[0].value.string;
 
-  copy = vm_string_create(&thread->result, original->length, original->str);
+  /* Ensure the string is resolved before copying */
+  resolved_str = vm_string_resolve(thread, original);
+  if(resolved_str == NULL) {
+    vm_signal_error(thread, VM_ERROR_STRING_ID);
+    return;
+  }
+
+  copy = vm_string_create(&thread->result, original->length, resolved_str);
   if(copy == NULL) {
     vm_signal_error(thread, VM_ERROR_HEAP);
     return;
@@ -426,8 +443,7 @@ VM_FUNCTION(number_to_string)
     format = "%ld";
     break;
   case 16:
-    format = "0x%x";
-    break;
+    format = "%x";
     break;
   default:
     vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
@@ -460,6 +476,9 @@ VM_FUNCTION(number_to_string)
 VM_FUNCTION(string_to_number)
 {
   uint8_t radix;
+  char *endptr;
+  long result;
+  char *str;
 
   if(argv[0].type != VM_TYPE_STRING ||
      (argc == 2 && argv[1].type != VM_TYPE_INTEGER)) {
@@ -468,5 +487,64 @@ VM_FUNCTION(string_to_number)
   }
 
   radix = argc == 2 ? argv[1].value.integer : 10;
-  VM_PUSH_INTEGER(strtol(argv[0].value.string->str, NULL, radix));
+  str = argv[0].value.string->str;
+
+  /* Skip leading whitespace */
+  while(*str == ' ' || *str == '\t' || *str == '\n' || *str == '\r') {
+    str++;
+  }
+
+  /* Empty string or only whitespace returns #f */
+  if(*str == '\0') {
+    VM_PUSH_BOOLEAN(0);
+    return;
+  }
+
+  result = strtol(str, &endptr, radix);
+
+  /* Check if conversion was successful - endptr should not equal str,
+     and we should have consumed the entire string (except trailing whitespace) */
+  if(endptr == str) {
+    /* No conversion performed */
+    VM_PUSH_BOOLEAN(0);
+    return;
+  }
+
+  /* Skip trailing whitespace */
+  while(*endptr == ' ' || *endptr == '\t' || *endptr == '\n' || *endptr == '\r') {
+    endptr++;
+  }
+
+  /* If we haven't consumed the entire string, it's invalid */
+  if(*endptr != '\0') {
+    VM_PUSH_BOOLEAN(0);
+    return;
+  }
+
+  VM_PUSH_INTEGER(result);
+}
+
+VM_FUNCTION(symbol_to_string)
+{
+  const char *symbol_name;
+  vm_string_t *string;
+  size_t length;
+
+  if(argv[0].type != VM_TYPE_SYMBOL) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+
+  symbol_name = vm_symbol_lookup(thread->program, &argv[0].value.symbol_ref);
+  if(symbol_name == NULL) {
+    vm_signal_error(thread, VM_ERROR_SYMBOL_UNDEFINED);
+    return;
+  }
+
+  length = strlen(symbol_name);
+  string = vm_string_create(&thread->result, length, symbol_name);
+  if(string == NULL) {
+    vm_signal_error(thread, VM_ERROR_HEAP);
+    return;
+  }
 }

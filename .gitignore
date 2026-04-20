@@ -1,21 +1,65 @@
+# Build directories
 bin
 obj
+obj_*
+tests/unit-tests/build
+
+# Tool binaries
 tools/create-ram-module
 tools/read-debug
+tools/policy-compiler/vm-policy
+languages/cyclus/cyclus
+
+# Debug symbols (macOS)
+*.dSYM
+
+# Parser/lexer generated files
+*.tab.c
+*.tab.h
+*.yy.c
+*.output
+
+# Object files and libraries
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+
+# Bytecode and intermediate files
+*.vm
+*.vmd
+*.iscm
+
+# Documentation build artifacts
 *.aux
 *.bbl
 *.blg
 *.log
 *.pdf
-*.tab.c
-*.tab.h
-*.yy.c
-*.a
+
+# Other build artifacts
 *.exe
 *.map
-*.o
-*.vm
-*.vmd
 *.dblite
-obj_*
+
+# OS-specific
 .DS_Store
+
+# Editor and IDE files
+*~
+*.swp
+*.swo
+.vscode/
+.idea/
+*.sublime-*
+\#*\#
+.\#*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.coverage
+.pytest_cache/

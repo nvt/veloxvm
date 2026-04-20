@@ -75,7 +75,7 @@ vm_lib_t vm_lib_leds = {
   .load = load,
   .unload = unload,
   .operators = leds_operators,
-  .operator_count = ARRAY_SIZE(leds_operators),
+  .operator_count = VM_ARRAY_SIZE(leds_operators),
   .symbols = (const char *[]){"leds-on", "leds-off", "leds-set",
               "leds-get", "leds-toggle"},
   .symbol_count = 5
@@ -118,7 +118,7 @@ get_led_value(vm_program_t *program, vm_symbol_ref_t *symref)
     return 0;
   }
 
-  for(i = 0; i < ARRAY_SIZE(sym_to_led_map); i++) {
+  for(i = 0; i < VM_ARRAY_SIZE(sym_to_led_map); i++) {
     if(vm_strcasecmp(name, sym_to_led_map[i].sym_name) == 0) {
       return sym_to_led_map[i].led;
     }

@@ -88,7 +88,7 @@ execute_synthetic_expr(vm_thread_t *thread, vm_expr_t *expr,
 
   /* Ensure that the expression is not de-allocated through a
      frame pop operation. */
-  SET(expr->flags, VM_EXPR_SAVE_FRAME);
+  VM_SET_FLAG(expr->flags, VM_EXPR_SAVE_FRAME);
 
   /* Restore the expression, which may have been overwritten during
      the execution of a lambda function. */
@@ -168,7 +168,7 @@ VM_FUNCTION(map)
 
   if(list->length == 0) {
     /* The list has been processed. Stop the evaluation. */
-    VM_PUSH(&argv[argc - 2]);
+    VM_PUSH(&current_expr->argv[current_expr->argc - 2]);
     VM_EVAL_STOP(thread);
     vm_thread_stack_free(map_expr);
     return;

@@ -31,19 +31,14 @@
 #ifndef VM_MACROS_H
 #define VM_MACROS_H
 
-/* Generic macros that enhance the readibility of the source code. */
-#undef IS_SET
-#define IS_SET(field, flag) ((field) & (flag))
-#undef IS_CLEAR
-#define IS_CLEAR(field, flag) (!((field) & (flag)))
-#undef SET
-#define SET(field, flag) ((field) |= (flag))
-#undef CLEAR
-#define CLEAR(field, flag) ((field) &= ~(flag))
-
-#ifndef ARRAY_SIZE
-#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
-#endif
+/* Generic macros that enhance the readability of the source code.
+   These carry a VM_ prefix to avoid collisions with names that
+   third-party SDKs (notably Nordic's) use for unrelated purposes. */
+#define VM_IS_SET(field, flag) ((field) & (flag))
+#define VM_IS_CLEAR(field, flag) (!((field) & (flag)))
+#define VM_SET_FLAG(field, flag) ((field) |= (flag))
+#define VM_CLEAR_FLAG(field, flag) ((field) &= ~(flag))
+#define VM_ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
 #ifndef VM_MIN
 #define VM_MIN(a, b) ((a) < (b) ? (a) : (b))

@@ -213,18 +213,41 @@ vm_get_object(vm_thread_t *thread, vm_obj_t *obj)
     }
     break;
   case VM_TYPE_STRING:
-    if(!VM_STEP(thread)) {
-      return;
-    }
-    obj->value.string = vm_alloc(sizeof(vm_string_t));
-    if(obj->value.string == NULL) {
-      vm_signal_error(thread, VM_ERROR_HEAP);
-      return;
-    }
-    obj->value.string->flags = VM_STRING_FLAG_ID | VM_STRING_FLAG_IMMUTABLE;
-    obj->value.string->string_id = VM_IP(thread);
-    if(!VM_STEP(thread)) {
-      return;
+    {
+      uint8_t byte;
+      uint16_t string_id;
+
+      if(!VM_STEP(thread)) {
+        return;
+      }
+
+      obj->value.string = vm_alloc(sizeof(vm_string_t));
+      if(obj->value.string == NULL) {
+        vm_signal_error(thread, VM_ERROR_HEAP);
+        return;
+      }
+
+      byte = VM_IP(thread);
+      if(!VM_STEP(thread)) {
+        return;
+      }
+
+      /* Check if extended form (bit 7 set) */
+      if(byte & 0x80) {
+        /* Extended form: 15-bit ID */
+        string_id = (byte & 0x7F);  /* bits 6-0 are high 7 bits */
+        string_id <<= 8;
+        string_id |= VM_IP(thread);  /* low 8 bits */
+        if(!VM_STEP(thread)) {
+          return;
+        }
+      } else {
+        /* Simple form: 7-bit ID */
+        string_id = byte;
+      }
+
+      obj->value.string->flags = VM_STRING_FLAG_ID | VM_STRING_FLAG_IMMUTABLE;
+      obj->value.string->string_id = string_id;
     }
     break;
   case VM_TYPE_CHARACTER:

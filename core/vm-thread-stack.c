@@ -87,7 +87,7 @@ vm_thread_stack_pop(vm_thread_t *thread)
        wrong with the VM. */
     vm_signal_error(thread, VM_ERROR_INTERNAL);
   } else {
-    if(IS_CLEAR(thread->expr->flags, VM_EXPR_SAVE_FRAME)) {
+    if(VM_IS_CLEAR(thread->expr->flags, VM_EXPR_SAVE_FRAME)) {
       if(thread->expr->bindv != NULL) {
         VM_FREE(thread->expr->bindv);
       }

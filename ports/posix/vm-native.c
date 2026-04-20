@@ -130,7 +130,7 @@ port_is_ready(int fd, int writable)
     return 0;
   }
 
-  return IS_SET(ready_port_set[fd], (writable ? POLLOUT : POLLIN));
+  return VM_IS_SET(ready_port_set[fd], (writable ? POLLOUT : POLLIN));
 }
 
 int
@@ -174,7 +174,7 @@ poll_port_instantly(int fd, int writable)
       perror("poll");
     }
   } else if(ready == 1) {
-    if(IS_SET(fd_set[0].revents, writable ? POLLOUT : POLLIN)) {
+    if(VM_IS_SET(fd_set[0].revents, writable ? POLLOUT : POLLIN)) {
       return VM_TRUE;
     }
   }
@@ -436,9 +436,9 @@ vm_native_poll(void)
     }
   } else if(ready > 0) {
     for(i = 0; i < waiting_ports; i++) {
-      if(IS_SET(poll_fd_set[i].revents, POLLIN | POLLOUT)) {
+      if(VM_IS_SET(poll_fd_set[i].revents, POLLIN | POLLOUT)) {
         ready--;
-        SET(ready_port_set[poll_fd_set[i].fd], poll_fd_set[i].revents);
+        VM_SET_FLAG(ready_port_set[poll_fd_set[i].fd], poll_fd_set[i].revents);
         if(poll_thread_map[i] == NULL) {
 #if VM_SERVER
           vm_server_incoming(poll_fd_set[i].fd);
@@ -490,7 +490,7 @@ vm_native_close_port(vm_port_t *port)
   } else {
     close(port->fd);
   }
-  CLEAR(port->flags, VM_PORT_FLAG_OPEN);
+  VM_CLEAR_FLAG(port->flags, VM_PORT_FLAG_OPEN);
 }
 
 vm_port_t *
@@ -654,7 +654,7 @@ vm_native_get_peer_name(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
   vm_obj_t item;
   unsigned i;
 
-  if(IS_CLEAR(port->flags, VM_PORT_FLAG_SOCKET)) {
+  if(VM_IS_CLEAR(port->flags, VM_PORT_FLAG_SOCKET)) {
     vm_signal_error(thread, VM_ERROR_IO);
     return 0;
   }
@@ -778,7 +778,7 @@ vm_native_read(vm_port_t *port, vm_obj_t *obj)
   }
 
   if(port_is_ready(port->fd, 0)) {
-    CLEAR(ready_port_set[port->fd], ~POLLIN);
+    VM_CLEAR_FLAG(ready_port_set[port->fd], ~POLLIN);
 
     len = port->io->read(port, buf, sizeof(buf));
     if(len < 0) {
@@ -820,7 +820,7 @@ vm_native_read_char(vm_port_t *port, vm_character_t *c)
   }
 
   if(port_is_ready(port->fd, 0)) {
-    CLEAR(ready_port_set[port->fd], ~POLLIN);
+    VM_CLEAR_FLAG(ready_port_set[port->fd], ~POLLIN);
     r = port->io->read(port, buf, 1);
     if(r < 0) {
       vm_signal_error(port->thread, VM_ERROR_IO);

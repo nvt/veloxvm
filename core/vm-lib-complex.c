@@ -71,7 +71,7 @@ vm_lib_t vm_lib_complex = {
   .load = load,
   .unload = unload,
   .operators = complex_operators,
-  .operator_count = ARRAY_SIZE(complex_operators),
+  .operator_count = VM_ARRAY_SIZE(complex_operators),
   .symbols = (const char *[]){"make-rectangular", "make-polar", "real-part",
               "imag-part", "magnitude", "angle"},
   .symbol_count = 6

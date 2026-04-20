@@ -14,21 +14,40 @@
 
 # compile_scheme: Compile source files implemented in Scheme to Velox bytecode.
 compile_scheme () {
-  COMPILE_SCRIPT=./run.sh
+  RACKET_COMPILER=./languages/scheme-racket/main.rkt
 
   SOURCES=$@
+
+  # Check if racket is installed
+  if ! command -v racket &> /dev/null; then
+    echo "Error: Racket is not installed"
+    echo "Please install Racket from https://racket-lang.org/"
+    echo ""
+    echo "To use the legacy Common Lisp compiler instead:"
+    echo "  cd languages/scheme-cl-legacy && ./run.sh <files>"
+    exit 1
+  fi
 
   STR="files"
   if [ $# -eq 1 ]; then
     STR="file"
   fi
-  printf "Compiling %d Scheme %s... " $# $STR
+  printf "Compiling %d Scheme %s using Racket compiler... " $# $STR
 
-  ($COMPILE_SCRIPT ${SOURCES})
-  if [ $? -eq 0 ]; then
+  # Compile each file individually
+  ERRORS=0
+  for source_file in ${SOURCES}; do
+    racket "$RACKET_COMPILER" "$source_file" 2>&1 | grep -v "^Compiling\|^Compilation successful"
+    if [ ${PIPESTATUS[0]} -ne 0 ]; then
+      ERRORS=$((ERRORS + 1))
+    fi
+  done
+
+  if [ $ERRORS -eq 0 ]; then
     printf "OK\n"
   else
     printf "ERROR\n"
+    return 1
   fi
 }
 
@@ -89,27 +108,34 @@ APPDIR=$VELOX_APPDIR
 
 # Set the application directory to the default value if it is unset.
 if [ -z $APPDIR ]; then
-  APPDIR="../../apps"
+  APPDIR="./apps"
 else
   echo "Using configured app directory" $APPDIR
 fi
 
-cd languages/scheme
+# Note: No longer changing to languages/scheme directory
+# The Racket compiler is invoked directly from the root directory
 
 if [ $# -eq 0 ]; then
   # Compile all apps.
-  translate_cyclus `ls ${APPDIR}/*.cyl`
+  cd languages/cyclus 2>/dev/null || true
+  if [ -d "../../apps" ]; then
+    translate_cyclus `ls ../../apps/*.cyl 2>/dev/null` || true
+  fi
+  cd ../..
 
   # Compile both intermediate Scheme files (.iscm) and
   # regular Scheme files (.scm).
-  compile_scheme `ls ${APPDIR}/*.{is,s}cm`
+  compile_scheme `ls ${APPDIR}/*.{is,s}cm 2>/dev/null` || true
 else
   # Compile a single, specified app.
 
   # Check if a Cyclus file exists, and compile it to Scheme in that case.
   FILE=${APPDIR}/$1.cyl
   if [ -e $FILE ]; then
-    translate_cyclus $FILE
+    cd languages/cyclus
+    translate_cyclus ../../$FILE
+    cd ../..
   fi
 
   # Compile the Scheme source code of the app.

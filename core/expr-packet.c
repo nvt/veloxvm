@@ -190,7 +190,7 @@ VM_FUNCTION(deconstruct_packet)
   fields = argv[0].value.vector;
   packet = argv[1].value.vector;
 
-  if(IS_CLEAR(packet->flags, VM_VECTOR_FLAG_BUFFER)) {
+  if(VM_IS_CLEAR(packet->flags, VM_VECTOR_FLAG_BUFFER)) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }

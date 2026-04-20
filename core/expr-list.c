@@ -145,7 +145,7 @@ VM_FUNCTION(cons)
       return;
     }
 
-    SET(list->flags, VM_LIST_FLAG_PAIR);
+    VM_SET_FLAG(list->flags, VM_LIST_FLAG_PAIR);
     if(!vm_list_insert_head(list, &argv[1])) {
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
@@ -203,7 +203,7 @@ VM_FUNCTION(cdr)
   vm_list_t *list;
 
   list = argv->value.list;
-  if(IS_SET(list->flags, VM_LIST_FLAG_PAIR)) {
+  if(VM_IS_SET(list->flags, VM_LIST_FLAG_PAIR)) {
     if(list->length != 2) {
       vm_signal_error(thread, VM_ERROR_INTERNAL);
     } else {
@@ -260,10 +260,13 @@ VM_FUNCTION(list_tail)
   k = argv[1].value.integer;
 
   if(k < 0 || list->length < k) {
-    vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     vm_set_error_object(thread, &argv[1]);
     return;
   }
+
+  /* Save k before the loop modifies it */
+  vm_integer_t orig_k = k;
 
   for(item = list->head; k > 0; k--, item = item->next);
 
@@ -271,9 +274,22 @@ VM_FUNCTION(list_tail)
   if(list == NULL) {
     vm_signal_error(thread, VM_ERROR_HEAP);
   } else {
+    vm_list_item_t *tail_item;
+
     list->head = item;
-    list->length = list->length - k;
+    list->length = argv[0].value.list->length - orig_k;  /* Use saved k value */
     list->flags = 0;
+
+    /* Find and set the tail pointer */
+    if(item != NULL) {
+      tail_item = item;
+      while(tail_item->next != NULL) {
+        tail_item = tail_item->next;
+      }
+      list->tail = tail_item;
+    } else {
+      list->tail = NULL;
+    }
 
     result.type = VM_TYPE_LIST;
     result.value.list = list;
@@ -371,6 +387,9 @@ VM_FUNCTION(remove)
     prev_item = item;
     item = item->next;
   }
+
+  /* Return the modified list */
+  VM_PUSH_LIST(list);
 }
 
 VM_FUNCTION(reverse)
@@ -409,13 +428,16 @@ VM_FUNCTION(nullp)
 VM_FUNCTION(listp)
 {
   VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_LIST &&
-                  IS_CLEAR(argv[0].value.list->flags, VM_LIST_FLAG_PAIR));
+                  VM_IS_CLEAR(argv[0].value.list->flags, VM_LIST_FLAG_PAIR));
 }
 
 VM_FUNCTION(pairp)
 {
+  /* R5RS: pair? returns #t for any cons cell (non-empty list structure).
+     This includes both proper lists like '(1 2 3) and improper pairs like (cons 1 2).
+     Only the empty list '() is not a pair. */
   VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_LIST &&
-                  IS_SET(argv[0].value.list->flags, VM_LIST_FLAG_PAIR));
+                  argv[0].value.list->length > 0);
 }
 
 VM_FUNCTION(set_car)

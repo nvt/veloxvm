@@ -103,6 +103,13 @@
 #define VM_CONSOLE_BUFFER_SIZE 1024
 #endif
 
+/* Maximum size of a single table item when loading bytecode.
+   This limits the stack buffer size in vm-loader.c.
+   POSIX systems have plenty of memory and can handle large programs. */
+#ifndef VM_TABLE_MAX_ITEM_SIZE
+#define VM_TABLE_MAX_ITEM_SIZE 65535
+#endif
+
 #ifndef VM_GC_AGGRESSIVE
 #define VM_GC_AGGRESSIVE 1
 #endif

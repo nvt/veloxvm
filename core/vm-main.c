@@ -70,7 +70,7 @@ static const char *error_messages[] = {
 static const char *
 error_message(vm_error_type_t error_type)
 {
-  if(error_type >= ARRAY_SIZE(error_messages)) {
+  if(error_type >= VM_ARRAY_SIZE(error_messages)) {
     return "unknown error";
   }
   return error_messages[error_type];

@@ -105,6 +105,7 @@ typedef struct vm_program {
 #define VM_EXPR_RESTART      0x08
 #define VM_EXPR_SAVE_FRAME   0x10
 #define VM_EXPR_CONTINUATION 0x20
+#define VM_EXPR_GUARD_IN_HANDLER  0x40  /* Guard is executing handler, not body (R6RS/R7RS) */
 
 typedef uint32_t vm_arg_set_t;
 

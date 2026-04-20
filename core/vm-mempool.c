@@ -83,7 +83,7 @@ update_next_free_index(vm_mempool_t *pool)
     bit = 1U << (index % BITNUM);
 
     if(pool->alloc_bitmap[byte] != ~((vm_mempool_bitmap_t)0)) {
-      if(IS_CLEAR(pool->alloc_bitmap[byte], bit)) {
+      if(VM_IS_CLEAR(pool->alloc_bitmap[byte], bit)) {
         pool->next_free_index = index;
         return;
       }
@@ -166,14 +166,14 @@ vm_mempool_alloc(vm_mempool_t *pool)
   bit = 1U << (index % BITNUM);
 
   if(pool->items >= pool->capacity ||
-     IS_SET(pool->alloc_bitmap[byte], bit)) {
+     VM_IS_SET(pool->alloc_bitmap[byte], bit)) {
     return NULL;
   }
 
   pool->items++;
   update_next_free_index(pool);
 
-  SET(pool->alloc_bitmap[byte], bit);
+  VM_SET_FLAG(pool->alloc_bitmap[byte], bit);
   return (char *)pool->heap + index * pool->obj_size;
 }
 
@@ -189,12 +189,12 @@ vm_mempool_free(vm_mempool_t *pool, void *obj)
     byte = index / BITNUM;
     bit = 1U << (index % BITNUM);
 
-    if(IS_CLEAR(pool->alloc_bitmap[byte], bit)) {
+    if(VM_IS_CLEAR(pool->alloc_bitmap[byte], bit)) {
       VM_DEBUG(VM_DEBUG_LOW, "Freeing already free object %p!", obj);
     }
 
-    CLEAR(pool->alloc_bitmap[byte], bit);
-    CLEAR(pool->ref_bitmap[byte], bit);
+    VM_CLEAR_FLAG(pool->alloc_bitmap[byte], bit);
+    VM_CLEAR_FLAG(pool->ref_bitmap[byte], bit);
     if(index < pool->next_free_index) {
       pool->next_free_index = index;
     }
@@ -217,7 +217,7 @@ vm_mempool_mark(vm_mempool_t *pool, void *obj)
   byte = index / BITNUM;
   bit = 1U << (index % BITNUM);
 
-  SET(pool->ref_bitmap[byte], bit);
+  VM_SET_FLAG(pool->ref_bitmap[byte], bit);
 
   return 1;
 }
@@ -242,16 +242,16 @@ vm_mempool_gc(vm_mempool_t *pool)
     byte = index / BITNUM;
     bit = 1U << (index % BITNUM);
 
-    if(IS_SET(pool->alloc_bitmap[byte], bit) &&
-       IS_CLEAR(pool->ref_bitmap[byte], bit)) {
-      CLEAR(pool->alloc_bitmap[byte], bit);
+    if(VM_IS_SET(pool->alloc_bitmap[byte], bit) &&
+       VM_IS_CLEAR(pool->ref_bitmap[byte], bit)) {
+      VM_CLEAR_FLAG(pool->alloc_bitmap[byte], bit);
       pool->items--;
       if(index < pool->next_free_index) {
 	pool->next_free_index = index;
       }
       released_objects++;
     }
-    CLEAR(pool->ref_bitmap[byte], bit);
+    VM_CLEAR_FLAG(pool->ref_bitmap[byte], bit);
   }
 
   return released_objects;

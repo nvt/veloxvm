@@ -131,7 +131,7 @@ vm_eval_expr(vm_thread_t *thread, vm_expr_t *expr)
 
   type_set = 0;
   for(i = 1; i < expr->argc; i++) {
-    SET(type_set, VM_TYPE_FLAG(expr->argv[i].type));
+    VM_SET_FLAG(type_set, VM_TYPE_FLAG(expr->argv[i].type));
   }
 
   if((type_set & proc->valid_types) == type_set) {

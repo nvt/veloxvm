@@ -137,7 +137,7 @@ VM_FUNCTION(encrypt)
   vm_vector_t *ciphertext_vector;
 
   if(argv[0].type != VM_TYPE_SYMBOL || argv[1].type != VM_TYPE_VECTOR ||
-     IS_CLEAR(argv[1].value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
+     VM_IS_CLEAR(argv[1].value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
@@ -173,7 +173,7 @@ VM_FUNCTION(decrypt)
   enum cipher cipher;
 
   if(argv[0].type != VM_TYPE_SYMBOL || argv[1].type != VM_TYPE_VECTOR ||
-     IS_CLEAR(argv[1].value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
+     VM_IS_CLEAR(argv[1].value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
@@ -210,7 +210,7 @@ VM_FUNCTION(set_crypto_key)
   vm_vector_t *ciphertext_vector;
 
   if(argv[0].type != VM_TYPE_SYMBOL || argv[1].type != VM_TYPE_VECTOR ||
-     IS_CLEAR(argv[1].value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
+     VM_IS_CLEAR(argv[1].value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }

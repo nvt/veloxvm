@@ -2,7 +2,7 @@
 
 ## Overview
 
-VeloxVM provides 191 core instructions (procedures/operators) that implement a comprehensive Scheme-based runtime for IoT applications. Instructions are organized into functional categories and follow Scheme R5RS naming conventions with extensions for IoT-specific operations.
+VeloxVM provides 193 core instructions (procedures/operators) that implement a Scheme-based runtime for IoT applications. Instructions are organized into functional categories and follow Scheme R5RS naming conventions with extensions for IoT-specific operations.
 
 All instructions are implemented as procedures in the operators table defined in `core/vm-procedures.c`. Additional platform-specific instructions are available through loadable libraries on Contiki/Contiki-NG ports.
 
@@ -15,7 +15,7 @@ Each instruction is defined with the following properties:
 - **Argument Count**: Minimum and maximum number of arguments (-1 = variadic)
 - **Flags**: VM_PROCEDURE_EVAL_ARGS (arguments evaluated before call) or 0 (special form)
 
-## Core Instruction Set (191 Instructions)
+## Core Instruction Set (193 Instructions)
 
 ### Arithmetic Operations (11 instructions)
 
@@ -108,7 +108,7 @@ Core language constructs that control evaluation:
 
 **Implementation**: `core/expr-primitives.c`
 
-### Type Predicates (13 instructions)
+### Type Predicates (14 instructions)
 
 Test object types:
 
@@ -123,6 +123,7 @@ Test object types:
 | `inexact?` | 1 | Test if inexact number. | Boolean (#t or #f) |
 | `procedure?` | 1 | Test if procedure. | Boolean (#t or #f) |
 | `boolean?` | 1 | Test if boolean. | Boolean (#t or #f) |
+| `symbol?` | 1 | Test if symbol (R5RS §6.3.3). | Boolean (#t or #f) |
 | `port?` | 1 | Test if I/O port. | Boolean (#t or #f) |
 | `not` | 1 | Logical negation. | Boolean (#t or #f) |
 | `eq?` | ∞ | Test object identity. | Boolean (#t or #f) |
@@ -193,7 +194,7 @@ Character manipulation:
 
 **Implementation**: `core/expr-char.c`
 
-### String Operations (17 instructions)
+### String Operations (18 instructions)
 
 String creation and manipulation:
 
@@ -216,6 +217,7 @@ String creation and manipulation:
 | `string-split` | 2 | Split string by delimiter. | List of strings |
 | `number->string` | 1-2 | Convert number to string. | String (representation) |
 | `string->number` | 1-2 | Parse number from string. | Integer, rational, or #f |
+| `symbol->string` | 1 | Convert symbol to string (R5RS §6.3.3). | String (symbol name) |
 
 **Implementation**: `core/expr-string.c`
 

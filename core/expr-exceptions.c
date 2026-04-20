@@ -41,9 +41,13 @@ VM_FUNCTION(guard)
 
   if(VM_EVAL_COMPLETED(thread, 2)) {
     /* Executed the exception handler -- return its result. */
+    /* Clear the handler flag before returning (R6RS/R7RS compliance) */
+    thread->expr->flags &= ~VM_EXPR_GUARD_IN_HANDLER;
     VM_PUSH(&argv[1]);
   } else if(VM_EVAL_COMPLETED(thread, 3)) {
     /* Executed the main expression -- return its result. */
+    /* Clear the handler flag (defensive - should already be clear) */
+    thread->expr->flags &= ~VM_EXPR_GUARD_IN_HANDLER;
     VM_PUSH(&argv[2]);
   } else if(!VM_EVAL_REQUESTED(thread, 1)) {
     /* Evaluate the main expression as long as the guard handler has not

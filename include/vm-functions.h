@@ -112,6 +112,7 @@ VM_DECLARE_FUNCTION(inexactp);
 VM_DECLARE_FUNCTION(procedurep);
 VM_DECLARE_FUNCTION(booleanp);
 VM_DECLARE_FUNCTION(portp);
+VM_DECLARE_FUNCTION(symbolp);
 VM_DECLARE_FUNCTION(not);
 VM_DECLARE_FUNCTION(eqp);
 VM_DECLARE_FUNCTION(eqvp);
@@ -178,6 +179,7 @@ VM_DECLARE_FUNCTION(string_copy);
 VM_DECLARE_FUNCTION(string_split);
 VM_DECLARE_FUNCTION(number_to_string);
 VM_DECLARE_FUNCTION(string_to_number);
+VM_DECLARE_FUNCTION(symbol_to_string);
 
 /* System functions. */
 VM_DECLARE_FUNCTION(system_info);

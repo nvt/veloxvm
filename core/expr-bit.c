@@ -50,7 +50,8 @@ VM_FUNCTION(bit_invert)
 
 VM_FUNCTION(bit_not)
 {
-  VM_PUSH_INTEGER(!argv[0].value.integer);
+  /* Bitwise NOT, not logical NOT */
+  VM_PUSH_INTEGER(~argv[0].value.integer);
 }
 
 VM_FUNCTION(bit_xor)

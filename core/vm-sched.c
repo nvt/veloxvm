@@ -74,7 +74,7 @@ cut_tail_call_frames(vm_thread_t *thread)
   for(i = thread->exprc - 2; i > 0; i--) {
     if(thread->exprv[i]->expr_id == lambda_expr_id) {
       for(j = thread->exprc - 2; j > i; j--) {
-        if(IS_CLEAR(thread->exprv[j]->flags, VM_EXPR_TAIL_CALL)) {
+        if(VM_IS_CLEAR(thread->exprv[j]->flags, VM_EXPR_TAIL_CALL)) {
           /* Unable to optimize the tail because one of the expressions
              in the stack frames under consideration is not a tail call. */
           return;
@@ -98,12 +98,12 @@ init_lambda_execution(vm_thread_t *thread, vm_expr_t *expr)
 {
   VM_EVAL_SET_REQUESTED_RANGE(thread, 1, expr->argc);
 
-  SET(expr->flags, VM_EXPR_LAMBDA);
+  VM_SET_FLAG(expr->flags, VM_EXPR_LAMBDA);
   if(thread->exprc >= 2 &&
-     IS_SET(thread->exprv[thread->exprc - 2]->flags, VM_EXPR_TAIL_CALL)) {
+     VM_IS_SET(thread->exprv[thread->exprc - 2]->flags, VM_EXPR_TAIL_CALL)) {
     /* If the calling expression is a tail call, then so is the next
        lambda expression to be called. */
-    SET(expr->flags, VM_EXPR_TAIL_CALL);
+    VM_SET_FLAG(expr->flags, VM_EXPR_TAIL_CALL);
   }
 }
 
@@ -117,11 +117,11 @@ vm_sched_thread(vm_thread_t *thread)
   thread->stats.schedulings++;
   expr = thread->expr;
 
-  if(IS_SET(expr->flags, VM_EXPR_RESTART)) {
+  if(VM_IS_SET(expr->flags, VM_EXPR_RESTART)) {
     goto restart;
   }
 
-  if(IS_CLEAR(expr->flags, VM_EXPR_HAVE_OBJECTS)) {
+  if(VM_IS_CLEAR(expr->flags, VM_EXPR_HAVE_OBJECTS)) {
     /* We are at the start of a new expression;
        get an expression header or an atom. */
     vm_get_object(thread, &next_expr);
@@ -177,14 +177,17 @@ vm_sched_thread(vm_thread_t *thread)
       memmove(&expr->argv[0], &next_expr, sizeof(vm_obj_t));
     }
 
-    SET(expr->flags, VM_EXPR_HAVE_OBJECTS);
+    VM_SET_FLAG(expr->flags, VM_EXPR_HAVE_OBJECTS);
   }
 
   do {
     /* Make the requested evaluations of arguments. */
     for(i = 0; i < expr->argc; i++) {
       if(VM_EVAL_REQUESTED(thread, i) && !VM_EVAL_COMPLETED(thread, i)) {
-        expr->eval_arg = i;
+        /* Don't overwrite sentinel value 255 used for lambda frames */
+        if(expr->eval_arg != 255) {
+          expr->eval_arg = i;
+        }
         if(expr->argv[i].type == VM_TYPE_FORM) {
           if(i > 0 && expr->argv[i].value.form.type == VM_FORM_LAMBDA) {
             /* Lambda form arguments are evaluated to themselves. */
@@ -223,27 +226,31 @@ vm_sched_thread(vm_thread_t *thread)
     }
 
     /* Stack tail optimization. */
-    if(IS_SET(expr->flags, VM_EXPR_LAMBDA)) {
+    if(VM_IS_SET(expr->flags, VM_EXPR_LAMBDA)) {
       cut_tail_call_frames(thread);
     }
 
     if(expr->expr_id == 0) {
-      SET(thread->expr->flags, VM_EXPR_TAIL_CALL);
+      VM_SET_FLAG(thread->expr->flags, VM_EXPR_TAIL_CALL);
     }
 
 restart:
-    vm_eval_expr(thread, expr);
-    if(thread->status == VM_THREAD_ERROR ||
-       thread->status == VM_THREAD_EXITING) {
-      return;
+    /* Don't call vm_eval_expr on completed lambda frames - argv[0] may be corrupted
+       with the return value, and trying to evaluate it causes crashes for symbols. */
+    if(!(VM_IS_SET(expr->flags, VM_EXPR_LAMBDA) && VM_EVAL_COMPLETED_ALL(thread))) {
+      vm_eval_expr(thread, expr);
+      if(thread->status == VM_THREAD_ERROR ||
+         thread->status == VM_THREAD_EXITING) {
+        return;
+      }
     }
     /* A native function may have rewritten the expression stack,
        so the local expression pointer must be updated. */
     expr = thread->expr;
-  } while(IS_CLEAR(expr->flags, VM_EXPR_LAMBDA) &&
+  } while(VM_IS_CLEAR(expr->flags, VM_EXPR_LAMBDA) &&
           !VM_EVAL_COMPLETED_ALL(thread));
 
-  if(IS_SET(expr->flags, VM_EXPR_LAMBDA) && !VM_EVAL_COMPLETED(thread, 0)) {
+  if(VM_IS_SET(expr->flags, VM_EXPR_LAMBDA) && !VM_EVAL_COMPLETED(thread, 0)) {
     VM_EVAL_SET_REQUESTED(thread, 0);
     return;
   }
@@ -252,12 +259,13 @@ restart:
   vm_print_eval_expr(thread);
 #endif
 
-  if(IS_SET(expr->flags, VM_EXPR_RESTART)) {
+  if(VM_IS_SET(expr->flags, VM_EXPR_RESTART)) {
     return;
   } else if(thread->exprc > 1) {
     /* Replace the evaluated object with the result of the evaluation. */
     vm_thread_stack_pop(thread);
     expr = thread->expr;
+
     VM_EVAL_SET_COMPLETED(thread, expr->eval_arg);
     memmove(&expr->argv[expr->eval_arg], &thread->result, sizeof(vm_obj_t));
   } else if(expr->ip == expr->end) {
