@@ -41,8 +41,8 @@
 #include "net/ipv6/uip.h"
 #include "net/ipv6/udp-socket.h"
 #include "net/ipv6/uip-nameserver.h"
-#include "net/ipv6/resolv.h"
 #include "net/ipv6/uip-ds6.h"
+#include "resolv.h"
 #include "sys/energest.h"
 
 #include "sys/log.h"

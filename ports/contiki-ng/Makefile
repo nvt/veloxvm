@@ -6,6 +6,7 @@ endif
 
 MODULES += os/net/app-layer/coap
 MODULES += os/services/lwm2m
+MODULES += os/services/resolv
 
 VM_APP_IMAGE = vm-app-image.h
 
