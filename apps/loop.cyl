@@ -1,8 +1,0 @@
-start = time();
-j = 0;
-for(i = 0; i < 10000; i++) {
-  j++;
-}
-end = time();
-println("Loop time from ", start, " to ", end);
-

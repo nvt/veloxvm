@@ -25,10 +25,9 @@ Tests all major Python features supported by PyVelox:
 - Enumerate and zip
 - Complex expressions
 
-**test_pyvelox_suite.py** - Comprehensive test (has some issues)
-Attempts to test all features with PASS/FAIL assertions. Currently has issues with:
-- Boolean/string comparisons with `==` (compiler limitation)
-- List mutation (not fully supported)
+**test_pyvelox_suite.py** - Broader suite with PASS/FAIL assertions
+covering most supported features. Known gaps: boolean/string `==`
+comparisons and list mutation.
 
 ## Running Tests
 
