@@ -79,7 +79,7 @@ static vm_symbol_t symbol_map[] = {
   SYM("get-programs"), SYM("program-info"), SYM("exit"),
 
   /* List functions. */
-  SYM("list"), SYM("cons"), SYM("push"), SYM("POP"), SYM("car"), SYM("cdr"),
+  SYM("list"), SYM("cons"), SYM("push"), SYM("pop"), SYM("car"), SYM("cdr"),
   SYM("list-ref"), SYM("list-tail"), SYM("slice"),
   SYM("append"), SYM("remove"),
   SYM("reverse"), SYM("length"), SYM("null?"), SYM("list?"), SYM("pair?"),
@@ -113,7 +113,7 @@ static vm_symbol_t symbol_map[] = {
 
   /* Mutex functions. */
   SYM("mutex?"), SYM("make-mutex"), SYM("mutex-name"), SYM("mutex-specific"),
-  SYM("mutex-specific-set"), SYM("mutex-state"), SYM("mutex-lock!"),
+  SYM("mutex-specific-set!"), SYM("mutex-state"), SYM("mutex-lock!"),
   SYM("mutex-unlock!"),
 
   /* Vector functions. */

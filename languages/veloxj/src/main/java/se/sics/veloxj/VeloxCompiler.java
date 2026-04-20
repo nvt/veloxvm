@@ -201,94 +201,31 @@ public class VeloxCompiler {
 
     private static void generateInternalSymbols() throws VeloxException {
 	String[] symbolNames = {
-	    /* Mathematical functions. */
-	    "+", "-", "*", "/", "gcd",
-	    "lcm", "numerator", "denominator", "quotient",
-	    "remainder", "modulo", "=", "/=", "<",
-	    "<=", ">", ">=", "zero?",
-
-	    /* Primitive functions. */
-	    "bind", "bind_function", "return", "begin", "if", "define",
-	    "set!", "and", "or", "apply", "quote",
-	    "number?", "integer?", "rational?", "real?",
-	    "complex?", "exact?", "inexact?", "procedure?",
-	    "boolean?", "port?", "not", "eq?", "eqv?",
-	    "equal?",
-
-	    /* System functions. */
-	    "system-info", "load-program", "import",
-	    "get-devices", "print", "random", "time",
-	    "get-programs", "program-info", "exit",
-
-	    /* List functions. */
-	    "list", "cons", "push", "pop", "car", "cdr",
-	    "list-ref", "list-tail", "append", "remove",
-	    "reverse", "length", "null?", "list?", "pair?",
-	    "set-car!", "set-cdr!", "memq", "memv", "member",
-	    "assq", "assv", "assoc",
-
-	    /* Higher-order list functions. */
-	    "map", "filter", "for-each", "reduce", "count",
-
-	    /* Character functions. */
-	    "char?", "char-compare", "char-class", "char->integer",
-	    "integer->char", "char-upcase", "char-downcase",
-
-	    /* String functions. */
-	    "make-string", "string", "string?", "string-length",
-	    "string-ref", "string-set!", "string->list",
-	    "list->string", "vector->string", "string-fill!",
-	    "string-compare", "substring", "string-append",
-	    "string-copy", "string-split", "number->string",
-	    "string->number",
-
-	    /* Exception and condition functions. */
-	    "guard", "raise",
-
-	    /* Thread functions. */
-	    "thread-create!", "thread-fork!", "thread-id",
-	    "thread-join!", "thread-sleep!",
-	    "thread-specific", "thread-specific-set!",
-	    "thread-terminate!", "thread-yield!", "thread-stats",
-
-	    /* Mutex functions. */
-	    "mutex?", "make-mutex", "mutex-name", "mutex-specific",
-	    "mutex-specific-set!", "mutex-state", "mutex-lock!",
-	    "mutex-unlock!",
-
-	    /* Vector functions. */
-	    "make-vector", "vector", "vector?", "buffer?",
-	    "vector-length", "vector-ref", "vector-set!",
-	    "vector->list", "list->vector", "vector-fill!",
-
-	    /* I/O functions. */
-	    "input-port?", "output-port?", "current-input-port",
-	    "current-output-port", "open-input-file", "open-output-file",
-	    "close-input-port", "close-output-port", "read-char",
-	    "read", "peek-char", "eof-object?", "char-ready?",
-	    "write-char", "write", "display", "with-input-from-file",
-	    "with-output-to-file",
-
-	    /* Internet socket functions. */
-	    "make-client", "make-server", "peer-name",
-	    "accept-client", "incoming-client?", "addr->string",
-
-	    /* Mathematical functions using floats. */
-	    "floor", "ceiling", "round", "truncate", "exp",
-	    "log", "sin", "cos", "tan", "asin", "acos",
-	    "atan", "sqrt", "expt", "exact-to-inexact",
-	    "inexact-to-exact",
-
-	    /* Evaluation control functions. */
-	    "call-with-current-continuation", "values", "call-with-values",
-	    "dynamic-wind", "eval",
-
-	    /* Bit manipulation functions. */
-	    "bit-and", "bit-or", "bit-invert", "bit-not",
-	    "bit-xor", "bit-shift",
-
-	    /* Packet management functions. */
-	    "construct-packet", "deconstruct-packet"
+	    "+", "-", "*", "/", "gcd", "lcm", "numerator", "denominator",
+	    "quotient", "remainder", "modulo", "=", "/=", "<", "<=", ">",
+	    ">=", "zero?", "bind", "bind_function", "return", "begin", "if", "define",
+	    "set!", "and", "or", "apply", "quote", "number?", "integer?", "rational?",
+	    "real?", "complex?", "exact?", "inexact?", "procedure?", "boolean?", "port?", "not",
+	    "eq?", "eqv?", "equal?", "system-info", "load-program", "import", "get-devices", "print",
+	    "random", "time", "get-programs", "program-info", "exit", "list", "cons", "push",
+	    "pop", "car", "cdr", "list-ref", "list-tail", "slice", "append", "remove",
+	    "reverse", "length", "null?", "list?", "pair?", "set-car!", "set-cdr!", "memq",
+	    "memv", "member", "assq", "assv", "assoc", "list-enumerate", "list-zip", "list-index",
+	    "map", "filter", "for-each", "reduce", "count", "char?", "char-compare", "char-class",
+	    "char->integer", "integer->char", "char-upcase", "char-downcase", "make-string", "string", "string?", "string-length",
+	    "string-ref", "string-set!", "string->list", "list->string", "vector->string", "string-fill!", "string-compare", "substring",
+	    "string-append", "string-copy", "string-split", "string-join", "number->string", "string->number", "guard", "raise",
+	    "thread-create!", "thread-fork!", "thread-id", "thread-join!", "thread-sleep!", "thread-specific", "thread-specific-set!", "thread-terminate!",
+	    "thread-yield!", "thread-stats", "mutex?", "make-mutex", "mutex-name", "mutex-specific", "mutex-specific-set!", "mutex-state",
+	    "mutex-lock!", "mutex-unlock!", "make-vector", "vector", "vector?", "buffer?", "vector-merge", "vector-length",
+	    "vector-ref", "vector-set!", "vector->list", "list->vector", "vector-fill!", "make-buffer", "buffer-append", "input-port?",
+	    "output-port?", "current-input-port", "current-output-port", "open-input-file", "open-output-file", "close-input-port", "close-output-port", "read-char",
+	    "read", "peek-char", "eof-object?", "char-ready?", "write-char", "write", "display", "with-input-from-file",
+	    "with-output-to-file", "make-client", "make-server", "peer-name", "accept-client", "incoming-client?", "addr->string", "resolve-hostname",
+	    "floor", "ceiling", "round", "truncate", "exp", "log", "sin", "cos",
+	    "tan", "asin", "acos", "atan", "sqrt", "expt", "exact->inexact", "inexact->exact",
+	    "call-with-current-continuation", "values", "call-with-values", "dynamic-wind", "eval", "bit-and", "bit-or", "bit-invert",
+	    "bit-not", "bit-xor", "bit-shift", "construct-packet", "deconstruct-packet", "symbol?", "symbol->string"
 	};
 
 	internalSymbols = new VeloxTable<VeloxSymbol>();
