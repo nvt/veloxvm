@@ -100,6 +100,14 @@
 #define VM_FRAME_POOL_SIZE 4000
 #endif
 
+/* Size of the heapmem zone dedicated to the VM. All VM_MALLOC / VM_FREE /
+   VM_REALLOC traffic flows through this zone, so it must be large enough
+   to cover the Scheme heap, object pool, and frame pool plus any slack
+   for fragmentation. It has no effect on the rest of the system. */
+#ifndef VM_ZONE_SIZE
+#define VM_ZONE_SIZE (VM_HEAP_SIZE + VM_OBJECT_POOL_SIZE + VM_FRAME_POOL_SIZE)
+#endif
+
 #ifndef VM_CONSOLE_BUFFER_SIZE
 #define VM_CONSOLE_BUFFER_SIZE 80
 #endif

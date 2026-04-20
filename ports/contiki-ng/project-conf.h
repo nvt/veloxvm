@@ -16,17 +16,5 @@
 #define NBR_TABLE_CONF_MAX_NEIGHBORS 2
 #define NETSTACK_CONF_MAC nullmac_driver
 
-#undef HEAPMEM_CONF_ARENA_SIZE
-#define HEAPMEM_CONF_ARENA_SIZE VM_HEAP_SIZE        + \
-                                VM_OBJECT_POOL_SIZE + \
-                                VM_FRAME_POOL_SIZE
-
-#define HEAPMEM_CONF_REALLOC 1
-
-#undef MEMPOOL_CONF_ALLOC
-#define MEMPOOL_CONF_ALLOC heapmem_alloc
-#undef MEMPOOL_CONF_FREE
-#define MEMPOOL_CONF_FREE heapmem_free
-
 #undef RPL_CONF_INSERT_HBH_OPTION
 #define RPL_CONF_INSERT_HBH_OPTION 0
