@@ -34,14 +34,15 @@
 #include "contiki.h"
 #include "cfs/cfs.h"
 #include "cfs/cfs-coffee.h"
+#include "lib/heapmem.h"
 #include "lib/list.h"
 #include "lib/memb.h"
 #include "lib/sensors.h"
 #include "net/ipv6/uip.h"
 #include "net/ipv6/udp-socket.h"
 #include "net/ipv6/uip-nameserver.h"
-#include "net/ipv6/resolv.h"
 #include "net/ipv6/uip-ds6.h"
+#include "resolv.h"
 #include "sys/energest.h"
 
 #include "sys/log.h"
@@ -50,6 +51,26 @@
 
 #include "vm-log.h"
 #include "vm-native.h"
+
+HEAPMEM_ZONE_DEFINE(vm_heap_zone, VM_ZONE_SIZE);
+
+void *
+vm_native_alloc(size_t size)
+{
+  return heapmem_zone_alloc(&vm_heap_zone, size);
+}
+
+bool
+vm_native_free(void *ptr)
+{
+  return heapmem_zone_free(&vm_heap_zone, ptr);
+}
+
+void *
+vm_native_realloc(void *ptr, size_t size)
+{
+  return heapmem_zone_realloc(&vm_heap_zone, ptr, size);
+}
 
 PROCESS_NAME(vm_process);
 

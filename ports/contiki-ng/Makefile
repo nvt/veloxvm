@@ -6,6 +6,7 @@ endif
 
 MODULES += os/net/app-layer/coap
 MODULES += os/services/lwm2m
+MODULES += os/services/resolv
 
 VM_APP_IMAGE = vm-app-image.h
 
@@ -30,11 +31,13 @@ else
 	PROJECT_SOURCEFILES += ${notdir ${wildcard $(CUSTOM_POLICY_FILE)}}
 endif
 
+NEEDS_CONTIKI_VERSION_FILES += vm-native.c
+
 CONTIKI = ../../../contiki-ng
 include $(CONTIKI)/Makefile.include
 
 $(CONTIKI)/tools/tunslip6:	$(CONTIKI)/tools/tunslip6.c
-	(cd $(CONTIKING)/tools && $(MAKE) tunslip6)
+	(cd $(CONTIKI)/tools && $(MAKE) tunslip6)
 
 connect-router:	$(CONTIKI)/tools/tunslip6
 	sudo $(CONTIKI)/tools/tunslip6 $(PREFIX)

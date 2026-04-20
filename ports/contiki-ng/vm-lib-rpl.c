@@ -31,8 +31,8 @@
  */
 
 #include "contiki.h"
-#include "net/rpl-lite/rpl.h"
-#include "net/rpl-lite/rpl-dag-root.h"
+#include "net/netstack.h"
+#include "net/routing/routing.h"
 
 #include "vm.h"
 #include "vm-lib.h"
@@ -126,15 +126,15 @@ get_libval(vm_program_t *program, vm_symbol_ref_t *symref)
 
 VM_FUNCTION(rpl_is_rootp)
 {
-  VM_PUSH_BOOLEAN(rpl_dag_root_is_root());
+  VM_PUSH_BOOLEAN(NETSTACK_ROUTING.node_is_root());
 }
 
 VM_FUNCTION(rpl_create_dag)
 {
-  rpl_dag_root_init_dag_immediately();
+  NETSTACK_ROUTING.root_start();
 }
 
 VM_FUNCTION(rpl_in_dagp)
 {
-  VM_PUSH_BOOLEAN(rpl_get_any_dag() != NULL);
+  VM_PUSH_BOOLEAN(NETSTACK_ROUTING.node_has_joined());
 }

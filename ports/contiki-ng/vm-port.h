@@ -37,12 +37,12 @@
 #include "lib/random.h"
 #include "net/ipv6/udp-socket.h"
 
-#include "heapmem.h"
+#include "lib/heapmem.h"
 #include "vm-file.h"
 
-#define VM_MALLOC heapmem_alloc
-#define VM_FREE heapmem_free
-#define VM_REALLOC heapmem_realloc
+#define VM_MALLOC vm_native_alloc
+#define VM_FREE vm_native_free
+#define VM_REALLOC vm_native_realloc
 #define VM_STRDUP vm_native_strdup
 
 typedef int vm_loader_handle_t;
@@ -55,8 +55,8 @@ typedef int vm_loader_offset_t;
   vm_file_seek((handle), (offset), VM_FILE_SEEK_SET)
 #define VM_LOADER_CLOSE(handle) vm_file_close(handle)
 
-#define VM_MEMPOOL_CONF_ALLOC heapmem_alloc
-#define VM_MEMPOOL_CONF_FREE heapmem_free
+#define VM_MEMPOOL_CONF_ALLOC vm_native_alloc
+#define VM_MEMPOOL_CONF_FREE vm_native_free
 
 #define VM_RANDOM_FUNCTION random_rand
 
@@ -72,6 +72,9 @@ struct native_socket {
   uint16_t rport;
 };
 
+extern void *vm_native_alloc(size_t);
+extern bool vm_native_free(void *);
+extern void *vm_native_realloc(void *, size_t);
 extern char *vm_native_strdup(const char *);
 
 PROCESS_NAME(vm_perfmon_process);
