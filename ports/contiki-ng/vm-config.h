@@ -88,16 +88,37 @@
 #define VM_POLL_TIME 100
 #endif
 
+/*
+ * Default VM memory sizes.
+ *
+ * The Zoul platform keeps the tight legacy footprint (~12 kB total)
+ * because it only has 32 kB of RAM. Other Contiki-NG targets (with
+ * typically 256 kB RAM and up) get roomier defaults so non-trivial
+ * Scheme programs do not hit the GC or frame stack before doing useful
+ * work. All three knobs remain individually overridable.
+ */
 #ifndef VM_HEAP_SIZE
+#if CONTIKI_TARGET_ZOUL
 #define VM_HEAP_SIZE 5000
+#else
+#define VM_HEAP_SIZE 32768
+#endif
 #endif
 
 #ifndef VM_OBJECT_POOL_SIZE
+#if CONTIKI_TARGET_ZOUL
 #define VM_OBJECT_POOL_SIZE 3000
+#else
+#define VM_OBJECT_POOL_SIZE 16384
+#endif
 #endif
 
 #ifndef VM_FRAME_POOL_SIZE
+#if CONTIKI_TARGET_ZOUL
 #define VM_FRAME_POOL_SIZE 4000
+#else
+#define VM_FRAME_POOL_SIZE 8192
+#endif
 #endif
 
 /* Size of the heapmem zone dedicated to the VM. All VM_MALLOC / VM_FREE /
