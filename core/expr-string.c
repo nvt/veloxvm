@@ -213,12 +213,12 @@ VM_FUNCTION(list_to_string)
 
   for(i = 0, item = list->head; item != NULL; i++, item = item->next) {
     if(item->obj.type != VM_TYPE_CHARACTER) {
-      vm_free(string->str);
       vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
       return;
     }
     string->str[i] = item->obj.value.character;
   }
+  string->str[string->length] = '\0';
 }
 
 VM_FUNCTION(vector_to_string)
@@ -332,6 +332,10 @@ VM_FUNCTION(string_append)
 
   for(i = result_length = 0; i < argc; i++) {
     string = argv[i].value.string;
+    if(string->length > VM_STRING_MAX_LENGTH - result_length) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+      return;
+    }
     result_length += string->length;
   }
 

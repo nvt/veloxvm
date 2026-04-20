@@ -168,9 +168,10 @@ read_table(vm_table_t *table, int handle)
       return 0;
     }
 
-    if(table_size > VM_TABLE_MAX_BYTES) {
-      VM_DEBUG(VM_DEBUG_LOW, "Maximum table size exceeded (%lu > %lu)",
-               (unsigned long)table_size, (unsigned long)VM_TABLE_MAX_BYTES);
+    if((uint32_t)item_length + 2 > VM_TABLE_MAX_BYTES - table_size) {
+      VM_DEBUG(VM_DEBUG_LOW, "Maximum table size exceeded (%lu + %u > %lu)",
+               (unsigned long)table_size, (unsigned)item_length + 2,
+               (unsigned long)VM_TABLE_MAX_BYTES);
       return 0;
     }
 
@@ -271,16 +272,20 @@ read_program(const char *name)
     goto error;
   }
 
-  program->symbol_bindings = VM_MALLOC(VM_TABLE_SIZE(program->symbols) *
-                                       sizeof(vm_obj_t));
-  if(program->symbol_bindings == NULL) {
-    VM_DEBUG(VM_DEBUG_LOW, "Failed to allocate local symbol table");
-    goto error;
-  }
+  if(VM_TABLE_SIZE(program->symbols) > 0) {
+    program->symbol_bindings = VM_MALLOC(VM_TABLE_SIZE(program->symbols) *
+                                         sizeof(vm_obj_t));
+    if(program->symbol_bindings == NULL) {
+      VM_DEBUG(VM_DEBUG_LOW, "Failed to allocate local symbol table");
+      goto error;
+    }
 
-  for(i = 0; i < VM_TABLE_SIZE(program->symbols); i++) {
-    program->symbol_bindings[i].type = VM_TYPE_NONE;
-    memset(&program->symbol_bindings[i].value, 0, sizeof(vm_obj_value_t));
+    for(i = 0; i < VM_TABLE_SIZE(program->symbols); i++) {
+      program->symbol_bindings[i].type = VM_TYPE_NONE;
+      memset(&program->symbol_bindings[i].value, 0, sizeof(vm_obj_value_t));
+    }
+  } else {
+    program->symbol_bindings = NULL;
   }
 
   for(code_size = i = 0; i < VM_TABLE_SIZE(program->exprv); i++) {
@@ -334,7 +339,7 @@ vm_load_program(const char *name)
 
 #if VM_INSTRUCTION_PROFILING
   program->exec_count = VM_MALLOC(sizeof(*program->exec_count) *
-                                  VM_TABLE_SIZE(program->exprv);
+                                  VM_TABLE_SIZE(program->exprv));
   if(program->exec_count == NULL) {
     VM_DEBUG(VM_DEBUG_MEDIUM, "Unable to allocate profiling data");
     return 0;
