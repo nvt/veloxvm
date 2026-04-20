@@ -249,6 +249,9 @@ int vm_objects_equal(vm_thread_t *thread, vm_obj_t *, vm_obj_t *);
 int vm_objects_deep_equal(vm_thread_t *thread, vm_obj_t *, vm_obj_t *);
 int vm_object_deep_copy(vm_obj_t *, vm_obj_t *);
 
+/* String utilities. (vm-symbols.c) */
+int vm_strcasecmp(const char *, const char *);
+
 /* Memory functions. (vm-memory.c) */
 void *vm_alloc(unsigned);
 void vm_free(void *);

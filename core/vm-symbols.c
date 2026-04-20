@@ -30,11 +30,30 @@
  * Author: Nicolas Tsiftes <nvt@acm.org>
  */
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 #include "vm.h"
 #include "vm-log.h"
+
+int
+vm_strcasecmp(const char *a, const char *b)
+{
+  int ca;
+  int cb;
+
+  while(*a != '\0' && *b != '\0') {
+    ca = tolower((unsigned char)*a);
+    cb = tolower((unsigned char)*b);
+    if(ca != cb) {
+      return ca - cb;
+    }
+    a++;
+    b++;
+  }
+  return tolower((unsigned char)*a) - tolower((unsigned char)*b);
+}
 
 #define SYM(str) {.name = (str)}
 
@@ -209,7 +228,7 @@ vm_symbol_get_ref(vm_thread_t *thread, const char *name,
   vm_symbol_id_t i;
 
   for(i = 0; i < VM_TABLE_SIZE(thread->program->symbols); i++) {
-    if(strcasecmp((const char *)VM_TABLE_GET(thread->program->symbols, i),
+    if(vm_strcasecmp((const char *)VM_TABLE_GET(thread->program->symbols, i),
 	      name) == 0) {
       symbol_ref->scope = VM_SYMBOL_SCOPE_APP;
       symbol_ref->symbol_id = i;
