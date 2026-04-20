@@ -358,10 +358,9 @@ VM_FUNCTION(string_copy)
 
 VM_FUNCTION(string_split)
 {
-  char *string;
-  char *seps;
-  char *save_ptr;
-  char *substring;
+  const char *string;
+  const char *seps;
+  const char *p;
   vm_list_t *list;
   vm_obj_t obj;
 
@@ -372,35 +371,32 @@ VM_FUNCTION(string_split)
     return;
   }
 
-  string = VM_STRDUP(string);
-  if(string == NULL) {
-    return;
-  }
-
   list = vm_list_create();
   if(list == NULL) {
     vm_signal_error(thread, VM_ERROR_HEAP);
-    VM_FREE(string);
     return;
   }
 
   obj.type = VM_TYPE_STRING;
 
-  save_ptr = string;
-  do {
-    substring = strtok_r(string, seps, &save_ptr);
-    string = NULL;
-    if(substring == NULL) {
+  p = string;
+  while(*p != '\0') {
+    size_t tok_len;
+
+    p += strspn(p, seps);
+    if(*p == '\0') {
       break;
     }
 
-    if(vm_string_create(&obj, -1, substring) == NULL ||
+    tok_len = strcspn(p, seps);
+
+    if(vm_string_create(&obj, tok_len, p) == NULL ||
        !vm_list_insert_tail(list, &obj)) {
       vm_signal_error(thread, VM_ERROR_HEAP);
-      VM_FREE(string);
       return;
     }
-  } while(substring != NULL);
+    p += tok_len;
+  }
 
   VM_PUSH_LIST(list);
 }
