@@ -30,6 +30,8 @@ else
 	PROJECT_SOURCEFILES += ${notdir ${wildcard $(CUSTOM_POLICY_FILE)}}
 endif
 
+NEEDS_CONTIKI_VERSION_FILES += vm-native.c
+
 CONTIKI = ../../../contiki-ng
 include $(CONTIKI)/Makefile.include
 
