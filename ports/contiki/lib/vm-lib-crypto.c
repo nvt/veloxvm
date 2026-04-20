@@ -122,7 +122,7 @@ get_cipher_value(vm_program_t *program, vm_symbol_ref_t *symref)
   }
 
   for(i = 0; i < CRYPTO_CIPHER_COUNT; i++) {
-    if(strcasecmp(name, cipher_map[i].sym_name) == 0) {
+    if(vm_strcasecmp(name, cipher_map[i].sym_name) == 0) {
       return cipher_map[i].cipher;
     }
   }

@@ -115,7 +115,7 @@ get_libval(vm_program_t *program, vm_symbol_ref_t *symref)
   }
 
   for(i = 0; i < ARRAY_SIZE(sym_to_libval_map); i++) {
-    if(strcasecmp(name, sym_to_libval_map[i].sym_name) == 0) {
+    if(vm_strcasecmp(name, sym_to_libval_map[i].sym_name) == 0) {
       return sym_to_libval_map[i].libval;
     }
   }

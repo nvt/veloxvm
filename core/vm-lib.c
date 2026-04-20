@@ -92,7 +92,7 @@ vm_lib_bind_symbol(vm_program_t *program, const char *name, vm_obj_t *obj)
 
   for(j = 0; j < VM_TABLE_SIZE(program->symbols); j++) {
     symbol = (const char *)VM_TABLE_GET(program->symbols, j);
-    if(symbol != NULL && strcasecmp(name, symbol) == 0) {
+    if(symbol != NULL && vm_strcasecmp(name, symbol) == 0) {
       VM_DEBUG(VM_DEBUG_MEDIUM, "Found reference to library symbol %s",
                symbol);
       program->symbol_bindings[j].type = obj->type;
