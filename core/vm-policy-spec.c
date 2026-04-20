@@ -271,7 +271,7 @@ vm_policy_add_rule(vm_policy_t *policy, vm_policy_rule_t *rule_arg)
     }
     break;
   case VM_POLICY_TYPE_FILE:
-    rule->file.path = strdup(rule_arg->file.path);
+    rule->file.path = VM_STRDUP(rule_arg->file.path);
     rule->file.flags = rule_arg->file.flags;
     rule->next = policy->rules[VM_POLICY_TYPE_FILE];
     break;
