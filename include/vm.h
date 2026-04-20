@@ -48,7 +48,7 @@
 #include "vm-types.h"
 
 #define VM_NAME "VeloxVM"
-#define VM_VERSION_MAJOR 1
+#define VM_VERSION_MAJOR 2
 #define VM_VERSION_MINOR 0
 #define VM_COPYRIGHT "Copyright 2012-2017 RISE SICS AB"
 
