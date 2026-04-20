@@ -39,6 +39,7 @@
 #include "lib/memb.h"
 #include "lib/sensors.h"
 #include "net/ipv6/uip.h"
+#include "net/ipv6/uiplib.h"
 #include "net/ipv6/udp-socket.h"
 #include "net/ipv6/uip-nameserver.h"
 #include "net/ipv6/uip-ds6.h"
@@ -521,6 +522,19 @@ vm_native_resolve(vm_thread_t *thread, const char *hostname)
     VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
     return -1;
   }
+}
+
+int
+vm_native_parse_address(const char *str, uint8_t *bytes, size_t *len)
+{
+  uip_ipaddr_t addr;
+
+  if(uiplib_ipaddrconv(str, &addr) != 0) {
+    memcpy(bytes, addr.u8, sizeof(addr.u8));
+    *len = sizeof(addr.u8);
+    return 1;
+  }
+  return 0;
 }
 
 vm_port_t *

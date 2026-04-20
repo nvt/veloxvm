@@ -723,6 +723,25 @@ vm_native_resolve(vm_thread_t *thread, const char *hostname)
   return -1;
 }
 
+int
+vm_native_parse_address(const char *str, uint8_t *bytes, size_t *len)
+{
+  struct in6_addr addr6;
+  struct in_addr addr4;
+
+  if(inet_pton(AF_INET6, str, &addr6) == 1) {
+    memcpy(bytes, &addr6, sizeof(addr6));
+    *len = sizeof(addr6);
+    return 1;
+  }
+  if(inet_pton(AF_INET, str, &addr4) == 1) {
+    memcpy(bytes, &addr4, sizeof(addr4));
+    *len = sizeof(addr4);
+    return 1;
+  }
+  return 0;
+}
+
 vm_port_t *
 vm_native_open_file(vm_thread_t *thread, const char *filename, int direction)
 {
