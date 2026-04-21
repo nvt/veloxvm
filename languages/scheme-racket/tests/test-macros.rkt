@@ -216,9 +216,14 @@
     (print "big"))
 ))
 
-(define expanded (filter-map expand-macros forms))
+;; expand-macros returns the *FILTERED* sentinel for define-syntax (not
+;; #f), so filter-map doesn't remove it. Filter by the sentinel the way
+;; main.rkt does.
+(define expanded
+  (filter (lambda (e) (not (eq? e *FILTERED*)))
+          (map expand-macros forms)))
 
-;; define-syntax should be filtered out (returns #f)
+;; define-syntax should be filtered out
 ;; define and when should be expanded
 (check-equal? (length expanded) 2 "Should have 2 expressions after filtering define-syntax")
 (check-equal? (car expanded) '(define x 10))
