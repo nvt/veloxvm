@@ -12,97 +12,114 @@
 (displayln "End-to-End Integration Tests")
 (displayln "========================================\n")
 
-;; Helper to compile an expression through full pipeline
+;; Helpers.
+;;
+;; VM primitives are encoded in the core scope (scope=0) via their op-id
+;; and never appear in the user symbol table. Primitive-shape assertions
+;; therefore walk the rewritten AST via rewrite-only + contains-sym?;
+;; (bytecode-symbols bc) checks are reserved for user-defined names.
+(define (rewrite-only expr)
+  (rewrite-expr expr))
+
 (define (compile-full expr)
   (define bc (make-bytecode))
-  (define rewritten (rewrite-expr expr))
-  (compile-expr rewritten bc)
+  (compile-expr (rewrite-expr expr) bc)
   bc)
+
+(define (contains-sym? sym tree)
+  (cond
+    [(null? tree) #f]
+    [(pair? tree) (or (contains-sym? sym (car tree))
+                      (contains-sym? sym (cdr tree)))]
+    [else (eq? sym tree)]))
 
 ;; Test 1: Simple arithmetic
 (displayln "Test 1: Simple arithmetic (+ 1 2)")
 (define bc1 (compile-full '(+ 1 2)))
 (check-equal? (bytecode-magic bc1) #x5EB5 "Magic number correct")
-(check-equal? (bytecode-version bc1) 1 "Version correct")
-(check-true (member '+ (bytecode-symbols bc1)) "Symbol + found")
+(check-equal? (bytecode-version bc1) 2 "Version correct")
+(check-true (contains-sym? '+ (rewrite-only '(+ 1 2)))
+            "Rewritten form references '+'")
 (displayln "   PASSED\n")
 
 ;; Test 2: Variable definition
 (displayln "Test 2: Variable definition (define x 42)")
 (define bc2 (compile-full '(define x 42)))
-(check-true (member 'define (bytecode-symbols bc2)) "Symbol 'define' found")
-(check-true (member 'x (bytecode-symbols bc2)) "Symbol 'x' found")
+(check-not-false (member 'x (bytecode-symbols bc2)) "User symbol 'x' found in symbol table")
 (displayln "   PASSED\n")
 
 ;; Test 3: Function definition
 (displayln "Test 3: Function definition (define (square x) (* x x))")
 (define bc3 (compile-full '(define (square x) (* x x))))
-(check-true (member 'square (bytecode-symbols bc3)) "Symbol 'square' found")
-(check-true (member 'bind (bytecode-symbols bc3)) "Symbol 'bind' found (lambda)")
-(check-true (member '* (bytecode-symbols bc3)) "Symbol '*' found")
+(check-not-false (member 'square (bytecode-symbols bc3)) "Symbol 'square' found")
+(check-not-false (member 'x (bytecode-symbols bc3)) "Symbol 'x' found (lambda parameter)")
 (displayln "   PASSED\n")
 
 ;; Test 4: Lambda expression
 (displayln "Test 4: Lambda expression (lambda (x) (+ x 1))")
 (define bc4 (compile-full '(lambda (x) (+ x 1))))
-(check-true (member 'bind (bytecode-symbols bc4)) "Lambda uses 'bind'")
-(check-true (> (length (bytecode-expressions bc4)) 0) "Expressions generated")
+(check-not-false (member 'x (bytecode-symbols bc4)) "Lambda parameter 'x' found")
+(check-true (> (bytecode-expression-count bc4) 0) "Expressions generated")
 (displayln "   PASSED\n")
 
 ;; Test 5: Conditional (cond - derived form)
 (displayln "Test 5: Cond expression (cond ((< x 0) -1) (else 0))")
-(define bc5 (compile-full '(cond ((< x 0) -1) (else 0))))
-(check-true (member 'if (bytecode-symbols bc5)) "Cond rewrites to 'if'")
-(check-true (member '< (bytecode-symbols bc5)) "Comparison operator found")
+(define rw5 (rewrite-only '(cond ((< x 0) -1) (else 0))))
+(check-true (contains-sym? 'if rw5) "Cond rewrites to 'if'")
+(check-true (contains-sym? '< rw5) "Comparison operator preserved")
+(compile-full '(cond ((< x 0) -1) (else 0)))  ; sanity: compiles cleanly
 (displayln "   PASSED\n")
 
 ;; Test 6: Let expression (derived form)
 (displayln "Test 6: Let expression (let ((x 1) (y 2)) (+ x y))")
-(define bc6 (compile-full '(let ((x 1) (y 2)) (+ x y))))
+(define rw6 (rewrite-only '(let ((x 1) (y 2)) (+ x y))))
 ;; Let should rewrite to ((lambda (x y) (+ x y)) 1 2)
-(check-true (member 'bind (bytecode-symbols bc6)) "Let rewrites to lambda")
-(check-true (member '+ (bytecode-symbols bc6)) "Body contains +")
+(check-true (contains-sym? 'lambda rw6) "Let rewrites to a lambda application")
+(check-true (contains-sym? '+ rw6) "Body contains +")
+(define bc6 (compile-full '(let ((x 1) (y 2)) (+ x y))))
+(check-not-false (member 'x (bytecode-symbols bc6)) "Bound 'x' in symbol table")
+(check-not-false (member 'y (bytecode-symbols bc6)) "Bound 'y' in symbol table")
 (displayln "   PASSED\n")
 
 ;; Test 7: Case expression (derived form)
 (displayln "Test 7: Case expression (case x ((1 2) 'small) (else 'large))")
-(define bc7 (compile-full '(case x ((1 2) small) (else large))))
-(check-true (member 'memv (bytecode-symbols bc7)) "Case uses 'memv'")
-(check-true (member 'list (bytecode-symbols bc7)) "Case uses 'list'")
-(check-true (member 'if (bytecode-symbols bc7)) "Case uses 'if'")
+(define rw7 (rewrite-only '(case x ((1 2) small) (else large))))
+(check-true (contains-sym? 'memv rw7) "Case uses 'memv'")
+(check-true (contains-sym? 'list rw7) "Case uses 'list'")
+(check-true (contains-sym? 'if rw7) "Case uses 'if' (via cond rewrite)")
 (displayln "   PASSED\n")
 
 ;; Test 8: Do loop (derived form)
 (displayln "Test 8: Do loop (do ((i 0 (+ i 1))) ((> i 10) i))")
-(define bc8 (compile-full '(do ((i 0 (+ i 1))) ((> i 10) i))))
-(check-true (member 'define (bytecode-symbols bc8)) "Do creates internal define")
-(check-true (member 'if (bytecode-symbols bc8)) "Do uses 'if'")
+(define rw8 (rewrite-only '(do ((i 0 (+ i 1))) ((> i 10) i))))
+(check-true (contains-sym? 'define rw8) "Do creates internal define")
+(check-true (contains-sym? 'if rw8) "Do uses 'if'")
 (displayln "   PASSED\n")
 
 ;; Test 9: When macro (derived form)
 (displayln "Test 9: When macro (when (> x 0) (print x))")
-(define bc9 (compile-full '(when (> x 0) (print x))))
-(check-true (member 'if (bytecode-symbols bc9)) "When rewrites to 'if'")
-(check-true (member '> (bytecode-symbols bc9)) "Condition preserved")
+(define rw9 (rewrite-only '(when (> x 0) (print x))))
+(check-true (contains-sym? 'if rw9) "When rewrites to 'if'")
+(check-true (contains-sym? '> rw9) "Condition preserved")
 (displayln "   PASSED\n")
 
 ;; Test 10: Car/cdr composition (derived form)
 (displayln "Test 10: Car/cdr composition (caddr lst)")
-(define bc10 (compile-full '(caddr lst)))
-(check-true (member 'car (bytecode-symbols bc10)) "caddr uses 'car'")
-(check-true (member 'cdr (bytecode-symbols bc10)) "caddr uses 'cdr'")
+(define rw10 (rewrite-only '(caddr lst)))
+(check-true (contains-sym? 'car rw10) "caddr uses 'car'")
+(check-true (contains-sym? 'cdr rw10) "caddr uses 'cdr'")
 (displayln "   PASSED\n")
 
 ;; Test 11: Zero? predicate (derived form)
 (displayln "Test 11: Zero? predicate (zero? x)")
-(define bc11 (compile-full '(zero? x)))
-(check-true (member '= (bytecode-symbols bc11)) "zero? rewrites to '='")
+(define rw11 (rewrite-only '(zero? x)))
+(check-true (contains-sym? '= rw11) "zero? rewrites to '='")
 (displayln "   PASSED\n")
 
 ;; Test 12: Character predicate (derived form)
 (displayln "Test 12: Character predicate (char-alphabetic? #\\a)")
-(define bc12 (compile-full '(char-alphabetic? #\a)))
-(check-true (member 'char-class (bytecode-symbols bc12)) "Uses char-class primitive")
+(define rw12 (rewrite-only '(char-alphabetic? #\a)))
+(check-true (contains-sym? 'char-class rw12) "Uses char-class primitive")
 (displayln "   PASSED\n")
 
 ;; Test 13: Complex nested expression
@@ -112,18 +129,23 @@
      (if (zero? n)
          1
          (* n (factorial (- n 1))))))
+(define rw13 (rewrite-only complex-expr))
+(check-true (contains-sym? '= rw13) "zero? expanded to =")
+(check-true (contains-sym? '* rw13) "Multiplication preserved")
 (define bc13 (compile-full complex-expr))
-(check-true (member 'factorial (bytecode-symbols bc13)) "Function name found")
-(check-true (member '= (bytecode-symbols bc13)) "zero? expanded to =")
-(check-true (member '* (bytecode-symbols bc13)) "Multiplication found")
+(check-not-false (member 'factorial (bytecode-symbols bc13)) "Function name in symbol table")
+(check-not-false (member 'n (bytecode-symbols bc13)) "Parameter 'n' in symbol table")
 (displayln "   PASSED\n")
 
 ;; Test 14: Let* sequential bindings
 (displayln "Test 14: Let* sequential bindings (let* ((x 1) (y x)) y)")
+(define rw14 (rewrite-only '(let* ((x 1) (y x)) y)))
+(check-true (contains-sym? 'lambda rw14) "let* rewrites through nested lambdas")
 (define bc14 (compile-full '(let* ((x 1) (y x)) y)))
-(check-true (member 'bind (bytecode-symbols bc14)) "let* uses lambda")
-;; let* should create nested lambdas
-(check-true (> (length (bytecode-expressions bc14)) 3) "Multiple expressions for nesting")
+;; let* rewrites to nested (let ...) → nested ((lambda ...) ...), each
+;; lambda body becoming its own bind_function expression, so the count
+;; grows with the number of bindings.
+(check-true (> (bytecode-expression-count bc14) 1) "Multiple expressions for nesting")
 (displayln "   PASSED\n")
 
 ;; Test 15: Bytecode file writing and reading back
@@ -135,7 +157,7 @@
 (define file-bytes (file->bytes test-file))
 (check-equal? (bytes-ref file-bytes 0) #x5E "Magic byte 1 correct")
 (check-equal? (bytes-ref file-bytes 1) #xB5 "Magic byte 2 correct")
-(check-equal? (bytes-ref file-bytes 2) 1 "Version byte correct")
+(check-equal? (bytes-ref file-bytes 2) 2 "Version byte correct")
 (displayln "   PASSED\n")
 
 ;; Clean up test file
