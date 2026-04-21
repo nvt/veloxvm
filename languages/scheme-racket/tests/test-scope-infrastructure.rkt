@@ -46,8 +46,12 @@
 (process-define-syntax 'foo
   '(syntax-rules () [(foo) 'global-foo]))
 
+;; A syntax-rules transformer returns the expanded *form*, not the
+;; evaluated value. The template 'global-foo is read as (quote global-foo),
+;; so the expansion is also (quote global-foo) — hence the extra quote
+;; level in the expected values below.
 (define global-transformer (lookup-macro 'foo))
-(check-equal? (global-transformer '(foo)) 'global-foo)
+(check-equal? (global-transformer '(foo)) ''global-foo)
 (printf "   Global 'foo' returns 'global-foo\n")
 
 ;; Push local scope with shadowing definition
@@ -58,7 +62,7 @@
 
 ;; Should get local version (shadows global)
 (define local-transformer (lookup-macro 'foo))
-(check-equal? (local-transformer '(foo)) 'local-foo)
+(check-equal? (local-transformer '(foo)) ''local-foo)
 (printf "   Local 'foo' shadows global, returns 'local-foo\n")
 
 ;; Pop scope
@@ -66,7 +70,7 @@
 
 ;; Should get global version again
 (define restored-transformer (lookup-macro 'foo))
-(check-equal? (restored-transformer '(foo)) 'global-foo)
+(check-equal? (restored-transformer '(foo)) ''global-foo)
 (printf "   After pop, 'foo' returns 'global-foo again\n")
 
 ;; Test 3: Nested scopes
