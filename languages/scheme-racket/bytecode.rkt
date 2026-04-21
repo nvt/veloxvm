@@ -10,6 +10,10 @@
 
 (provide (struct-out bytecode)
          (struct-out expr-encoding)
+         bytecode-strings
+         bytecode-symbols
+         bytecode-expressions
+         bytecode-expression-count
          make-bytecode
          add-string
          add-symbol
@@ -35,12 +39,20 @@
 ;; ============================================================================
 
 ;; Bytecode file structure
+;;
+;; The internal list fields are stored in REVERSE insertion order so that
+;; add-* can cons onto the head in O(1). The public accessors
+;; (bytecode-strings / -symbols / -expressions) reverse once on read.
+;; Parallel hash indices provide O(1) dedup/lookup.
 (struct bytecode
-  (magic          ; Magic number: #x5E #xB5
-   version        ; Version: 1
-   strings        ; (listof string)
-   symbols        ; (listof symbol)
-   expressions)   ; (listof expr-encoding)
+  (magic              ; Magic number: #x5E #xB5
+   version            ; Bytecode format version
+   strings-rev        ; (listof string), reverse insertion order
+   strings-index      ; hash: string -> index
+   symbols-rev        ; (listof symbol), reverse insertion order
+   symbols-index      ; hash: symbol -> index
+   exprs-rev          ; (listof expr-encoding), reverse insertion order
+   expr-count)        ; number of expressions added
   #:mutable
   #:transparent)
 
@@ -58,42 +70,61 @@
 (define (make-bytecode)
   (bytecode #x5EB5        ; Magic number
             2             ; Version
-            '()           ; Strings
-            '()           ; Symbols
-            '()))         ; Expressions
+            '()           ; strings-rev
+            (make-hash)   ; strings-index
+            '()           ; symbols-rev
+            (make-hash)   ; symbols-index
+            '()           ; exprs-rev
+            0))           ; expr-count
 
-;; Add string to table, return index
+;; Ordered (insertion-order) accessors. Reverse is O(n); callers that need
+;; to iterate should cache the result rather than call in a loop.
+(define (bytecode-strings bc)
+  (reverse (bytecode-strings-rev bc)))
+
+(define (bytecode-symbols bc)
+  (reverse (bytecode-symbols-rev bc)))
+
+(define (bytecode-expressions bc)
+  (reverse (bytecode-exprs-rev bc)))
+
+(define (bytecode-expression-count bc)
+  (bytecode-expr-count bc))
+
+;; Add string to table, return index (deduplicating via hash).
 (define (add-string bc str)
-  (let* ([strings (bytecode-strings bc)]
-         [idx (index-of strings str)])
-    (if idx
-        idx
-        (begin
-          (set-bytecode-strings! bc (append strings (list str)))
-          (- (length (bytecode-strings bc)) 1)))))
+  (define index (bytecode-strings-index bc))
+  (or (hash-ref index str #f)
+      (let ([idx (hash-count index)])
+        (hash-set! index str idx)
+        (set-bytecode-strings-rev! bc (cons str (bytecode-strings-rev bc)))
+        idx)))
 
-;; Add symbol to table, return index
+;; Add symbol to table, return index (deduplicating via hash).
 (define (add-symbol bc sym)
-  (let* ([symbols (bytecode-symbols bc)]
-         [idx (index-of symbols sym)])
-    (if idx
-        idx
-        (begin
-          (set-bytecode-symbols! bc (append symbols (list sym)))
-          (- (length (bytecode-symbols bc)) 1)))))
+  (define index (bytecode-symbols-index bc))
+  (or (hash-ref index sym #f)
+      (let ([idx (hash-count index)])
+        (hash-set! index sym idx)
+        (set-bytecode-symbols-rev! bc (cons sym (bytecode-symbols-rev bc)))
+        idx)))
 
-;; Add compiled expression
+;; Add compiled expression; returns the new expression's id.
 (define (add-expr bc encoding)
-  (set-bytecode-expressions! bc
-    (append (bytecode-expressions bc) (list encoding))))
+  (let ([idx (bytecode-expr-count bc)])
+    (set-bytecode-exprs-rev! bc (cons encoding (bytecode-exprs-rev bc)))
+    (set-bytecode-expr-count! bc (+ idx 1))
+    idx))
 
-;; Replace expression at given index
+;; Replace expression at given index.
 (define (replace-expr bc index encoding)
-  (let ([exprs (bytecode-expressions bc)])
-    (when (>= index (length exprs))
-      (error 'replace-expr "Index ~a out of bounds (length ~a)" index (length exprs)))
-    (set-bytecode-expressions! bc
-      (list-set exprs index encoding))))
+  (let ([count (bytecode-expr-count bc)])
+    (when (>= index count)
+      (error 'replace-expr "Index ~a out of bounds (length ~a)" index count))
+    ;; exprs-rev is stored in reverse, so logical index i lives at
+    ;; reversed position (count - 1 - i).
+    (set-bytecode-exprs-rev! bc
+      (list-set (bytecode-exprs-rev bc) (- count 1 index) encoding))))
 
 ;; ============================================================================
 ;; Bit Packing Utilities
@@ -197,34 +228,32 @@
                [byte1 (bitwise-ior #x80 high-bits)])  ; bit 7=1 for extended
           (expr-encoding 'atom (list header byte1 low-byte))))))
 
+;; Pre-built hash for O(1) primitive-id lookup. vm-primitives is a fixed
+;; list compiled into the module, so we can memoize once at load time.
+(define primitive-id-table
+  (let ([h (make-hash)])
+    (for ([p (in-list vm-primitives)]
+          [i (in-naturals)])
+      (hash-set! h p i))
+    h))
+
 (define (get-primitive-id sym)
-  ;; Get the index of a VM primitive symbol
-  (let loop ([prims vm-primitives] [idx 0])
-    (cond
-      [(null? prims) #f]
-      [(eq? (car prims) sym) idx]
-      [else (loop (cdr prims) (+ idx 1))])))
+  (hash-ref primitive-id-table sym #f))
 
 (define (encode-symbol sym bc [env '()])
   ;; Check if this is a lambda parameter, VM primitive (core scope), or user symbol (app scope)
   ;; Check environment FIRST to handle cases where parameter names shadow primitives
   (cond
-    ;; Lambda parameter - look up existing ID, or add if first reference
-    ;; The symbol might not be in the table yet if this is the bind_function parameter list
+    ;; Lambda parameter - add-symbol handles dedup via its hash index.
     [(member sym env)
-     (let* ([existing-symbols (bytecode-symbols bc)]
-            [idx (index-of existing-symbols sym)])
-       (if idx
-           (encode-symbol-with-id idx 1)  ; scope=1 (app), existing
-           (encode-symbol-with-id (add-symbol bc sym) 1)))]  ; scope=1 (app), newly added
+     (encode-symbol-with-id (add-symbol bc sym) 1)]  ; scope=1 (app)
     ;; VM primitive - use core scope
     [(get-primitive-id sym)
      => (lambda (prim-id)
           (encode-symbol-with-id prim-id 0))]  ; scope=0 (core)
     ;; User symbol - use app scope
     [else
-     (let ([idx (add-symbol bc sym)])
-       (encode-symbol-with-id idx 1))]))
+     (encode-symbol-with-id (add-symbol bc sym) 1)]))
 
 ;; Symbol-table index: 6 bits (simple) or 14 bits (extended, 6+8).
 (define VM-MAX-SYMBOL-INDEX (- (expt 2 14) 1))

@@ -172,7 +172,7 @@
          ;; This ensures all form references are correct from the start
          [bind-enc (compile-expr bind-expr bc extended-env)]
          ;; Add to main bc and get its index
-         [expr-id (length (bytecode-expressions bc))]
+         [expr-id (bytecode-expression-count bc)]
          [_ (add-expr bc bind-enc)])
     ;; Return lambda form referencing the bind expression
     (encode-form-lambda expr-id)))
@@ -190,14 +190,14 @@
          ;; Compile test - if it's nested, store separately
          [test-enc (if (pair? test)
                        (let* ([nested (compile-expr test bc env)]
-                              [expr-id (length (bytecode-expressions bc))])
+                              [expr-id (bytecode-expression-count bc)])
                          (add-expr bc nested)
                          (encode-form-ref expr-id))
                        (compile-expr test bc env))]
          ;; Compile consequent - if it's nested, store separately
          [cons-enc (if (pair? consequent)
                        (let* ([nested (compile-expr consequent bc env)]
-                              [expr-id (length (bytecode-expressions bc))])
+                              [expr-id (bytecode-expression-count bc)])
                          (add-expr bc nested)
                          (encode-form-ref expr-id))
                        (compile-expr consequent bc env))]
@@ -205,7 +205,7 @@
          [alt-enc (if alternate
                       (if (pair? alternate)
                           (let* ([nested (compile-expr alternate bc env)]
-                                 [expr-id (length (bytecode-expressions bc))])
+                                 [expr-id (bytecode-expression-count bc)])
                             (add-expr bc nested)
                             (encode-form-ref expr-id))
                           (compile-expr alternate bc env))
@@ -250,7 +250,7 @@
                ;; Lambdas are special: compile-lambda already handles storing bind expressions
                [val-enc (if (and (pair? val) (not (eq? (car val) 'lambda)))
                            (let* ([nested (compile-expr val bc env)]
-                                  [expr-id (length (bytecode-expressions bc))])
+                                  [expr-id (bytecode-expression-count bc)])
                              (add-expr bc nested)
                              (encode-form-ref expr-id))
                            (compile-expr val bc env))]
@@ -269,7 +269,7 @@
          ;; If value is a nested expression (but not lambda), store separately and use form ref
          [val-enc (if (and (pair? val) (not (eq? (car val) 'lambda)))
                      (let* ([nested (compile-expr val bc env)]
-                            [expr-id (length (bytecode-expressions bc))])
+                            [expr-id (bytecode-expression-count bc)])
                        (add-expr bc nested)
                        (encode-form-ref expr-id))
                      (compile-expr val bc env))]
@@ -290,7 +290,7 @@
          [expr-encs (map (lambda (e)
                            (if (pair? e)
                                (let* ([nested (compile-expr e bc env)]
-                                      [expr-id (length (bytecode-expressions bc))])
+                                      [expr-id (bytecode-expression-count bc)])
                                  (add-expr bc nested)
                                  (encode-form-ref expr-id))
                                (compile-expr e bc env)))
@@ -312,7 +312,7 @@
          [expr-encs (map (lambda (e)
                            (if (pair? e)
                                (let* ([nested (compile-expr e bc env)]
-                                      [expr-id (length (bytecode-expressions bc))])
+                                      [expr-id (bytecode-expression-count bc)])
                                  (add-expr bc nested)
                                  (encode-form-ref expr-id))
                                (compile-expr e bc env)))
@@ -333,7 +333,7 @@
          [expr-encs (map (lambda (e)
                            (if (pair? e)
                                (let* ([nested (compile-expr e bc env)]
-                                      [expr-id (length (bytecode-expressions bc))])
+                                      [expr-id (bytecode-expression-count bc)])
                                  (add-expr bc nested)
                                  (encode-form-ref expr-id))
                                (compile-expr e bc env)))
@@ -358,7 +358,7 @@
                               ;; Nested expression (but not lambda): compile it, add to table, return form ref
                               ;; Lambdas are special: compile-lambda already handles storing bind expressions
                               (let* ([nested-enc (compile-expr arg bc env)]
-                                     [expr-id (length (bytecode-expressions bc))])
+                                     [expr-id (bytecode-expression-count bc)])
                                 (add-expr bc nested-enc)  ; Add to table
                                 (encode-form-ref expr-id)) ; Return form reference
                               ;; Atom or lambda: compile normally (lambda returns its own form encoding)

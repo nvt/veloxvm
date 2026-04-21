@@ -64,7 +64,7 @@
       (when (debug-mode)
         (printf "DEBUG: Compiled ~a top-level expressions\n" (length optimized))
         (printf "DEBUG: Accumulated ~a bytes total\n" (length accumulated-bytes))
-        (printf "DEBUG: bc has ~a expressions\n" (length (bytecode-expressions bc)))
+        (printf "DEBUG: bc has ~a expressions\n" (bytecode-expression-count bc))
         (for ([i (in-naturals)]
               [expr (bytecode-expressions bc)])
           (printf "DEBUG: Expression ~a: ~a bytes\n" i (length (expr-encoding-data expr))))))
