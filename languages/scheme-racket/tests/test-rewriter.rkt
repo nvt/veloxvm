@@ -46,8 +46,11 @@
               '(print "hello")
               "Rewrite display")
 
+;; println expands through print + newline; newline is itself a rewriter
+;; that expands to (write-char #\newline), and rewrite-expr applies
+;; rewriters recursively, so the final form flattens to write-char.
 (check-equal? (rewrite-expr '(println "hello" "world"))
-              '(begin (print "hello" "world") (newline))
+              '(begin (print "hello" "world") (write-char #\newline))
               "Rewrite println")
 
 ;; Test composite car/cdr
