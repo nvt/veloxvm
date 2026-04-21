@@ -155,6 +155,13 @@
   ;; Use bind_function to mark actual function boundaries (enables proper return unwinding)
   ;; Store in expression table and return a lambda form reference
   ;; Extend env with lambda parameters when compiling body
+  ;; The VM's bind_function requires exact arity matching (see
+  ;; core/expr-primitives.c:bind_function), so R5RS variadic parameter
+  ;; lists — (lambda args body) and (lambda (a . rest) body) — are rejected.
+  (unless (and (list? args) (andmap symbol? args))
+    (error 'compile-lambda
+           "variadic lambda parameters not supported by the VM: ~a"
+           args))
   (let* ([extended-env (append args env)]  ; Add lambda parameters to env
          [bind-expr (if (> (length body) 1)
                         ;; Multiple body expressions: wrap in begin
