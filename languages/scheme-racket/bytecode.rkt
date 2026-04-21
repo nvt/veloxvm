@@ -20,7 +20,6 @@
          add-expr
          replace-expr
          write-bytecode-file
-         adjust-expr-refs  ; Adjust form references by offset
          ;; Encoding functions
          encode-integer
          encode-rational
@@ -365,90 +364,6 @@
                                   (arithmetic-shift 2 5)        ; bits 6-5 = 10 (REF)
                                   bits-11-8)])                  ; bits 3-0 = expr_id bits 11-8
         (expr-encoding 'form (list header bits-7-0)))))
-
-;; ============================================================================
-;; Form Reference Adjustment
-;; ============================================================================
-
-;; Adjust all lambda and ref form IDs in an expression by adding an offset
-;; This is needed when copying expressions from one bytecode context to another
-(define (adjust-expr-refs encoding offset)
-  (if (zero? offset)
-      encoding  ; No adjustment needed
-      (let ([adjusted-bytes (adjust-bytes-refs (expr-encoding-data encoding) offset)])
-        (expr-encoding (expr-encoding-type encoding) adjusted-bytes))))
-
-;; Scan through bytecode bytes and adjust lambda/ref form IDs
-(define (adjust-bytes-refs bytes offset)
-  (let loop ([remaining bytes] [result '()])
-    (if (null? remaining)
-        (reverse result)
-        (let ([b (car remaining)])
-          (cond
-            ;; Check if this is a FORM byte (bit 7 = 1, and not an atom)
-            [(and (>= b #x80)
-                  ;; Lambda simple form: bits 6-5 = 01, bit 4 = 1 (0xA0-0xAF)
-                  (= (bitwise-and b #x70) #x30))
-             ;; Extract ID from bits 3-0, add offset, re-encode
-             (let* ([old-id (bitwise-and b #x0F)]
-                    [new-id (+ old-id offset)])
-               (if (< new-id 16)
-                   ;; Still fits in simple form
-                   (loop (cdr remaining)
-                         (cons (bitwise-ior #xB0 new-id) result))
-                   ;; Need extended form
-                   (let ([low-bits (bitwise-and new-id #x0F)]
-                         [high-bits (bitwise-and (arithmetic-shift new-id -4) #xFF)])
-                     (loop (cdr remaining)
-                           (cons high-bits (cons 0 (cons (bitwise-ior #xA0 low-bits) result)))))))]
-
-            ;; Lambda extended form: bits 6-4 = 010, bit 4 = 0 (0xA0-0xAF with bit 4=0)
-            [(and (>= b #x80)
-                  (= (bitwise-and b #x70) #x20))
-             ;; Extended: header, 0x00, high-byte
-             (let* ([low-bits (bitwise-and b #x0F)]
-                    [_ (cadr remaining)]  ; Skip 0x00 byte
-                    [high-bits (caddr remaining)]
-                    [old-id (+ (arithmetic-shift high-bits 4) low-bits)]
-                    [new-id (+ old-id offset)]
-                    [new-low (bitwise-and new-id #x0F)]
-                    [new-high (bitwise-and (arithmetic-shift new-id -4) #xFF)]
-                    [header (bitwise-ior #xA0 new-low)])
-               (loop (cdddr remaining)
-                     (cons new-high (cons 0 (cons header result)))))]
-
-            ;; Ref simple form: bits 6-5 = 10, bit 4 = 1 (0xD0-0xDF)
-            [(and (>= b #x80)
-                  (= (bitwise-and b #x70) #x50))
-             (let* ([old-id (bitwise-and b #x0F)]
-                    [new-id (+ old-id offset)])
-               (if (< new-id 16)
-                   ;; Still fits in simple form
-                   (loop (cdr remaining)
-                         (cons (bitwise-ior #xD0 new-id) result))
-                   ;; Need extended form
-                   (let ([low-bits (bitwise-and new-id #x0F)]
-                         [high-bits (bitwise-and (arithmetic-shift new-id -4) #xFF)])
-                     (loop (cdr remaining)
-                           (cons high-bits (cons (bitwise-ior #xC0 low-bits) result))))))]
-
-            ;; Ref extended form: bits 6-5 = 10, bit 4 = 0 (0xC0-0xCF)
-            [(and (>= b #x80)
-                  (= (bitwise-and b #x70) #x40))
-             ;; Extended: header, high-byte
-             (let* ([low-bits (bitwise-and b #x0F)]
-                    [high-bits (cadr remaining)]
-                    [old-id (+ (arithmetic-shift high-bits 4) low-bits)]
-                    [new-id (+ old-id offset)]
-                    [new-low (bitwise-and new-id #x0F)]
-                    [new-high (bitwise-and (arithmetic-shift new-id -4) #xFF)]
-                    [header (bitwise-ior #xC0 new-low)])
-               (loop (cddr remaining)
-                     (cons new-high (cons header result))))]
-
-            ;; Not a lambda/ref form - keep byte as-is
-            [else
-             (loop (cdr remaining) (cons b result))])))))
 
 ;; ============================================================================
 ;; Bytecode File Writing
