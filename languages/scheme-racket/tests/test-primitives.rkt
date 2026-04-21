@@ -15,17 +15,19 @@
 ;; Test primitive recognition
 (check-true (vm-primitive? '+) "+ is primitive")
 (check-true (vm-primitive? 'cons) "cons is primitive")
-(check-true (vm-primitive? 'lambda) "lambda is primitive")
 (check-false (vm-primitive? 'foo) "foo is not primitive")
 (check-false (vm-primitive? 'unknown) "unknown is not primitive")
+;; lambda is a compile-time special form that emits a lambda-form byte,
+;; not a VM operator, so it is intentionally absent from vm-primitives.
+(check-false (vm-primitive? 'lambda) "lambda is a special form, not a primitive")
 
 ;; Test primitive count
 (check-true (> (length vm-primitives) 100)
             "Has many primitives (>100)")
 
-;; Test specific primitives exist
+;; Test specific primitives exist (lambda excluded — see note above)
 (define expected-prims
-  '(+ - * / cons car cdr lambda if define
+  '(+ - * / cons car cdr if define
     quote begin and or apply map for-each))
 
 (for ([prim expected-prims])
