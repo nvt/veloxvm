@@ -399,13 +399,27 @@
     [(and (pair? expr) (eq? (car expr) 'letrec-syntax))
      (expand-letrec-syntax expr)]
 
+    ;; Quote: datum is not code, so it must not be expanded. Otherwise a
+    ;; quoted symbol that happens to share a name with an in-scope macro
+    ;; would be "expanded" as a bogus macro invocation.
+    [(and (pair? expr) (eq? (car expr) 'quote))
+     expr]
+
     ;; Macro invocation: look up in scope chain and expand
     [(and (pair? expr) (symbol? (car expr)))
      (define transformer (lookup-macro (car expr)))
      (if transformer
-         ;; Found a macro - expand it and recurse
+         ;; Found a macro - try to expand it
          (let ([expanded (transformer expr)])
-           (expand-macros expanded))
+           (if expanded
+               ;; Transformer matched a rule — recurse on the expansion
+               (expand-macros expanded)
+               ;; No rule matched. This is a use of a name that happens
+               ;; to be a macro but doesn't match any pattern (e.g. the
+               ;; bare (foo) when foo expects (foo x)). Raise rather than
+               ;; silently substituting #f.
+               (error 'expand-macros
+                      "no syntax-rules clause matched for: ~a" expr)))
          ;; Not a macro - recurse on car and cdr
          (let ([car-expanded (expand-macros (car expr))]
                [cdr-expanded (expand-macros (cdr expr))])
