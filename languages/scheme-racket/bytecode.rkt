@@ -130,15 +130,23 @@
   (let ([header (pack-atom-header (if b 1 0) VM-TYPE-BOOLEAN)])
     (expr-encoding 'atom (list header))))
 
+;; Maximum integer byte count accepted by the VM
+;; (see core/vm-bytecode.c:get_integer — rejects nbytes > 4).
+(define VM-MAX-INTEGER-BYTES 4)
+
 (define (encode-integer n)
   (let* ([value (abs n)]
-         [bytes-needed (integer-byte-length value)]
-         [sign-bit (if (negative? n) 1 0)]
-         ;; Embedded field (bits 6-3): bit 3 = sign, bits 2-0 = size
-         [info (bitwise-ior (arithmetic-shift sign-bit 3) bytes-needed)]
-         [header (pack-atom-header info VM-TYPE-INTEGER)]
-         [value-bytes (integer->bytes value bytes-needed)])
-    (expr-encoding 'atom (cons header value-bytes))))
+         [bytes-needed (integer-byte-length value)])
+    (when (> bytes-needed VM-MAX-INTEGER-BYTES)
+      (error 'encode-integer
+             "integer out of range (~a needs ~a bytes, VM limit is ~a): ~a"
+             n bytes-needed VM-MAX-INTEGER-BYTES n))
+    (let* ([sign-bit (if (negative? n) 1 0)]
+           ;; Embedded field (bits 6-3): bit 3 = sign, bits 2-0 = size
+           [info (bitwise-ior (arithmetic-shift sign-bit 3) bytes-needed)]
+           [header (pack-atom-header info VM-TYPE-INTEGER)]
+           [value-bytes (integer->bytes value bytes-needed)])
+      (expr-encoding 'atom (cons header value-bytes)))))
 
 (define (encode-rational n)
   ;; Rational number - encode as header + numerator encoding + denominator encoding
@@ -161,10 +169,23 @@
 (define (encode-character ch)
   (let ([header (pack-atom-header 0 VM-TYPE-CHARACTER)]
         [code (char->integer ch)])
+    ;; The VM represents characters as uint8_t (see include/vm-objects.h:
+    ;; vm_character_t), so codepoints above 0xFF cannot be encoded.
+    (when (> code 255)
+      (error 'encode-character
+             "character codepoint out of range (~a = U+~a, VM max is U+00FF): ~a"
+             code (number->string code 16) ch))
     (expr-encoding 'atom (list header code))))
+
+;; String-table index: 7 bits (simple) or 15 bits (extended, 7+8).
+(define VM-MAX-STRING-INDEX (- (expt 2 15) 1))
 
 (define (encode-string str bc)
   (define idx (add-string bc str))
+  (when (> idx VM-MAX-STRING-INDEX)
+    (error 'encode-string
+           "too many strings in program (index ~a exceeds VM limit ~a)"
+           idx VM-MAX-STRING-INDEX))
   (let ([header (pack-atom-header 0 VM-TYPE-STRING)])
     ;; String encoding: header + table index (1 or 2 bytes for extended)
     (if (< idx 128)
@@ -205,9 +226,16 @@
      (let ([idx (add-symbol bc sym)])
        (encode-symbol-with-id idx 1))]))
 
+;; Symbol-table index: 6 bits (simple) or 14 bits (extended, 6+8).
+(define VM-MAX-SYMBOL-INDEX (- (expt 2 14) 1))
+
 (define (encode-symbol-with-id idx scope)
   ;; Encode symbol given its ID and scope
   ;; bit 6=0 for simple form (1 byte ID), bit 6=1 for extended form (2 byte ID)
+  (when (> idx VM-MAX-SYMBOL-INDEX)
+    (error 'encode-symbol-with-id
+           "too many symbols in program (index ~a exceeds VM limit ~a)"
+           idx VM-MAX-SYMBOL-INDEX))
   (let ([header (pack-atom-header 0 VM-TYPE-SYMBOL)])
     (if (< idx 64)
         ;; Simple form: 1 byte with scope bit (7), extended=0 bit (6), and ID (5-0)
@@ -232,20 +260,34 @@
 ;; Form Encoding
 ;; ============================================================================
 
+;; Inline form arg-count field is 6 bits.
+(define VM-MAX-INLINE-ARGC 63)
+
 (define (encode-form-inline arg-count)
   ;; Inline form: single byte encoding
   ;; Bit 7: 1 (FORM token)
   ;; Bits 6-5: 00 (form-type=INLINE, extracted via >> 5 & 3)
   ;; Bits 5-0: arg-count (6 bits, max 63)
+  (when (> arg-count VM-MAX-INLINE-ARGC)
+    (error 'encode-form-inline
+           "too many arguments in form (~a exceeds VM inline limit of ~a)"
+           arg-count VM-MAX-INLINE-ARGC))
   (let ([header (bitwise-ior #x80                     ; bit 7 = 1 (FORM token)
                              (arithmetic-shift 0 5)   ; bits 6-5 = 0 (INLINE)
                              (bitwise-and arg-count #x3F))]) ; bits 5-0 = argc
     (expr-encoding 'form (list header))))
 
+;; Lambda/ref form expr-id: 4 bits (simple) or 12 bits (extended, 4+8).
+(define VM-MAX-EXPR-ID (- (expt 2 12) 1))
+
 (define (encode-form-lambda expr-id)
   ;; Lambda form: bit 7=1, form-type=1 (lambda), expr-id reference
   ;; Byte 0: 1 (FORM) | 01 (form-type=LAMBDA) | simple | expr-id (lower 4 bits)
   ;; For simple form: bit 7=1, bits 6-5=01 (LAMBDA), bit 4=1 (simple), bits 3-0=expr_id
+  (when (> expr-id VM-MAX-EXPR-ID)
+    (error 'encode-form-lambda
+           "too many expressions in program (id ~a exceeds VM limit ~a)"
+           expr-id VM-MAX-EXPR-ID))
   (if (< expr-id 16)
       ;; Simple form: 4-bit ID embedded in first byte
       (let ([header (bitwise-ior #x80                          ; bit 7 = 1 (FORM)
@@ -275,6 +317,10 @@
   ;; - Bits 6-5 = 10 (REF type = 2)
   ;; - Bit 4 = simple flag (1 = 4-bit ID, 0 = extended 12-bit ID)
   ;; - Bits 3-0 = expr_id (lower 4 bits)
+  (when (> expr-id VM-MAX-EXPR-ID)
+    (error 'encode-form-ref
+           "too many expressions in program (id ~a exceeds VM limit ~a)"
+           expr-id VM-MAX-EXPR-ID))
   (if (< expr-id 16)
       ;; Simple form: 4-bit ID embedded in first byte
       (let ([header (bitwise-ior #x80                          ; bit 7 = 1 (FORM)
