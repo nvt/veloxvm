@@ -57,6 +57,12 @@ vm_thread_stack_destroy(void)
   vm_mempool_destroy(&frame_pool);
 }
 
+const vm_mempool_t *
+vm_frame_pool(void)
+{
+  return &frame_pool;
+}
+
 vm_expr_t *
 vm_thread_stack_push(vm_thread_t *thread)
 {

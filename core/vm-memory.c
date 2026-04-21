@@ -386,6 +386,12 @@ vm_memory_get_stats(vm_memory_stats_t *stats)
   memcpy(stats, &mem_stats, sizeof(vm_memory_stats_t));
 }
 
+const vm_mempool_t *
+vm_object_pool(void)
+{
+  return &object_pool;
+}
+
 int
 vm_memory_init(void)
 {

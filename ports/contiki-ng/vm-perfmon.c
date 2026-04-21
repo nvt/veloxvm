@@ -164,6 +164,21 @@ print_mem_stats(void)
          (unsigned long)stats.manual_deallocations,
          (unsigned long)stats.gc_deallocations,
          (unsigned long)stats.gc_invocations);
+
+#if VM_MEMORY_PROFILING
+  {
+    uint32_t used;
+    uint32_t cap;
+
+    vm_mempool_get_stats(vm_object_pool(), &used, &cap);
+    printf("MEM objpool %lu/%lu\n",
+           (unsigned long)used, (unsigned long)cap);
+
+    vm_mempool_get_stats(vm_frame_pool(), &used, &cap);
+    printf("MEM frmpool %lu/%lu\n",
+           (unsigned long)used, (unsigned long)cap);
+  }
+#endif
 }
 
 PROCESS_THREAD(vm_perfmon_process, ev, data)

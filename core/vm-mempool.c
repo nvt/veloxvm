@@ -138,6 +138,14 @@ vm_mempool_create(vm_mempool_t *pool, uint16_t obj_size,
 }
 
 void
+vm_mempool_get_stats(const vm_mempool_t *pool, uint32_t *used_bytes,
+                     uint32_t *capacity_bytes)
+{
+  *used_bytes = (uint32_t)pool->items * pool->obj_size;
+  *capacity_bytes = (uint32_t)pool->capacity * pool->obj_size;
+}
+
+void
 vm_mempool_destroy(vm_mempool_t *pool)
 {
   VM_MEMPOOL_FREE(pool->alloc_bitmap);

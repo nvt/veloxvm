@@ -69,6 +69,13 @@
 #define VM_PROFILER_ENABLE 0
 #endif
 
+/* Emit periodic memory-pool utilisation lines from the performance monitor.
+   Counters read are maintained on the hot path anyway, so the only cost is
+   a few extra prints per monitor tick. */
+#ifndef VM_MEMORY_PROFILING
+#define VM_MEMORY_PROFILING 0
+#endif
+
 /*
  * Determine whether instruction profiling should be enabled.
  * This can be used to gain insight into the performance bottlenecks
