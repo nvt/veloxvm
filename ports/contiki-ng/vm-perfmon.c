@@ -149,34 +149,25 @@ print_perf_data(void)
 static void
 print_mem_stats(void)
 {
-  vm_memory_stats_t stats;
-
   /* Do not print statistics if no programs are running. */
   if(vm_get_programs() == NULL) {
     return;
   }
 
-  vm_memory_get_stats(&stats);
-  printf("MEM allocs %lu mempool_fwd %lu alloc_bytes %lu manual_deallocs %lu gc_deallocs %lu gc_invoc %lu\n",
-         (unsigned long)stats.allocations,
-         (unsigned long)stats.mempool_forwards,
-         (unsigned long)stats.allocated_bytes,
-         (unsigned long)stats.manual_deallocations,
-         (unsigned long)stats.gc_deallocations,
-         (unsigned long)stats.gc_invocations);
-
 #if VM_MEMORY_PROFILING
+  vm_memory_profile_print();
+#else
   {
-    uint32_t used;
-    uint32_t cap;
+    vm_memory_stats_t stats;
 
-    vm_mempool_get_stats(vm_object_pool(), &used, &cap);
-    printf("MEM objpool %lu/%lu\n",
-           (unsigned long)used, (unsigned long)cap);
-
-    vm_mempool_get_stats(vm_frame_pool(), &used, &cap);
-    printf("MEM frmpool %lu/%lu\n",
-           (unsigned long)used, (unsigned long)cap);
+    vm_memory_get_stats(&stats);
+    printf("MEM allocs %lu mempool_fwd %lu alloc_bytes %lu manual_deallocs %lu gc_deallocs %lu gc_invoc %lu\n",
+           (unsigned long)stats.allocations,
+           (unsigned long)stats.mempool_forwards,
+           (unsigned long)stats.allocated_bytes,
+           (unsigned long)stats.manual_deallocations,
+           (unsigned long)stats.gc_deallocations,
+           (unsigned long)stats.gc_invocations);
   }
 #endif
 }

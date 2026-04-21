@@ -69,6 +69,13 @@
 #define VM_PROFILER_ENABLE 0
 #endif
 
+/* Print a memory-usage dashboard (heap + object pool + frame pool) just
+   before the POSIX VM exits. Uses counters that are already maintained on
+   every alloc/free, so there is no runtime overhead. */
+#ifndef VM_MEMORY_PROFILING
+#define VM_MEMORY_PROFILING 0
+#endif
+
 /*
  * Determine whether instruction profiling should be enabled.
  * This can be used to gain insight into the performance bottlenecks

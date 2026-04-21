@@ -264,6 +264,7 @@ void vm_gc_enable(void);
 void vm_memory_get_stats(vm_memory_stats_t *);
 int vm_memory_init(void);
 const vm_mempool_t *vm_object_pool(void);
+void vm_memory_profile_print(void);
 
 /* Thread functions. (vm-thread.c) */
 int vm_thread_init(void);

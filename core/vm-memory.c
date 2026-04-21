@@ -53,6 +53,7 @@
  * the active allocation set, and deallocates any object that is not marked.
  */
 
+#include <stdio.h>
 #include <string.h>
 
 #include "vm.h"
@@ -390,6 +391,29 @@ const vm_mempool_t *
 vm_object_pool(void)
 {
   return &object_pool;
+}
+
+void
+vm_memory_profile_print(void)
+{
+  uint32_t used;
+  uint32_t cap;
+
+  printf("MEM allocs %lu mempool_fwd %lu alloc_bytes %lu manual_deallocs %lu gc_deallocs %lu gc_invoc %lu\n",
+         (unsigned long)mem_stats.allocations,
+         (unsigned long)mem_stats.mempool_forwards,
+         (unsigned long)mem_stats.allocated_bytes,
+         (unsigned long)mem_stats.manual_deallocations,
+         (unsigned long)mem_stats.gc_deallocations,
+         (unsigned long)mem_stats.gc_invocations);
+
+  vm_mempool_get_stats(vm_object_pool(), &used, &cap);
+  printf("MEM objpool %lu/%lu\n",
+         (unsigned long)used, (unsigned long)cap);
+
+  vm_mempool_get_stats(vm_frame_pool(), &used, &cap);
+  printf("MEM frmpool %lu/%lu\n",
+         (unsigned long)used, (unsigned long)cap);
 }
 
 int

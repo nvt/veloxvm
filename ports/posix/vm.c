@@ -78,6 +78,10 @@ main(int argc, char *argv[])
     }
   }
 
+#if VM_MEMORY_PROFILING
+  vm_memory_profile_print();
+#endif
+
   vm_exit();
 
   return EXIT_SUCCESS;
