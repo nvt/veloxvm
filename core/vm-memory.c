@@ -254,6 +254,9 @@ vm_alloc(unsigned size)
       free_vm_memory(ptr);
       return NULL;
     }
+    if(allocations.items > mem_stats.peak_heap_allocations) {
+      mem_stats.peak_heap_allocations = allocations.items;
+    }
   }
 
   VM_DEBUG(VM_DEBUG_HIGH, "GC: Alloc ptr %p, size %d", ptr, (int)size);
@@ -410,8 +413,7 @@ vm_object_pool(void)
 void
 vm_memory_profile_print(void)
 {
-  uint32_t used;
-  uint32_t cap;
+  vm_mempool_stats_t stats;
 
 #if VM_MEMORY_PROFILING_GC
   /* Force a sweep so the "used" numbers reflect live memory rather
@@ -420,21 +422,26 @@ vm_memory_profile_print(void)
   vm_gc_force();
 #endif
 
-  printf("MEM allocs %lu mempool_fwd %lu alloc_bytes %lu manual_deallocs %lu gc_deallocs %lu gc_invoc %lu\n",
+  printf("MEM allocs %lu mempool_fwd %lu alloc_bytes %lu manual_deallocs %lu gc_deallocs %lu gc_invoc %lu peak_heap_allocs %lu\n",
          (unsigned long)mem_stats.allocations,
          (unsigned long)mem_stats.mempool_forwards,
          (unsigned long)mem_stats.allocated_bytes,
          (unsigned long)mem_stats.manual_deallocations,
          (unsigned long)mem_stats.gc_deallocations,
-         (unsigned long)mem_stats.gc_invocations);
+         (unsigned long)mem_stats.gc_invocations,
+         (unsigned long)mem_stats.peak_heap_allocations);
 
-  vm_mempool_get_stats(vm_object_pool(), &used, &cap);
-  printf("MEM objpool %lu/%lu\n",
-         (unsigned long)used, (unsigned long)cap);
+  vm_mempool_get_stats(vm_object_pool(), &stats);
+  printf("MEM objpool used %lu peak %lu cap %lu\n",
+         (unsigned long)stats.used_bytes,
+         (unsigned long)stats.peak_bytes,
+         (unsigned long)stats.capacity_bytes);
 
-  vm_mempool_get_stats(vm_frame_pool(), &used, &cap);
-  printf("MEM frmpool %lu/%lu\n",
-         (unsigned long)used, (unsigned long)cap);
+  vm_mempool_get_stats(vm_frame_pool(), &stats);
+  printf("MEM frmpool used %lu peak %lu cap %lu\n",
+         (unsigned long)stats.used_bytes,
+         (unsigned long)stats.peak_bytes,
+         (unsigned long)stats.capacity_bytes);
 }
 
 int

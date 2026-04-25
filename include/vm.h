@@ -198,6 +198,7 @@ typedef struct vm_memory_stats {
   uint64_t gc_deallocations;
   uint64_t mempool_forwards;
   uint64_t gc_invocations;
+  uint32_t peak_heap_allocations;
 } vm_memory_stats_t;
 
 /* Scheduler functions. (vm-sched.c) */

@@ -102,6 +102,7 @@ vm_mempool_create(vm_mempool_t *pool, uint16_t obj_size,
   pool->obj_size = obj_size;
   pool->capacity = capacity;
   pool->items = 0;
+  pool->peak_items = 0;
   pool->next_free_index = 0;
 
   bitmap_size = BITMAP_SIZE(capacity) * sizeof(vm_mempool_bitmap_t);
@@ -138,11 +139,11 @@ vm_mempool_create(vm_mempool_t *pool, uint16_t obj_size,
 }
 
 void
-vm_mempool_get_stats(const vm_mempool_t *pool, uint32_t *used_bytes,
-                     uint32_t *capacity_bytes)
+vm_mempool_get_stats(const vm_mempool_t *pool, vm_mempool_stats_t *stats)
 {
-  *used_bytes = (uint32_t)pool->items * pool->obj_size;
-  *capacity_bytes = (uint32_t)pool->capacity * pool->obj_size;
+  stats->used_bytes = (uint32_t)pool->items * pool->obj_size;
+  stats->peak_bytes = (uint32_t)pool->peak_items * pool->obj_size;
+  stats->capacity_bytes = (uint32_t)pool->capacity * pool->obj_size;
 }
 
 void
@@ -179,6 +180,9 @@ vm_mempool_alloc(vm_mempool_t *pool)
   }
 
   pool->items++;
+  if(pool->items > pool->peak_items) {
+    pool->peak_items = pool->items;
+  }
   update_next_free_index(pool);
 
   VM_SET_FLAG(pool->alloc_bitmap[byte], bit);
