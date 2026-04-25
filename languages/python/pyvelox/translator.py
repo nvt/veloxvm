@@ -145,6 +145,8 @@ class PythonTranslator:
             return self.translate_try(stmt)
         elif isinstance(stmt, ast.Raise):
             return self.translate_raise(stmt)
+        elif isinstance(stmt, ast.Import):
+            return self.translate_import(stmt)
         elif isinstance(stmt, ast.Pass):
             # Pass translates to #f (false) - no-op
             return encode_boolean(False)
@@ -622,8 +624,23 @@ class PythonTranslator:
             elif func_name == 'zip':
                 return self.translate_zip(node.args)
 
-        # Regular function call
-        func_bytes = self.translate_expr(node.func)
+        # Regular function call. Resolve the callee carefully: when a
+        # user binding shadows a primitive (tracked in renamed_vars by
+        # get_safe_name), call the user's py_-prefixed function;
+        # otherwise, if the name matches a primitive, emit the
+        # primitive ID directly instead of going through the variable
+        # path (which would rename thread_sleep -> py_thread_sleep and
+        # produce an unbound app symbol).
+        if isinstance(node.func, ast.Name):
+            fname = node.func.id
+            if fname in self.renamed_vars:
+                func_bytes = encode_symbol(self.renamed_vars[fname], self.bc)
+            elif self.is_vm_primitive(fname):
+                func_bytes = encode_symbol(fname, self.bc)
+            else:
+                func_bytes = self.translate_expr(node.func)
+        else:
+            func_bytes = self.translate_expr(node.func)
         arg_bytes = [self.translate_expr_with_ref(arg) for arg in node.args]
 
         # Create inline call: inline(argc) + func + args
@@ -1054,6 +1071,27 @@ class PythonTranslator:
             handler_ref,
             body_ref
         ], self.bc)
+
+    def translate_import(self, node: ast.Import) -> bytes:
+        """Translate `import lib` to the VM's `(import "lib")` primitive.
+
+        The VM's import loads a port-specific library (e.g. "sensors",
+        "leds") that contributes operators to the current program's
+        symbol table. `import a, b` becomes a begin-sequence.
+        `import x as y` is not supported."""
+        calls = []
+        for alias in node.names:
+            if alias.asname is not None:
+                raise NotImplementedError(
+                    "pyvelox does not support `import ... as ...`; "
+                    "port libraries are loaded by their canonical name."
+                )
+            name_bytes = encode_string(alias.name, self.bc)
+            calls.append(create_inline_call('import', [name_bytes], self.bc))
+
+        if len(calls) == 1:
+            return calls[0]
+        return create_inline_call('begin', calls, self.bc)
 
     def translate_raise(self, node: ast.Raise) -> bytes:
         """Translate raise statement: raise ValueError -> (raise 'ValueError)."""
@@ -1752,17 +1790,39 @@ class PythonTranslator:
         # (if (< x 0) (- 0 x) x)
         return create_inline_call('if', [cmp_ref, neg_ref, arg_bytes], self.bc)
 
+    def _translate_fold_min_max(self, iterable: ast.expr, cmp_op: str) -> bytes:
+        """Compile min(iterable)/max(iterable) as
+        (reduce (lambda (a b) (if (cmp a b) a b)) iterable).
+        cmp_op is 'less_than' for min, 'greater_than' for max."""
+        list_bytes = self.translate_expr_with_ref(iterable)
+
+        a_sym = encode_symbol('a', self.bc)
+        b_sym = encode_symbol('b', self.bc)
+
+        cmp_call = create_inline_call(cmp_op, [a_sym, b_sym], self.bc)
+        cmp_id = self.bc.add_expression(cmp_call)
+        cmp_ref = encode_form_ref(cmp_id)
+
+        if_form = create_inline_call('if', [cmp_ref, a_sym, b_sym], self.bc)
+        lambda_bind = create_bind_form(['a', 'b'], if_form, self.bc)
+        lambda_id = self.bc.add_expression(lambda_bind)
+        lambda_bytes = encode_form_lambda(lambda_id)
+
+        return create_inline_call('reduce', [lambda_bytes, list_bytes], self.bc)
+
     def translate_min(self, args: List[ast.expr]) -> bytes:
         """
         Translate min(a, b, ...) to nested if comparisons.
         min(a, b) -> (if (< a b) a b)
         min(a, b, c) -> (if (< a b) (if (< a c) a c) (if (< b c) b c))
+        min(iterable) -> (reduce (lambda (a b) (if (< a b) a b)) iterable)
         """
         if len(args) == 0:
             raise ValueError("min() requires at least 1 argument")
 
         if len(args) == 1:
-            return self.translate_expr_with_ref(args[0])
+            # Python min(iterable): fold with a two-arg min lambda.
+            return self._translate_fold_min_max(args[0], 'less_than')
 
         # For 2+ arguments, recursively build min comparisons
         arg_bytes = [self.translate_expr_with_ref(arg) for arg in args]
@@ -1794,12 +1854,14 @@ class PythonTranslator:
         """
         Translate max(a, b, ...) to nested if comparisons.
         max(a, b) -> (if (> a b) a b)
+        max(iterable) -> (reduce (lambda (a b) (if (> a b) a b)) iterable)
         """
         if len(args) == 0:
             raise ValueError("max() requires at least 1 argument")
 
         if len(args) == 1:
-            return self.translate_expr_with_ref(args[0])
+            # Python max(iterable): fold with a two-arg max lambda.
+            return self._translate_fold_min_max(args[0], 'greater_than')
 
         # For 2+ arguments, recursively build max comparisons
         arg_bytes = [self.translate_expr_with_ref(arg) for arg in args]
