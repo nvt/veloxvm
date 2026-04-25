@@ -335,6 +335,7 @@ char *vm_string_resolve(vm_thread_t *, vm_string_t *);
 vm_vector_t *vm_vector_create(vm_obj_t *, vm_integer_t, vm_vector_flags_t);
 int vm_vector_set(vm_obj_t *, vm_integer_t, vm_obj_t *);
 vm_box_t *vm_box_create(vm_obj_t *, const vm_obj_t *);
+vm_closure_t *vm_closure_create(vm_obj_t *, vm_expr_id_t, uint8_t, uint8_t);
 
 /* Object interpretation from string input. (vm-object-interpret.c) */
 vm_boolean_t vm_object_interpret(vm_obj_t *, const char *);

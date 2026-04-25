@@ -52,12 +52,14 @@ typedef enum vm_obj_type {
   VM_TYPE_PROCEDURE = 12,
   VM_TYPE_EXTERNAL  = 13,
   VM_TYPE_NONE      = 14,
-  VM_TYPE_BOX       = 15
+  VM_TYPE_BOX       = 15,
+  VM_TYPE_CLOSURE   = 16
 } vm_obj_type_t;
 
 /* Definitions for denoting multiple object types; e.g., in specifications
-   of acceptable argument types for functions. */
-typedef uint16_t vm_type_set_t;
+   of acceptable argument types for functions. Widened to 32 bits to
+   accommodate VM_TYPE_CLOSURE (bit 16) and leave room for future types. */
+typedef uint32_t vm_type_set_t;
 #define VM_TYPE_FLAG(type)  ((vm_type_set_t)1 << (type))
 #define VM_TYPE_FLAG_NUMBER (VM_TYPE_FLAG(VM_TYPE_INTEGER)  | \
                              VM_TYPE_FLAG(VM_TYPE_RATIONAL) | \
@@ -183,6 +185,14 @@ typedef struct vm_form {
    below), so a box is one allocation, not two. */
 typedef struct vm_box vm_box_t;
 
+/* VM_TYPE_CLOSURE representation. A closure pairs a lambda body with
+   the captured values of its free variables, snapshotted at the moment
+   the lambda was evaluated. When the closure is called, the captures
+   are pushed onto the resolution stack so the body's free references
+   resolve to the captured values. The full struct is defined after
+   vm_obj_t, below. */
+typedef struct vm_closure vm_closure_t;
+
 typedef uint16_t vm_ext_type_id_t;
 
 struct vm_ext_type;
@@ -218,6 +228,7 @@ typedef union vm_obj_value {
   const struct vm_procedure *procedure;
   struct vm_ext_object *ext_object;
   vm_box_t *box;
+  vm_closure_t *closure;
 } vm_obj_value_t;
 
 /* VM objects consist of a type specifier and its corresponding
@@ -241,6 +252,18 @@ typedef struct vm_list_item {
    forward typedef declared above. */
 struct vm_box {
   vm_obj_t value;
+};
+
+/* VM_TYPE_CLOSURE storage. Defined here for the same reason as
+   vm_box: the captures array holds full vm_obj_t cells inline, so
+   vm_obj_t must be a complete type. The form_id points into the
+   program's expression table at the lambda body; argc is the number
+   of formal parameters; capture_count is the length of captures. */
+struct vm_closure {
+  vm_expr_id_t form_id;
+  uint8_t argc;
+  uint8_t capture_count;
+  vm_obj_t *captures;
 };
 
 /*
