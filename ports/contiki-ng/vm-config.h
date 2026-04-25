@@ -69,6 +69,23 @@
 #define VM_PROFILER_ENABLE 0
 #endif
 
+/* Emit periodic memory-pool utilisation lines from the performance monitor.
+   Counters read are maintained on the hot path anyway, so the only cost is
+   a few extra prints per monitor tick. */
+#ifndef VM_MEMORY_PROFILING
+#define VM_MEMORY_PROFILING 0
+#endif
+
+/* Force a full GC before each profile print so "used" figures exclude
+   uncollected garbage. Defaults off on Contiki-NG because the perfmon
+   fires periodically at runtime; enabling it adds a mark+sweep on every
+   tick and can perceptibly shift program timing. Use the cumulative
+   counters and the peak high-water marks if you need accuracy without
+   the perturbation. */
+#ifndef VM_MEMORY_PROFILING_GC
+#define VM_MEMORY_PROFILING_GC 0
+#endif
+
 /*
  * Determine whether instruction profiling should be enabled.
  * This can be used to gain insight into the performance bottlenecks

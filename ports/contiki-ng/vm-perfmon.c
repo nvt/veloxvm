@@ -149,21 +149,27 @@ print_perf_data(void)
 static void
 print_mem_stats(void)
 {
-  vm_memory_stats_t stats;
-
   /* Do not print statistics if no programs are running. */
   if(vm_get_programs() == NULL) {
     return;
   }
 
-  vm_memory_get_stats(&stats);
-  printf("MEM allocs %lu mempool_fwd %lu alloc_bytes %lu manual_deallocs %lu gc_deallocs %lu gc_invoc %lu\n",
-         (unsigned long)stats.allocations,
-         (unsigned long)stats.mempool_forwards,
-         (unsigned long)stats.allocated_bytes,
-         (unsigned long)stats.manual_deallocations,
-         (unsigned long)stats.gc_deallocations,
-         (unsigned long)stats.gc_invocations);
+#if VM_MEMORY_PROFILING
+  vm_memory_profile_print();
+#else
+  {
+    vm_memory_stats_t stats;
+
+    vm_memory_get_stats(&stats);
+    printf("MEM allocs %lu mempool_fwd %lu alloc_bytes %lu manual_deallocs %lu gc_deallocs %lu gc_invoc %lu\n",
+           (unsigned long)stats.allocations,
+           (unsigned long)stats.mempool_forwards,
+           (unsigned long)stats.allocated_bytes,
+           (unsigned long)stats.manual_deallocations,
+           (unsigned long)stats.gc_deallocations,
+           (unsigned long)stats.gc_invocations);
+  }
+#endif
 }
 
 PROCESS_THREAD(vm_perfmon_process, ev, data)

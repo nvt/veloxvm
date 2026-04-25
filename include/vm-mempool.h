@@ -44,9 +44,16 @@ typedef struct vm_mempool {
   char *heap;
   vm_mempool_index_t next_free_index;
   vm_mempool_index_t items;
+  vm_mempool_index_t peak_items;
   vm_mempool_index_t capacity;
   uint16_t obj_size;
 } vm_mempool_t;
+
+typedef struct vm_mempool_stats {
+  uint32_t used_bytes;
+  uint32_t peak_bytes;
+  uint32_t capacity_bytes;
+} vm_mempool_stats_t;
 
 int vm_mempool_create(vm_mempool_t *, uint16_t, vm_mempool_index_t);
 void vm_mempool_destroy(vm_mempool_t *);
@@ -55,5 +62,7 @@ void *vm_mempool_alloc(vm_mempool_t *);
 void vm_mempool_free(vm_mempool_t *, void *);
 int vm_mempool_mark(vm_mempool_t *, void *);
 int vm_mempool_gc(vm_mempool_t *);
+int vm_mempool_gc_force(vm_mempool_t *);
+void vm_mempool_get_stats(const vm_mempool_t *, vm_mempool_stats_t *);
 
 #endif /* !MEMPOOL_H */

@@ -102,6 +102,7 @@ vm_mempool_create(vm_mempool_t *pool, uint16_t obj_size,
   pool->obj_size = obj_size;
   pool->capacity = capacity;
   pool->items = 0;
+  pool->peak_items = 0;
   pool->next_free_index = 0;
 
   bitmap_size = BITMAP_SIZE(capacity) * sizeof(vm_mempool_bitmap_t);
@@ -138,6 +139,14 @@ vm_mempool_create(vm_mempool_t *pool, uint16_t obj_size,
 }
 
 void
+vm_mempool_get_stats(const vm_mempool_t *pool, vm_mempool_stats_t *stats)
+{
+  stats->used_bytes = (uint32_t)pool->items * pool->obj_size;
+  stats->peak_bytes = (uint32_t)pool->peak_items * pool->obj_size;
+  stats->capacity_bytes = (uint32_t)pool->capacity * pool->obj_size;
+}
+
+void
 vm_mempool_destroy(vm_mempool_t *pool)
 {
   VM_MEMPOOL_FREE(pool->alloc_bitmap);
@@ -171,6 +180,9 @@ vm_mempool_alloc(vm_mempool_t *pool)
   }
 
   pool->items++;
+  if(pool->items > pool->peak_items) {
+    pool->peak_items = pool->items;
+  }
   update_next_free_index(pool);
 
   VM_SET_FLAG(pool->alloc_bitmap[byte], bit);
@@ -222,8 +234,8 @@ vm_mempool_mark(vm_mempool_t *pool, void *obj)
   return 1;
 }
 
-int
-vm_mempool_gc(vm_mempool_t *pool)
+static int
+mempool_gc(vm_mempool_t *pool, int force)
 {
   vm_mempool_index_t index;
   unsigned byte;
@@ -231,8 +243,9 @@ vm_mempool_gc(vm_mempool_t *pool)
   int released_objects;
 
   /* Avoid scanning the memory pool if the number of allocated objects
-     is less than two thirds of the capacity. */
-  if(pool->items < (2 * pool->capacity) / 3) {
+     is less than two thirds of the capacity, unless the caller is
+     forcing a sweep (e.g. for accurate live-memory reporting). */
+  if(!force && pool->items < (2 * pool->capacity) / 3) {
     return 0;
   }
 
@@ -255,4 +268,16 @@ vm_mempool_gc(vm_mempool_t *pool)
   }
 
   return released_objects;
+}
+
+int
+vm_mempool_gc(vm_mempool_t *pool)
+{
+  return mempool_gc(pool, 0);
+}
+
+int
+vm_mempool_gc_force(vm_mempool_t *pool)
+{
+  return mempool_gc(pool, 1);
 }

@@ -53,6 +53,7 @@
  * the active allocation set, and deallocates any object that is not marked.
  */
 
+#include <stdio.h>
 #include <string.h>
 
 #include "vm.h"
@@ -253,6 +254,9 @@ vm_alloc(unsigned size)
       free_vm_memory(ptr);
       return NULL;
     }
+    if(allocations.items > mem_stats.peak_heap_allocations) {
+      mem_stats.peak_heap_allocations = allocations.items;
+    }
   }
 
   VM_DEBUG(VM_DEBUG_HIGH, "GC: Alloc ptr %p, size %d", ptr, (int)size);
@@ -321,23 +325,24 @@ vm_gc_enable(void)
   }
 }
 
-void
-vm_gc(void)
+static void
+do_gc(int force)
 {
   unsigned i;
   unsigned deallocated;
   vm_thread_t *thread;
   void *free_ptr;
 
-  /* Don't run GC if it has been disabled */
-  if(gc_disabled > 0) {
-    return;
-  }
-
-  if(allocated_since_gc < VM_GC_MIN_ALLOCATED) {
-    /* The loaded programs have not yet allocated enough memory for
-       the garbage collection algorithm to run on it. */
-    return;
+  /* Honour the disable counter and the allocation threshold unless the
+     caller is forcing a sweep (e.g. for accurate live-memory reporting,
+     where stale counts would be misleading). */
+  if(!force) {
+    if(gc_disabled > 0) {
+      return;
+    }
+    if(allocated_since_gc < VM_GC_MIN_ALLOCATED) {
+      return;
+    }
   }
 
   mem_stats.gc_invocations++;
@@ -368,7 +373,8 @@ vm_gc(void)
     allocations.pairs[i].value = 0;
   }
 
-  deallocated += vm_mempool_gc(&object_pool);
+  deallocated += force ? vm_mempool_gc_force(&object_pool)
+                       : vm_mempool_gc(&object_pool);
 
   mem_stats.gc_deallocations += deallocated;
 
@@ -381,9 +387,61 @@ vm_gc(void)
 }
 
 void
+vm_gc(void)
+{
+  do_gc(0);
+}
+
+void
+vm_gc_force(void)
+{
+  do_gc(1);
+}
+
+void
 vm_memory_get_stats(vm_memory_stats_t *stats)
 {
   memcpy(stats, &mem_stats, sizeof(vm_memory_stats_t));
+}
+
+const vm_mempool_t *
+vm_object_pool(void)
+{
+  return &object_pool;
+}
+
+void
+vm_memory_profile_print(void)
+{
+  vm_mempool_stats_t stats;
+
+#if VM_MEMORY_PROFILING_GC
+  /* Force a sweep so the "used" numbers reflect live memory rather
+     than live + uncollected garbage. The frame pool is manually
+     lifecycled and is unaffected. */
+  vm_gc_force();
+#endif
+
+  printf("MEM allocs %lu mempool_fwd %lu alloc_bytes %lu manual_deallocs %lu gc_deallocs %lu gc_invoc %lu peak_heap_allocs %lu\n",
+         (unsigned long)mem_stats.allocations,
+         (unsigned long)mem_stats.mempool_forwards,
+         (unsigned long)mem_stats.allocated_bytes,
+         (unsigned long)mem_stats.manual_deallocations,
+         (unsigned long)mem_stats.gc_deallocations,
+         (unsigned long)mem_stats.gc_invocations,
+         (unsigned long)mem_stats.peak_heap_allocations);
+
+  vm_mempool_get_stats(vm_object_pool(), &stats);
+  printf("MEM objpool used %lu peak %lu cap %lu\n",
+         (unsigned long)stats.used_bytes,
+         (unsigned long)stats.peak_bytes,
+         (unsigned long)stats.capacity_bytes);
+
+  vm_mempool_get_stats(vm_frame_pool(), &stats);
+  printf("MEM frmpool used %lu peak %lu cap %lu\n",
+         (unsigned long)stats.used_bytes,
+         (unsigned long)stats.peak_bytes,
+         (unsigned long)stats.capacity_bytes);
 }
 
 int

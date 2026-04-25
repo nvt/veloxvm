@@ -40,6 +40,7 @@
 #include "vm-config.h"
 #include "vm-id.h"
 #include "vm-macros.h"
+#include "vm-mempool.h"
 #include "vm-objects.h"
 #include "vm-perf-attr.h"
 #include "vm-port.h"
@@ -197,6 +198,7 @@ typedef struct vm_memory_stats {
   uint64_t gc_deallocations;
   uint64_t mempool_forwards;
   uint64_t gc_invocations;
+  uint32_t peak_heap_allocations;
 } vm_memory_stats_t;
 
 /* Scheduler functions. (vm-sched.c) */
@@ -258,10 +260,13 @@ void *vm_alloc(unsigned);
 void vm_free(void *);
 void vm_free_all(void);
 void vm_gc(void);
+void vm_gc_force(void);
 void vm_gc_disable(void);
 void vm_gc_enable(void);
 void vm_memory_get_stats(vm_memory_stats_t *);
 int vm_memory_init(void);
+const vm_mempool_t *vm_object_pool(void);
+void vm_memory_profile_print(void);
 
 /* Thread functions. (vm-thread.c) */
 int vm_thread_init(void);
@@ -288,6 +293,7 @@ vm_expr_t *vm_thread_stack_alloc(vm_thread_t *);
 void vm_thread_stack_free(vm_expr_t *);
 void vm_thread_stack_print_frame(vm_thread_t *, vm_expr_t *);
 int vm_thread_stack_copy(vm_thread_t *, vm_thread_t *);
+const vm_mempool_t *vm_frame_pool(void);
 
 /* Object utilities. (vm-objects.c) */
 void vm_ext_type_register(vm_ext_type_t *);
