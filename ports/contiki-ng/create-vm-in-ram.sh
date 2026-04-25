@@ -7,5 +7,5 @@ if [ $# -eq 0 ]; then
   exit 1
 fi
 
-(cd ../../ && ./compile.sh $1 && echo Creating $1 in $target && rm -f ports/contiki-ng/$target && tools/create-ram-module apps/$1.vm >ports/contiki-ng/$target)
-echo "const char vm_program_name[] = \"$1.vm\";" >> $target
+(cd ../../ && ./compile.sh $1 && echo Creating $1 in $target && rm -f ports/contiki-ng/$target && tools/create-ram-module apps/$(dirname $1)/bin/$(basename $1).vm >ports/contiki-ng/$target)
+echo "const char vm_program_name[] = \"$(basename $1).vm\";" >> $target
