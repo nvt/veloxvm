@@ -266,8 +266,11 @@ VM_FUNCTION(filter)
   filter_expr->flags &= ~VM_EXPR_SAVE_FRAME;
 
   if(list->length == 0) {
-    /* The list has been processed. Stop the evaluation. */
-    VM_PUSH(&argv[argc - 2]);
+    /* The list has been processed. Stop the evaluation.
+     * Use current_expr->argc (post-init) so that filtering an empty
+     * list returns the accumulator rather than the predicate; the
+     * caller's argc parameter is still the pre-init value. */
+    VM_PUSH(&current_expr->argv[current_expr->argc - 2]);
     VM_EVAL_STOP(thread);
     vm_thread_stack_free(filter_expr);
     return;
@@ -396,6 +399,11 @@ VM_FUNCTION(reduce)
       current_expr->argv[current_expr->argc - 1].type = VM_TYPE_NONE;
     } else {
       memcpy(&reduce_expr->argv[1], obj, sizeof(vm_obj_t));
+      /* Also mirror the initial accumulator into the result slot so
+       * that a single-element input terminates with the element
+       * rather than with the trimmed (empty) tail list. */
+      memcpy(&current_expr->argv[current_expr->argc - 1], obj,
+             sizeof(vm_obj_t));
     }
     current_expr->eval_arg = current_expr->argc - 1;
     skip_first_element = 1;  /* Skip the element we used as initial value */
@@ -446,8 +454,11 @@ VM_FUNCTION(reduce)
   if(list->length == 0) {
     /* We have processed all objects in the list. */
     VM_EVAL_STOP(thread);
-    /* Push the accumulated result (last argument). */
-    VM_PUSH(&argv[argc - 1]);
+    /* Push the accumulated result. Use current_expr->argc, not the
+     * caller's argc: on the 2-arg init path argc is still 2 but the
+     * accumulator slot has already been appended at argc==3, so the
+     * stale value points one slot too low. */
+    VM_PUSH(&current_expr->argv[current_expr->argc - 1]);
     vm_thread_stack_free(reduce_expr);
     return;
   }
@@ -469,8 +480,7 @@ VM_FUNCTION(reduce)
   } else {
     /* We have processed all objects in the list. */
     VM_EVAL_STOP(thread);
-    /* Push the accumulated result (last argument). */
-    VM_PUSH(&argv[argc - 1]);
+    VM_PUSH(&current_expr->argv[current_expr->argc - 1]);
     vm_thread_stack_free(reduce_expr);
     return;
   }
