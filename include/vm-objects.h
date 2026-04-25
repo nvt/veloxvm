@@ -266,6 +266,16 @@ struct vm_closure {
   vm_obj_t *captures;
 };
 
+/* Per-expression captures-list, populated by the loader from the
+   bytecode's captures section. captures->symbols[i] is the symbol_id
+   of the i-th free variable that the lambda at this expr_id captures.
+   When the lambda is evaluated, the values bound to those symbols at
+   that moment are snapshotted into a fresh closure. */
+typedef struct vm_captures {
+  uint8_t count;
+  vm_symbol_id_t *symbols;
+} vm_captures_t;
+
 /*
  * Definitions for external object types that can be defined by
  * VM libraries. These objects need special functions for deep-copying,

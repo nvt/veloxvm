@@ -87,6 +87,11 @@ typedef struct vm_program {
   vm_table_t strings;
   vm_table_t symbols;
   vm_table_t exprv;
+  /* captures[expr_id] is the captures-list for the lambda at expr_id,
+     or NULL if the lambda has no free variables. The array has length
+     captures_size; entries beyond exprv table size are unused. */
+  vm_captures_t **captures;
+  unsigned captures_size;
   struct vm_program *next;
   const vm_policy_t *policy;
   char *name;

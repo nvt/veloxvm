@@ -20,6 +20,10 @@ def write_bytecode_file(path: Union[str, Path], bc: Bytecode):
     - String table: count (16-bit) + items (16-bit length + data)
     - Symbol table: count (16-bit) + items (16-bit length + data)
     - Expression table: count (16-bit) + items (16-bit length + data)
+    - Captures section: count (16-bit) + entries (16-bit length +
+      uint16 expr_id + uint16 symbol_id per captured free variable).
+      Empty in v1 -- the Python frontend does not yet do free-variable
+      analysis.
 
     Args:
         path: Output file path
@@ -37,6 +41,9 @@ def write_bytecode_file(path: Union[str, Path], bc: Bytecode):
 
         # Write expression table
         _write_table(f, bc.expressions, _encode_bytes_item)
+
+        # Write captures section (empty for v1).
+        f.write(struct.pack('<H', 0))
 
 
 def _write_table(f, items: List, encode_fn):

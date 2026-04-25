@@ -68,7 +68,7 @@
 ;; Create new bytecode container
 (define (make-bytecode)
   (bytecode #x5EB5        ; Magic number
-            2             ; Version
+            3             ; Version
             '()           ; strings-rev
             (make-hash)   ; strings-index
             '()           ; symbols-rev
@@ -387,7 +387,15 @@
       (write-table (bytecode-symbols bc) write-symbol-entry)
 
       ;; Expression table
-      (write-table (bytecode-expressions bc) write-expr-entry))))
+      (write-table (bytecode-expressions bc) write-expr-entry)
+
+      ;; Captures section: count of {expr_id, [symbol_id, ...]} entries.
+      ;; Each entry is uint16-length-prefixed, then uint16 expr_id +
+      ;; uint16 symbol_id per captured free variable. v1 of the
+      ;; closure work emits an empty section -- the compiler doesn't
+      ;; yet do free-variable analysis. The C loader allocates per-
+      ;; expression captures storage on demand from this table.
+      (write-u16 0))))
 
 (define (write-table items write-item)
   (write-u16 (length items))
