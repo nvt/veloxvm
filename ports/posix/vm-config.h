@@ -76,6 +76,14 @@
 #define VM_MEMORY_PROFILING 0
 #endif
 
+/* Force a full GC before printing the memory profile so "used" figures
+   exclude uncollected garbage. Defaults on for POSIX because the
+   printer fires once at shutdown -- the cost is paid once and is
+   invisible to the program. */
+#ifndef VM_MEMORY_PROFILING_GC
+#define VM_MEMORY_PROFILING_GC 1
+#endif
+
 /*
  * Determine whether instruction profiling should be enabled.
  * This can be used to gain insight into the performance bottlenecks

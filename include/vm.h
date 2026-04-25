@@ -259,6 +259,7 @@ void *vm_alloc(unsigned);
 void vm_free(void *);
 void vm_free_all(void);
 void vm_gc(void);
+void vm_gc_force(void);
 void vm_gc_disable(void);
 void vm_gc_enable(void);
 void vm_memory_get_stats(vm_memory_stats_t *);

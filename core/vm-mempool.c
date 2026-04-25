@@ -230,8 +230,8 @@ vm_mempool_mark(vm_mempool_t *pool, void *obj)
   return 1;
 }
 
-int
-vm_mempool_gc(vm_mempool_t *pool)
+static int
+mempool_gc(vm_mempool_t *pool, int force)
 {
   vm_mempool_index_t index;
   unsigned byte;
@@ -239,8 +239,9 @@ vm_mempool_gc(vm_mempool_t *pool)
   int released_objects;
 
   /* Avoid scanning the memory pool if the number of allocated objects
-     is less than two thirds of the capacity. */
-  if(pool->items < (2 * pool->capacity) / 3) {
+     is less than two thirds of the capacity, unless the caller is
+     forcing a sweep (e.g. for accurate live-memory reporting). */
+  if(!force && pool->items < (2 * pool->capacity) / 3) {
     return 0;
   }
 
@@ -263,4 +264,16 @@ vm_mempool_gc(vm_mempool_t *pool)
   }
 
   return released_objects;
+}
+
+int
+vm_mempool_gc(vm_mempool_t *pool)
+{
+  return mempool_gc(pool, 0);
+}
+
+int
+vm_mempool_gc_force(vm_mempool_t *pool)
+{
+  return mempool_gc(pool, 1);
 }
