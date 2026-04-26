@@ -200,7 +200,8 @@ vm_get_object(vm_thread_t *thread, vm_obj_t *obj)
     if(!VM_STEP(thread)) {
       return;
     }
-    obj->value.rational = vm_alloc(sizeof(vm_rational_t));
+    obj->value.rational = vm_alloc_at(sizeof(vm_rational_t),
+                                      VM_ALLOC_SITE_RATIONAL);
     if(obj->value.rational == NULL) {
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
@@ -221,7 +222,8 @@ vm_get_object(vm_thread_t *thread, vm_obj_t *obj)
         return;
       }
 
-      obj->value.string = vm_alloc(sizeof(vm_string_t));
+      obj->value.string = vm_alloc_at(sizeof(vm_string_t),
+                                      VM_ALLOC_SITE_STRING_HEADER);
       if(obj->value.string == NULL) {
         vm_signal_error(thread, VM_ERROR_HEAP);
         return;

@@ -35,6 +35,8 @@
 
 #include <stdint.h>
 
+#include "vm-config.h"
+
 typedef uint32_t vm_mempool_index_t;
 typedef unsigned vm_mempool_bitmap_t;
 
@@ -47,6 +49,12 @@ typedef struct vm_mempool {
   vm_mempool_index_t peak_items;
   vm_mempool_index_t capacity;
   uint16_t obj_size;
+#if VM_ATTRIBUTION_ENABLE
+  /* Parallel to alloc_bitmap, one byte per slot. Stores the
+     vm_alloc_site_t recorded by vm_mempool_alloc_at; read by the
+     attribution histogram printer. */
+  uint8_t *alloc_sites;
+#endif
 } vm_mempool_t;
 
 typedef struct vm_mempool_stats {

@@ -86,6 +86,15 @@
 #define VM_MEMORY_PROFILING_GC 0
 #endif
 
+/* Tag every pool allocation with a category enum (cons cell, string
+   header, vector elements, etc.) and emit a per-category histogram
+   from the memory profiler. Adds 1 byte per pool slot plus a small
+   fixed alloc-time cost. Off by default; enable in addition to
+   VM_MEMORY_PROFILING for attribution data. */
+#ifndef VM_ATTRIBUTION_ENABLE
+#define VM_ATTRIBUTION_ENABLE 0
+#endif
+
 /*
  * Determine whether instruction profiling should be enabled.
  * This can be used to gain insight into the performance bottlenecks

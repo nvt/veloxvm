@@ -41,7 +41,7 @@ vm_list_create(void)
 {
   vm_list_t *list;
 
-  list = vm_alloc(sizeof(vm_list_t));
+  list = vm_alloc_at(sizeof(vm_list_t), VM_ALLOC_SITE_LIST_HEADER);
   if(list != NULL) {
     list->head = NULL;
     list->tail = NULL;
@@ -128,7 +128,7 @@ vm_list_cdr(vm_list_t *list, int copy)
        of the new list structure before it's stored */
     vm_gc_disable();
 
-    cdr_list = vm_alloc(sizeof(vm_list_t));
+    cdr_list = vm_alloc_at(sizeof(vm_list_t), VM_ALLOC_SITE_LIST_HEADER);
     if(cdr_list != NULL) {
       cdr_list->head = list->head->next;
       cdr_list->length = list->length - 1;
@@ -166,7 +166,8 @@ vm_list_set_cdr(vm_list_t *list, vm_obj_t *obj)
   if(list->head == NULL) {
     return VM_FALSE;
   }
-  list->head->next = vm_alloc(sizeof(vm_list_item_t));
+  list->head->next = vm_alloc_at(sizeof(vm_list_item_t),
+                                 VM_ALLOC_SITE_CONS_CELL);
   if(list->head->next == NULL) {
     return VM_FALSE;
   }
@@ -203,7 +204,7 @@ vm_list_insert_head(vm_list_t *list, vm_obj_t *obj)
 {
   vm_list_item_t *item;
 
-  item = vm_alloc(sizeof(vm_list_item_t));
+  item = vm_alloc_at(sizeof(vm_list_item_t), VM_ALLOC_SITE_CONS_CELL);
   if(item != NULL) {
     memcpy(&item->obj, obj, sizeof(vm_obj_t));
     list->length++;
@@ -223,7 +224,7 @@ vm_list_insert_tail(vm_list_t *list, vm_obj_t *obj)
 {
   vm_list_item_t *item;
 
-  item = vm_alloc(sizeof(vm_list_item_t));
+  item = vm_alloc_at(sizeof(vm_list_item_t), VM_ALLOC_SITE_CONS_CELL);
   if(item != NULL) {
     memcpy(&item->obj, obj, sizeof(vm_obj_t));
     list->length++;

@@ -59,7 +59,8 @@ vm_string_create(vm_obj_t *obj, vm_integer_t length, const char *str)
   }
 
   obj->type = VM_TYPE_STRING;
-  obj->value.string = vm_alloc(sizeof(vm_string_t));
+  obj->value.string = vm_alloc_at(sizeof(vm_string_t),
+                                  VM_ALLOC_SITE_STRING_HEADER);
   if(obj->value.string == NULL) {
     return NULL;
   }
@@ -70,7 +71,7 @@ vm_string_create(vm_obj_t *obj, vm_integer_t length, const char *str)
     return NULL;
   }
   string->length = final_length;
-  string->str = vm_alloc(final_length + 1);
+  string->str = vm_alloc_at(final_length + 1, VM_ALLOC_SITE_STRING_BUFFER);
   if(string->str == NULL) {
     return NULL;
   }
@@ -118,7 +119,8 @@ vm_vector_create(vm_obj_t *obj, vm_integer_t length, vm_vector_flags_t flags)
   }
 
   obj->type = VM_TYPE_VECTOR;
-  obj->value.vector = vm_alloc(sizeof(vm_vector_t));
+  obj->value.vector = vm_alloc_at(sizeof(vm_vector_t),
+                                  VM_ALLOC_SITE_VECTOR_HEADER);
   if(obj->value.vector == NULL) {
     return NULL;
   }
@@ -131,14 +133,16 @@ vm_vector_create(vm_obj_t *obj, vm_integer_t length, vm_vector_flags_t flags)
     vector->elements = NULL;
     vector->bytes = NULL;
   } else if(VM_IS_SET(vector->flags, VM_VECTOR_FLAG_BUFFER)) {
-    vector->bytes = vm_alloc(sizeof(uint8_t) * vector->length);
+    vector->bytes = vm_alloc_at(sizeof(uint8_t) * vector->length,
+                                VM_ALLOC_SITE_VECTOR_BYTES);
     if(vector->bytes == NULL) {
       return NULL;
     }
     memset(vector->bytes, 0, vector->length);
     vector->elements = NULL;
   } else {
-    vector->elements = vm_alloc(sizeof(vm_obj_t) * vector->length);
+    vector->elements = vm_alloc_at(sizeof(vm_obj_t) * vector->length,
+                                   VM_ALLOC_SITE_VECTOR_ELEMENTS);
     if(vector->elements == NULL) {
       return NULL;
     }

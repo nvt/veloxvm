@@ -135,6 +135,20 @@ vm_mempool_create(vm_mempool_t *pool, uint16_t obj_size,
     return 0;
   }
 
+#if VM_ATTRIBUTION_ENABLE
+  pool->alloc_sites = VM_MEMPOOL_ALLOC(capacity);
+  if(pool->alloc_sites == NULL) {
+    VM_MEMPOOL_FREE(pool->alloc_bitmap);
+    VM_MEMPOOL_FREE(pool->ref_bitmap);
+    VM_MEMPOOL_FREE(pool->heap);
+    VM_DEBUG(VM_DEBUG_MEDIUM,
+             "Failed to create a mempool sites array of size %lu\n",
+             (unsigned long)capacity);
+    return 0;
+  }
+  memset(pool->alloc_sites, 0, capacity);
+#endif
+
   return 1;
 }
 
@@ -152,6 +166,9 @@ vm_mempool_destroy(vm_mempool_t *pool)
   VM_MEMPOOL_FREE(pool->alloc_bitmap);
   VM_MEMPOOL_FREE(pool->ref_bitmap);
   VM_MEMPOOL_FREE(pool->heap);
+#if VM_ATTRIBUTION_ENABLE
+  VM_MEMPOOL_FREE(pool->alloc_sites);
+#endif
   pool->items = 0;
   pool->capacity = 0;
 }
@@ -186,6 +203,9 @@ vm_mempool_alloc(vm_mempool_t *pool)
   update_next_free_index(pool);
 
   VM_SET_FLAG(pool->alloc_bitmap[byte], bit);
+#if VM_ATTRIBUTION_ENABLE
+  pool->alloc_sites[index] = 0;  /* VM_ALLOC_SITE_OTHER */
+#endif
   return (char *)pool->heap + index * pool->obj_size;
 }
 
