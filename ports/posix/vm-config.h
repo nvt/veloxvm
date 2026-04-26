@@ -180,6 +180,10 @@
 #define VM_LIST_PRINT_LIMIT 10
 #endif
 
+#ifndef VM_BUFFER_PRINT_LIMIT
+#define VM_BUFFER_PRINT_LIMIT 64
+#endif
+
 /* Build an executable of the VM and an app stored
    as bytecode in a header file. */
 #ifndef VM_BUNDLE

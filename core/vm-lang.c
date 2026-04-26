@@ -254,8 +254,15 @@ vm_return_from_function(vm_thread_t *thread, vm_obj_t *obj)
   vm_set_error_object(thread, obj);
 }
 
-void
-vm_write_object(vm_port_t *port, vm_obj_t *obj)
+/* Cap recursion through nested structures so that a cyclic list,
+   vector, or other self-referential value doesn't loop forever in
+   the printer. 16 levels of nesting is far more than any human-
+   readable output and is well within C-stack budget. Past the
+   limit we print "..." and stop recursing. */
+#define VM_WRITE_MAX_DEPTH 16
+
+static void
+write_object_depth(vm_port_t *port, vm_obj_t *obj, int depth)
 {
   static uint8_t nested_print;
   vm_thread_t *thread;
@@ -264,6 +271,11 @@ vm_write_object(vm_port_t *port, vm_obj_t *obj)
   vm_list_item_t *item;
   int i;
   vm_boolean_t output_raw;
+
+  if(depth >= VM_WRITE_MAX_DEPTH) {
+    vm_write(port, "...");
+    return;
+  }
 
   if(port != NULL && port->thread != NULL) {
     thread = port->thread;
@@ -318,7 +330,7 @@ vm_write_object(vm_port_t *port, vm_obj_t *obj)
          VM_IS_SET(obj->value.list->flags, VM_LIST_FLAG_PAIR)) {
         vm_write(port, ". ");
       }
-      vm_write_object(port, (vm_obj_t *)&item->obj);
+      write_object_depth(port, (vm_obj_t *)&item->obj, depth + 1);
       item = item->next;
 
       if(item != NULL) {
@@ -342,15 +354,23 @@ vm_write_object(vm_port_t *port, vm_obj_t *obj)
         vm_native_write_buffer(port, (const char *)obj->value.vector->bytes,
                                obj->value.vector->length);
       } else {
-        for(i = 0; i < obj->value.vector->length; i++) {
+        /* Cap the hex dump so a large buffer doesn't pin the
+           cooperative scheduler emitting millions of \xNN sequences. */
+        vm_integer_t len = obj->value.vector->length;
+        vm_integer_t limit = len < VM_BUFFER_PRINT_LIMIT
+                             ? len : VM_BUFFER_PRINT_LIMIT;
+        for(i = 0; i < limit; i++) {
 	  vm_write(port, "\\x%02x", obj->value.vector->bytes[i]);
+        }
+        if(len > limit) {
+          vm_write(port, "<%u bytes omitted>", (unsigned)(len - limit));
         }
       }
     } else {
       nested_print = 1;
       vm_write(port, "#(");
       for(i = 0; i < obj->value.vector->length; i++) {
-        vm_write_object(port, &obj->value.vector->elements[i]);
+        write_object_depth(port, &obj->value.vector->elements[i], depth + 1);
 
 	if(i < obj->value.vector->length - 1) {
 	  vm_write(port, " ");
@@ -396,6 +416,12 @@ vm_write_object(vm_port_t *port, vm_obj_t *obj)
   default:
     vm_write(port, "#<unknown>");
   }
+}
+
+void
+vm_write_object(vm_port_t *port, vm_obj_t *obj)
+{
+  write_object_depth(port, obj, 0);
 }
 
 int
