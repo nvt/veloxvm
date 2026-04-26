@@ -95,7 +95,6 @@ static void
 mutex_create(vm_obj_t *dst, const char *name)
 {
   vm_mutex_t *mutex;
-  vm_ext_object_t *ext;
 
   mutex = VM_MALLOC(sizeof(vm_mutex_t));
   if(mutex == NULL) {
@@ -103,17 +102,10 @@ mutex_create(vm_obj_t *dst, const char *name)
     dst->type = VM_TYPE_NONE;
     return;
   }
-  ext = vm_alloc(sizeof(vm_ext_object_t));
-  if(ext == NULL) {
+  if(vm_ext_object_create(dst, &ext_type_mutex, mutex) == NULL) {
     VM_FREE(mutex);
-    memset(dst, 0, sizeof(vm_obj_t));
-    dst->type = VM_TYPE_NONE;
     return;
   }
-  ext->type = &ext_type_mutex;
-  ext->opaque_data = mutex;
-  dst->value.ext_object = ext;
-  dst->type = VM_TYPE_EXTERNAL;
   mutex->name = name;
   mutex->state = 0;
   mutex->owner_id = VM_ID_INVALID;
