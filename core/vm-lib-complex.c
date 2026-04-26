@@ -100,18 +100,27 @@ static void
 complex_create(vm_obj_t *dst, vm_real_t real, vm_real_t imag)
 {
   vm_complex_t *complex;
+  vm_ext_object_t *ext;
 
   complex = VM_MALLOC(sizeof(vm_complex_t));
-  if(complex != NULL) {
-    dst->type = VM_TYPE_EXTERNAL;
-    dst->value.ext_object.type = &ext_type_complex;
-    dst->value.ext_object.opaque_data = complex;
-    complex->real = real;
-    complex->imag = imag;
-  } else {
+  if(complex == NULL) {
     memset(dst, 0, sizeof(vm_obj_t));
     dst->type = VM_TYPE_NONE;
+    return;
   }
+  ext = vm_alloc(sizeof(vm_ext_object_t));
+  if(ext == NULL) {
+    VM_FREE(complex);
+    memset(dst, 0, sizeof(vm_obj_t));
+    dst->type = VM_TYPE_NONE;
+    return;
+  }
+  ext->type = &ext_type_complex;
+  ext->opaque_data = complex;
+  dst->value.ext_object = ext;
+  dst->type = VM_TYPE_EXTERNAL;
+  complex->real = real;
+  complex->imag = imag;
 }
 
 static void
@@ -123,7 +132,7 @@ complex_copy(vm_obj_t *dst, vm_obj_t *src)
 static void
 complex_deallocate(vm_obj_t *obj)
 {
-  VM_FREE(obj->value.ext_object.opaque_data);
+  VM_FREE(obj->value.ext_object->opaque_data);
 }
 
 static void
@@ -131,7 +140,7 @@ complex_write(vm_port_t *port, vm_obj_t *obj)
 {
   vm_complex_t *complex;
 
-  complex = obj->value.ext_object.opaque_data;
+  complex = obj->value.ext_object->opaque_data;
 
   vm_write(port, "%ld+%ldi", (long)complex->real, (long)complex->imag);
 }
@@ -166,8 +175,8 @@ get_real(vm_obj_t *obj)
   case VM_TYPE_REAL:
     return obj->value.real;
   case VM_TYPE_EXTERNAL:
-    if(obj->value.ext_object.type == &ext_type_complex) {
-      vm_complex_t *complex = obj->value.ext_object.opaque_data;
+    if(obj->value.ext_object->type == &ext_type_complex) {
+      vm_complex_t *complex = obj->value.ext_object->opaque_data;
       return complex->real;
     }
     /* Fall through. */
@@ -182,11 +191,11 @@ static vm_complex_t *
 get_complex(vm_obj_t *obj)
 {
   if(obj->type != VM_TYPE_EXTERNAL ||
-     obj->value.ext_object.type != &ext_type_complex) {
+     obj->value.ext_object->type != &ext_type_complex) {
     return 0;
   }
 
-  return obj->value.ext_object.opaque_data;
+  return obj->value.ext_object->opaque_data;
 }
 
 VM_FUNCTION(make_rectangular)
@@ -230,8 +239,8 @@ VM_FUNCTION(magnitude)
   vm_real_t imag;
 
   if(argv[0].type == VM_TYPE_EXTERNAL &&
-     argv[0].value.ext_object.type == &ext_type_complex) {
-    complex = argv[0].value.ext_object.opaque_data;
+     argv[0].value.ext_object->type == &ext_type_complex) {
+    complex = argv[0].value.ext_object->opaque_data;
     real = complex->real;
     imag = complex->imag;
   } else {

@@ -84,32 +84,41 @@ static vm_ext_type_t ext_type_mutex = {
 #define EXTRACT_MUTEX(thread, obj, target_var)               \
   do {                                                       \
     if((obj).type != VM_TYPE_EXTERNAL ||                     \
-       (obj).value.ext_object.type != &ext_type_mutex) {     \
+       (obj).value.ext_object->type != &ext_type_mutex) {    \
         vm_signal_error((thread), VM_ERROR_ARGUMENT_TYPES);  \
         return;                                              \
     }                                                        \
-    (target_var) = obj.value.ext_object.opaque_data;         \
+    (target_var) = obj.value.ext_object->opaque_data;        \
   } while(0)
 
 static void
 mutex_create(vm_obj_t *dst, const char *name)
 {
   vm_mutex_t *mutex;
+  vm_ext_object_t *ext;
 
   mutex = VM_MALLOC(sizeof(vm_mutex_t));
-  if(mutex != NULL) {
-    dst->type = VM_TYPE_EXTERNAL;
-    dst->value.ext_object.type = &ext_type_mutex;
-    dst->value.ext_object.opaque_data = mutex;
-    mutex->name = name;
-    mutex->state = 0;
-    mutex->owner_id = VM_ID_INVALID;
-    mutex->obj = NULL;
-    mutex->wait_list = NULL;
-  } else {
+  if(mutex == NULL) {
     memset(dst, 0, sizeof(vm_obj_t));
     dst->type = VM_TYPE_NONE;
+    return;
   }
+  ext = vm_alloc(sizeof(vm_ext_object_t));
+  if(ext == NULL) {
+    VM_FREE(mutex);
+    memset(dst, 0, sizeof(vm_obj_t));
+    dst->type = VM_TYPE_NONE;
+    return;
+  }
+  ext->type = &ext_type_mutex;
+  ext->opaque_data = mutex;
+  dst->value.ext_object = ext;
+  dst->type = VM_TYPE_EXTERNAL;
+  mutex->name = name;
+  mutex->state = 0;
+  mutex->owner_id = VM_ID_INVALID;
+  mutex->obj = NULL;
+  mutex->wait_list = NULL;
 }
 
 static void
@@ -125,7 +134,7 @@ mutex_deallocate(vm_obj_t *obj)
   vm_mutex_t *mutex;
   wait_thread_t *wt;
 
-  mutex = obj->value.ext_object.opaque_data;
+  mutex = obj->value.ext_object->opaque_data;
 
   /* Deallocate the wait list. */
   while(mutex->wait_list != NULL) {
@@ -142,7 +151,7 @@ mutex_write(vm_port_t *port, vm_obj_t *obj)
 {
   vm_mutex_t *mutex;
 
-  mutex = obj->value.ext_object.opaque_data;
+  mutex = obj->value.ext_object->opaque_data;
 
   vm_write(port, "(#mutex name=\"%s\" state=%u owner=%lu)", mutex->name,
            mutex->state, (unsigned long)mutex->owner_id);
@@ -151,7 +160,7 @@ mutex_write(vm_port_t *port, vm_obj_t *obj)
 VM_FUNCTION(mutexp)
 {
   VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_EXTERNAL &&
-		  argv[0].value.ext_object.type == &ext_type_mutex);
+		  argv[0].value.ext_object->type == &ext_type_mutex);
 }
 
 VM_FUNCTION(make_mutex)

@@ -372,7 +372,7 @@ vm_write_object(vm_port_t *port, vm_obj_t *obj)
     vm_write(port, "#(libfunc %p)", obj->value.procedure);
     break;
   case VM_TYPE_EXTERNAL:
-    obj->value.ext_object.type->write(port, obj);
+    obj->value.ext_object->type->write(port, obj);
     break;
   default:
     vm_write(port, "#<unknown>");
@@ -456,8 +456,8 @@ vm_objects_equal(vm_thread_t *thread, vm_obj_t *obj1, vm_obj_t *obj2)
   case VM_TYPE_PROCEDURE:
     return obj1->value.procedure == obj2->value.procedure;
   case VM_TYPE_EXTERNAL:
-    return obj1->value.ext_object.type == obj2->value.ext_object.type &&
-      obj1->value.ext_object.opaque_data == obj2->value.ext_object.opaque_data;
+    return obj1->value.ext_object->type == obj2->value.ext_object->type &&
+      obj1->value.ext_object->opaque_data == obj2->value.ext_object->opaque_data;
   default:
     break;
   }
@@ -528,7 +528,7 @@ vm_object_deep_copy(vm_obj_t *old, vm_obj_t *new)
   case VM_TYPE_VECTOR:
     break;
   case VM_TYPE_EXTERNAL:
-    old->value.ext_object.type->copy(new, old);
+    old->value.ext_object->type->copy(new, old);
     break;
   default:
     break;

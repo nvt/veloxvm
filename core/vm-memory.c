@@ -175,6 +175,13 @@ mark_object(vm_obj_t *obj)
     }
     mark_memory(obj->value.vector);
     break;
+  case VM_TYPE_EXTERNAL:
+    /* The ext_object box is heap-allocated; mark it so the sweep
+       phase does not free it while the parent obj is still live. */
+    if(obj->value.ext_object != NULL) {
+      mark_memory(obj->value.ext_object);
+    }
+    break;
   default:
     break;
   }
