@@ -465,6 +465,22 @@ vm_gc_force(void)
   do_gc(1);
 }
 
+#if VM_ATTRIBUTION_ENABLE
+void *
+vm_alloc_at(unsigned size, vm_alloc_site_t site)
+{
+  void *ptr;
+  vm_mempool_index_t index;
+
+  ptr = vm_alloc(size);
+  if(ptr != NULL && vm_mempool_is_stored(&object_pool, ptr)) {
+    index = ((char *)ptr - object_pool.heap) / object_pool.obj_size;
+    object_pool.alloc_sites[index] = (uint8_t)site;
+  }
+  return ptr;
+}
+#endif
+
 vm_ext_object_t *
 vm_ext_object_create(vm_obj_t *dst, vm_ext_type_t *type, void *opaque_data)
 {
@@ -474,7 +490,7 @@ vm_ext_object_create(vm_obj_t *dst, vm_ext_type_t *type, void *opaque_data)
      vm_alloc cannot observe an unreferenced half-built box. */
   vm_gc_disable();
 
-  box = vm_alloc(sizeof(vm_ext_object_t));
+  box = vm_alloc_at(sizeof(vm_ext_object_t), VM_ALLOC_SITE_EXT_OBJECT);
   if(box == NULL) {
     vm_gc_enable();
     memset(dst, 0, sizeof(vm_obj_t));
@@ -509,6 +525,48 @@ void
 vm_memory_profile_print(void)
 {
   vm_mempool_stats_t stats;
+
+#if VM_ATTRIBUTION_ENABLE
+  {
+    /* Snapshot the per-site occupancy of the object pool BEFORE any
+       force-GC runs, so the histogram reflects what was still
+       resident at the moment of the print rather than the post-sweep
+       residue (which is zero by construction). */
+    static const char *const site_names[VM_ALLOC_SITE_COUNT] = {
+      [VM_ALLOC_SITE_OTHER]           = "other",
+      [VM_ALLOC_SITE_CONS_CELL]       = "cons",
+      [VM_ALLOC_SITE_LIST_HEADER]     = "list_hdr",
+      [VM_ALLOC_SITE_VECTOR_HEADER]   = "vec_hdr",
+      [VM_ALLOC_SITE_VECTOR_ELEMENTS] = "vec_elems",
+      [VM_ALLOC_SITE_VECTOR_BYTES]    = "vec_bytes",
+      [VM_ALLOC_SITE_STRING_HEADER]   = "str_hdr",
+      [VM_ALLOC_SITE_STRING_BUFFER]   = "str_buf",
+      [VM_ALLOC_SITE_RATIONAL]        = "rational",
+      [VM_ALLOC_SITE_EXT_OBJECT]      = "ext_obj",
+    };
+    uint32_t counts[VM_ALLOC_SITE_COUNT] = {0};
+    vm_mempool_index_t i;
+    unsigned byte;
+    unsigned bit;
+    int s;
+
+    for(i = 0; i < object_pool.capacity; i++) {
+      byte = i / (sizeof(vm_mempool_bitmap_t) * 8);
+      bit = 1U << (i % (sizeof(vm_mempool_bitmap_t) * 8));
+      if(VM_IS_SET(object_pool.alloc_bitmap[byte], bit)) {
+        uint8_t site = object_pool.alloc_sites[i];
+        if(site < VM_ALLOC_SITE_COUNT) {
+          counts[site]++;
+        }
+      }
+    }
+    printf("MEM objpool by_site");
+    for(s = 0; s < VM_ALLOC_SITE_COUNT; s++) {
+      printf(" %s=%lu", site_names[s], (unsigned long)counts[s]);
+    }
+    printf("\n");
+  }
+#endif
 
 #if VM_MEMORY_PROFILING_GC
   /* Force a sweep so the "used" numbers reflect live memory rather

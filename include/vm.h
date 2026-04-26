@@ -255,8 +255,31 @@ int vm_object_deep_copy(vm_obj_t *, vm_obj_t *);
 /* String utilities. (vm-symbols.c) */
 int vm_strcasecmp(const char *, const char *);
 
+/* Allocation-site categories used by the attribution profiler. The
+   ordering is the order in which categories are emitted in the
+   histogram; keep VM_ALLOC_SITE_OTHER at index 0 so that
+   zero-initialised slots fall into the catch-all bucket. */
+typedef enum vm_alloc_site {
+  VM_ALLOC_SITE_OTHER = 0,
+  VM_ALLOC_SITE_CONS_CELL,
+  VM_ALLOC_SITE_LIST_HEADER,
+  VM_ALLOC_SITE_VECTOR_HEADER,
+  VM_ALLOC_SITE_VECTOR_ELEMENTS,
+  VM_ALLOC_SITE_VECTOR_BYTES,
+  VM_ALLOC_SITE_STRING_HEADER,
+  VM_ALLOC_SITE_STRING_BUFFER,
+  VM_ALLOC_SITE_RATIONAL,
+  VM_ALLOC_SITE_EXT_OBJECT,
+  VM_ALLOC_SITE_COUNT
+} vm_alloc_site_t;
+
 /* Memory functions. (vm-memory.c) */
 void *vm_alloc(unsigned);
+#if VM_ATTRIBUTION_ENABLE
+void *vm_alloc_at(unsigned, vm_alloc_site_t);
+#else
+#define vm_alloc_at(size, site) vm_alloc((size))
+#endif
 void vm_free(void *);
 void vm_free_all(void);
 void vm_gc(void);
