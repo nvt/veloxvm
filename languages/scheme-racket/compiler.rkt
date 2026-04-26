@@ -173,9 +173,72 @@
          [bind-enc (compile-expr bind-expr bc extended-env)]
          ;; Add to main bc and get its index
          [expr-id (bytecode-expression-count bc)]
-         [_ (add-expr bc bind-enc)])
+         [_ (add-expr bc bind-enc)]
+         ;; Free-variable analysis: identify names referenced in the body
+         ;; that come from an outer lambda's scope (env) but aren't bound
+         ;; by this lambda's own params. These are the captures the
+         ;; runtime needs to snapshot when this lambda is evaluated.
+         [captures (lambda-captures body args env)])
+    (record-captures! bc expr-id captures)
     ;; Return lambda form referencing the bind expression
     (encode-form-lambda expr-id)))
+
+;; ============================================================================
+;; Free-Variable Analysis (for closure capture)
+;; ============================================================================
+
+;; Compute the captures-list for a lambda whose body is body, parameters are
+;; params, and surrounding lexical scope is outer-env. A captured name is
+;; one that:
+;;   * is referenced in body,
+;;   * is not bound by this lambda (params or any nested binder),
+;;   * is bound in outer-env (so it's an outer lambda's local, not a
+;;     top-level global), AND
+;;   * is not a VM primitive (those resolve in CORE scope, not APP).
+;; Returns a deduplicated list of symbol names.
+(define (lambda-captures body params outer-env)
+  (let* ([fvs (apply append
+                     (map (lambda (e) (free-symbols e params)) body))]
+         [unique (remove-duplicates fvs)])
+    (filter (lambda (s)
+              (and (member s outer-env)
+                   (not (vm-primitive? s))))
+            unique)))
+
+;; Symbols referenced in expr that aren't bound by local (a list of
+;; names introduced by enclosing lambda/let/etc. binders).
+(define (free-symbols expr local)
+  (cond
+    [(symbol? expr)
+     (if (member expr local) '() (list expr))]
+    [(not (pair? expr)) '()]
+    [(eq? (car expr) 'quote) '()]
+    [(eq? (car expr) 'lambda)
+     ;; (lambda (inner-params...) inner-body...) -- inner-params shadow outer
+     (let ([inner-params (cadr expr)]
+           [inner-body (cddr expr)])
+       (apply append
+              (map (lambda (e) (free-symbols e (append inner-params local)))
+                   inner-body)))]
+    [(eq? (car expr) 'define)
+     ;; (define name val) or (define (name args...) body...)
+     ;; The name itself is bound; the value/body sees it in scope.
+     (let* ([target (cadr expr)]
+            [binding-name (if (pair? target) (car target) target)]
+            [val-expr (if (pair? target)
+                          `(lambda ,(cdr target) ,@(cddr expr))
+                          (caddr expr))])
+       (free-symbols val-expr (cons binding-name local)))]
+    [(eq? (car expr) 'set!)
+     ;; (set! name val) -- name is referenced (read for the binding lookup),
+     ;; val is the new value. Both contribute to free vars.
+     (append (free-symbols (cadr expr) local)
+             (free-symbols (caddr expr) local))]
+    [else
+     ;; if / begin / and / or / application / bind_function: union over all
+     ;; subexpressions. The operator is also walked, which is fine because
+     ;; primitives are filtered out by lambda-captures.
+     (apply append (map (lambda (e) (free-symbols e local)) expr))]))
 
 ;; Compile a sub-expression of a compound form.
 ;;   - Atoms (non-pair) are compiled inline and their bytes embed directly
