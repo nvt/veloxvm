@@ -1,12 +1,11 @@
-;; VeloxVM Unit Tests - Closures (immutable capture)
+;; VeloxVM Unit Tests - Closures
 ;;
-;; Tests for closure capture of outer-lambda parameters that are read
-;; but not mutated. set!-on-captured patterns (make-counter style)
-;; need the box rewrite from phase 5 and are not exercised here.
+;; Covers both immutable capture (make-adder, currying) and mutable
+;; capture via the box rewrite (counters, shared state through cons).
 
 (include "../unit-test-framework.scm")
 
-(test-suite "Closures (immutable capture)")
+(test-suite "Closures")
 
 ;; make-adder: classic capture-by-value pattern.
 (define (make-adder n)
@@ -50,5 +49,55 @@
 (define add-1-2 (add-from-1 2))
 (assert-equal 6 (add-1-2 3) "curried 1 + 2 + 3 = 6")
 (assert-equal 13 (add-1-2 10) "curried 1 + 2 + 10 = 13")
+
+;; Mutable capture: counter state survives across calls because the
+;; captured variable lives in a heap box.
+(define (make-counter)
+  (let ((c 0))
+    (lambda ()
+      (set! c (+ c 1))
+      c)))
+
+(define ctr (make-counter))
+(assert-equal 1 (ctr) "counter first call returns 1")
+(assert-equal 2 (ctr) "counter second call returns 2")
+(assert-equal 3 (ctr) "counter third call returns 3")
+
+;; Two counters from the same factory hold independent state.
+(define ctr2 (make-counter))
+(assert-equal 1 (ctr2) "second counter starts at 1")
+(assert-equal 4 (ctr) "first counter unaffected")
+(assert-equal 2 (ctr2) "second counter increments independently")
+
+;; Two closures sharing the same captured-and-mutated binding see each
+;; other's writes -- this is the case that requires shared box storage,
+;; not just copy-on-capture.
+(define (make-pair)
+  (let ((shared 0))
+    (cons (lambda () (set! shared (+ shared 1)) shared)
+          (lambda () shared))))
+
+(define p (make-pair))
+(define inc (car p))
+(define rd (cdr p))
+
+(assert-equal 1 (inc) "shared incrementer returns 1")
+(assert-equal 2 (inc) "shared incrementer returns 2")
+(assert-equal 2 (rd) "reader sees the same shared value")
+(assert-equal 3 (inc) "shared incrementer returns 3 after reader call")
+(assert-equal 3 (rd) "reader sees latest shared value")
+
+;; A primitive's name (count is a VM primitive) is a perfectly valid
+;; local binding name; the box rewrite must capture the local, not the
+;; primitive.
+(define (make-named-counter)
+  (let ((count 0))
+    (lambda ()
+      (set! count (+ count 1))
+      count)))
+
+(define nc (make-named-counter))
+(assert-equal 1 (nc) "primitive-named local: first call")
+(assert-equal 2 (nc) "primitive-named local: second call")
 
 (test-summary)
