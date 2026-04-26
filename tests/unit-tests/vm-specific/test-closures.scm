@@ -100,4 +100,20 @@
 (assert-equal 1 (nc) "primitive-named local: first call")
 (assert-equal 2 (nc) "primitive-named local: second call")
 
+;; Operator position is a sub-expression that returns a callable.
+;; The compiler lifts a compound operator into a form-ref; the runtime
+;; recognizes a sub-expression operator and invokes the resulting
+;; lambda/closure.
+(define (get-doubler) (lambda (x) (* x 2)))
+(assert-equal 14 ((get-doubler) 7) "call result of a 0-arg getter")
+
+;; Named let -- rewrites to letrec which rewrites to a captured-and-mutated
+;; outer parameter holding the recursive function. The recursive call site
+;; ((box-ref loop) ...) hits the same operator-as-sub-expression path.
+(define (count-down n)
+  (let loop ((i n) (acc 0))
+    (if (= i 0) acc (loop (- i 1) (+ acc 1)))))
+(assert-equal 5 (count-down 5) "named let counting down")
+(assert-equal 0 (count-down 0) "named let zero iterations")
+
 (test-summary)

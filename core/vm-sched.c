@@ -384,8 +384,33 @@ restart:
     vm_thread_stack_pop(thread);
     expr = thread->expr;
 
+    /* Snapshot argv[0] before overwrite: if arg 0 was a sub-expression in
+       operator position (VM_FORM_REF), the result is the operator value
+       and must trigger lambda execution. If it was already a lambda or
+       closure being invoked (loaded inline as VM_FORM_LAMBDA or stored
+       in argv[0] as a VM_TYPE_CLOSURE before dispatch), the result is the
+       body's return value and must not re-invoke. */
+    int prev_arg0_was_subexpr =
+      (expr->eval_arg == 0 &&
+       expr->argv[0].type == VM_TYPE_FORM &&
+       expr->argv[0].value.form.type == VM_FORM_REF);
+
     VM_EVAL_SET_COMPLETED(thread, expr->eval_arg);
     memmove(&expr->argv[expr->eval_arg], &thread->result, sizeof(vm_obj_t));
+
+    /* When evaluating a sub-expression in operator position produced a
+       lambda or closure (e.g. ((box-ref f) 0) or ((make-fn) x)), set up
+       lambda execution here -- the first-load hook around line 230 only
+       handles inline-loaded operators. The completed bit on arg 0 is
+       cleared so the eval loop dispatches into the lambda body just as
+       it would for an inline-loaded lambda. */
+    if(prev_arg0_was_subexpr &&
+       ((expr->argv[0].type == VM_TYPE_FORM &&
+         expr->argv[0].value.form.type == VM_FORM_LAMBDA) ||
+        expr->argv[0].type == VM_TYPE_CLOSURE)) {
+      init_lambda_execution(thread, expr);
+      expr->eval_completed &= ~(1U << 0);
+    }
   } else if(expr->ip == expr->end) {
     /* We have executed the last instruction of the top-level expr; the program
        is therefore finished. */

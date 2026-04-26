@@ -477,13 +477,17 @@
 
 (define (compile-application expr bc [env '()])
   ;; Function application: (func arg1 arg2 ...)
-  ;; The function position is always embedded inline (compile-expr handles
-  ;; the symbol / lambda-form / etc. case directly); each argument goes
-  ;; through compile-subexpr.
+  ;; Both the function position and each argument go through compile-subexpr:
+  ;; compound sub-expressions are lifted into the expression table as form-refs
+  ;; so the runtime sees a single token. Inlining a compound operator (e.g.
+  ;; ((box-ref loop) 0)) corrupts byte parsing because vm_get_object advances
+  ;; past the inline header only, leaving the inner body to be misread as the
+  ;; outer call's arguments. Atoms and lambdas remain inlined since they
+  ;; encode as a single token.
   (let* ([func (car expr)]
          [args (cdr expr)]
          [total-count (+ 1 (length args))]
-         [func-enc (compile-expr func bc env)]
+         [func-enc (compile-subexpr func bc env)]
          [arg-encs (map (lambda (arg) (compile-subexpr arg bc env)) args)])
     (expr-encoding 'form
                    (append (expr-encoding-data (encode-form-inline total-count))
