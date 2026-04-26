@@ -229,23 +229,31 @@
 ;; literals: list of literal symbols
 ;; rules: list of (pattern template) pairs
 ;; Returns: transformer function that takes a form and returns expanded form
+
+;; Sentinel returned by a transformer when no rule pattern matched. Distinct
+;; from #f because a rule template can validly expand to #f (e.g. (or) -> #f),
+;; and we must not confuse a successful expansion to #f with a match failure.
+(define *NO-MATCH* (gensym 'no-match))
+
 (define (make-syntax-rules-transformer literals rules)
   (lambda (form)
-    ;; Try each rule in order
-    (for/or ([rule rules])
-      (match-define (list pattern template) rule)
+    (let loop ([remaining rules])
+      (cond
+        [(null? remaining) *NO-MATCH*]
+        [else
+         (match-define (list pattern template) (car remaining))
 
-      ;; The macro name (first element of pattern) is implicitly a literal
-      ;; Add it to the literals list for matching
-      (define macro-name (if (pair? pattern) (car pattern) pattern))
-      (define extended-literals (cons macro-name literals))
+         ;; The macro name (first element of pattern) is implicitly a literal
+         ;; Add it to the literals list for matching
+         (define macro-name (if (pair? pattern) (car pattern) pattern))
+         (define extended-literals (cons macro-name literals))
 
-      ;; Try to match the pattern against the full form
-      (define bindings (match-pattern pattern form extended-literals))
+         ;; Try to match the pattern against the full form
+         (define bindings (match-pattern pattern form extended-literals))
 
-      (and bindings
-           ;; Success: expand the template
-           (expand-template template bindings)))))
+         (if bindings
+             (expand-template template bindings)
+             (loop (cdr remaining)))]))))
 
 ;; ============================================================================
 ;; DEFINE-SYNTAX INTEGRATION (Milestone 4.4)
@@ -411,15 +419,16 @@
      (if transformer
          ;; Found a macro - try to expand it
          (let ([expanded (transformer expr)])
-           (if expanded
-               ;; Transformer matched a rule — recurse on the expansion
-               (expand-macros expanded)
+           (if (eq? expanded *NO-MATCH*)
                ;; No rule matched. This is a use of a name that happens
                ;; to be a macro but doesn't match any pattern (e.g. the
                ;; bare (foo) when foo expects (foo x)). Raise rather than
                ;; silently substituting #f.
                (error 'expand-macros
-                      "no syntax-rules clause matched for: ~a" expr)))
+                      "no syntax-rules clause matched for: ~a" expr)
+               ;; Transformer matched a rule — recurse on the expansion.
+               ;; The expansion may legitimately be #f.
+               (expand-macros expanded)))
          ;; Not a macro - recurse on car and cdr
          (let ([car-expanded (expand-macros (car expr))]
                [cdr-expanded (expand-macros (cdr expr))])
