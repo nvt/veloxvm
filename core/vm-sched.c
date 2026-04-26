@@ -229,12 +229,13 @@ vm_sched_thread(vm_thread_t *thread)
         }
 #if 1
         if(i == 0 &&
-           expr->argv[0].type == VM_TYPE_FORM &&
-           expr->argv[0].value.form.type == VM_FORM_LAMBDA) {
+           ((expr->argv[0].type == VM_TYPE_FORM &&
+             expr->argv[0].value.form.type == VM_FORM_LAMBDA) ||
+            expr->argv[0].type == VM_TYPE_CLOSURE)) {
           /*
-           * If the first object is a lambda expression, then we
-           * set a flag to indicate that the current expression
-           * should execute in a special manner.
+           * If the first object is a lambda expression or a closure,
+           * set a flag to indicate that the current expression should
+           * execute in a special manner.
            */
           init_lambda_execution(thread, expr);
         }
@@ -258,9 +259,13 @@ vm_sched_thread(vm_thread_t *thread)
         if(expr->eval_arg != 255) {
           expr->eval_arg = i;
         }
-        if(expr->argv[i].type == VM_TYPE_FORM) {
-          if(i > 0 && expr->argv[i].value.form.type == VM_FORM_LAMBDA) {
-            /* Lambda form arguments are evaluated to themselves. */
+        if(expr->argv[i].type == VM_TYPE_FORM ||
+           expr->argv[i].type == VM_TYPE_CLOSURE) {
+          if(i > 0 &&
+             ((expr->argv[i].type == VM_TYPE_FORM &&
+               expr->argv[i].value.form.type == VM_FORM_LAMBDA) ||
+              expr->argv[i].type == VM_TYPE_CLOSURE)) {
+            /* Lambda form / closure arguments are evaluated to themselves. */
             VM_EVAL_SET_COMPLETED(thread, i);
             continue;
           }
@@ -270,9 +275,14 @@ vm_sched_thread(vm_thread_t *thread)
             return;
           }
 
-          /* Prepare the evaluation of the form argument, which will be
-             executed next time when the scheduler invokes this thread. */
-          vm_thread_set_expr(thread, expr->argv[i].value.form.id);
+          /* Prepare the evaluation of the form/closure argument. The
+             closure dispatches into its body via closure->form_id; a
+             plain form dispatches via form.id. */
+          if(expr->argv[i].type == VM_TYPE_CLOSURE) {
+            vm_thread_set_expr(thread, expr->argv[i].value.closure->form_id);
+          } else {
+            vm_thread_set_expr(thread, expr->argv[i].value.form.id);
+          }
           return;
         } else {
           vm_eval_object(thread, &expr->argv[i]);
@@ -280,8 +290,10 @@ vm_sched_thread(vm_thread_t *thread)
             return;
           }
 
-          if(i == 0 && expr->argv[0].type == VM_TYPE_FORM &&
-             expr->argv[0].value.form.type == VM_FORM_LAMBDA) {
+          if(i == 0 &&
+             ((expr->argv[0].type == VM_TYPE_FORM &&
+               expr->argv[0].value.form.type == VM_FORM_LAMBDA) ||
+              expr->argv[0].type == VM_TYPE_CLOSURE)) {
             /*
              * If the first object is a lambda expression, then we
              * set a flag to indicate that the current expression

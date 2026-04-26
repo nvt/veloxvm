@@ -176,6 +176,39 @@ vm_get_object(vm_thread_t *thread, vm_obj_t *obj)
     case VM_FORM_REF:
       obj->value.form.id = get_expr_id(thread);
       obj->value.form.argc = 0;
+      /* If this lambda has captured free variables, materialize a
+         closure object that snapshots their current values. The
+         resulting obj is type VM_TYPE_CLOSURE rather than the plain
+         form, so dispatch sites can tell them apart. Forms without
+         captures (the common case, and everything pre-phase-4) stay
+         as plain VM_TYPE_FORM with no overhead. */
+      if(obj->value.form.type == VM_FORM_LAMBDA &&
+         thread->program->captures != NULL &&
+         obj->value.form.id < thread->program->captures_size &&
+         thread->program->captures[obj->value.form.id] != NULL) {
+        vm_captures_t *cap = thread->program->captures[obj->value.form.id];
+        vm_expr_id_t form_id = obj->value.form.id;
+        vm_closure_t *closure;
+        uint8_t k;
+
+        closure = vm_closure_create(obj, form_id, 0, cap->count);
+        if(closure == NULL) {
+          vm_signal_error(thread, VM_ERROR_HEAP);
+          return;
+        }
+        for(k = 0; k < cap->count; k++) {
+          vm_symbol_ref_t ref;
+          vm_obj_t *bound;
+          ref.scope = VM_SYMBOL_SCOPE_APP;
+          ref.symbol_id = cap->symbols[k];
+          bound = vm_symbol_resolve(thread, &ref);
+          if(bound == NULL) {
+            vm_signal_error(thread, VM_ERROR_SYMBOL_ID);
+            return;
+          }
+          memcpy(&closure->captures[k], bound, sizeof(vm_obj_t));
+        }
+      }
       break;
     default:
       vm_signal_error(thread, VM_ERROR_BYTECODE);

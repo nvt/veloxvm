@@ -187,6 +187,29 @@ VM_FUNCTION(bind_function)
           return;
         }
       }
+
+      /* If the calling expression's operator is a closure, also bind
+         the captured free variables. The captures-list (symbol_ids)
+         lives in program->captures[form_id]; the captured values live
+         in closure->captures, indexed in the same order. */
+      if(calling_expr->argv[0].type == VM_TYPE_CLOSURE) {
+        vm_closure_t *closure = calling_expr->argv[0].value.closure;
+        if(thread->program->captures != NULL &&
+           closure->form_id < thread->program->captures_size &&
+           thread->program->captures[closure->form_id] != NULL) {
+          vm_captures_t *cap = thread->program->captures[closure->form_id];
+          uint8_t k;
+          for(k = 0; k < cap->count && k < closure->capture_count; k++) {
+            vm_symbol_ref_t ref;
+            ref.scope = VM_SYMBOL_SCOPE_APP;
+            ref.symbol_id = cap->symbols[k];
+            vm_symbol_bind(thread, &ref, &closure->captures[k]);
+            if(thread->status == VM_THREAD_ERROR) {
+              return;
+            }
+          }
+        }
+      }
     }
 
     /* Instruct the scheduler to evaluate the actual lambda expression. */

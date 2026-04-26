@@ -470,11 +470,16 @@ vm_procedure_lookup(vm_program_t *program, vm_symbol_ref_t *symbol_ref)
   if(obj->type == VM_TYPE_PROCEDURE) {
     /* The symbol is bound to a library procedure. */
     return obj->value.procedure;
-  } else if(obj->type != VM_TYPE_FORM) {
-    /* At this point, we can only accept lambda forms. */
-    return NULL;
+  } else if(obj->type == VM_TYPE_FORM) {
+    lambda_proc.expr_id = obj->value.form.id;
+    return &lambda_proc;
+  } else if(obj->type == VM_TYPE_CLOSURE) {
+    /* A symbol bound to a closure dispatches into the closure's
+       body. The captures get bound by bind_function, which inspects
+       the calling expression's argv[0] to find the closure. */
+    lambda_proc.expr_id = obj->value.closure->form_id;
+    return &lambda_proc;
   }
 
-  lambda_proc.expr_id = obj->value.form.id;
-  return &lambda_proc;
+  return NULL;
 }
