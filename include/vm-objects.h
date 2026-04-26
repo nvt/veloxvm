@@ -51,12 +51,15 @@ typedef enum vm_obj_type {
   VM_TYPE_COMPLEX   = 11,
   VM_TYPE_PROCEDURE = 12,
   VM_TYPE_EXTERNAL  = 13,
-  VM_TYPE_NONE      = 14
+  VM_TYPE_NONE      = 14,
+  VM_TYPE_BOX       = 15,
+  VM_TYPE_CLOSURE   = 16
 } vm_obj_type_t;
 
 /* Definitions for denoting multiple object types; e.g., in specifications
-   of acceptable argument types for functions. */
-typedef uint16_t vm_type_set_t;
+   of acceptable argument types for functions. Widened to 32 bits to
+   accommodate VM_TYPE_CLOSURE (bit 16) and leave room for future types. */
+typedef uint32_t vm_type_set_t;
 #define VM_TYPE_FLAG(type)  ((vm_type_set_t)1 << (type))
 #define VM_TYPE_FLAG_NUMBER (VM_TYPE_FLAG(VM_TYPE_INTEGER)  | \
                              VM_TYPE_FLAG(VM_TYPE_RATIONAL) | \
@@ -174,6 +177,22 @@ typedef struct vm_form {
   uint8_t argc;
 } vm_form_t;
 
+/* VM_TYPE_BOX representation. A box is a 1-cell heap container used by
+   the compiler to give shared mutable storage to captured-and-mutated
+   variables in closures. User-level code does not normally see boxes
+   directly; reads/writes go through the box, box-ref, box-set!
+   primitives. The struct holds vm_obj inline (defined after vm_obj_t,
+   below), so a box is one allocation, not two. */
+typedef struct vm_box vm_box_t;
+
+/* VM_TYPE_CLOSURE representation. A closure pairs a lambda body with
+   the captured values of its free variables, snapshotted at the moment
+   the lambda was evaluated. When the closure is called, the captures
+   are pushed onto the resolution stack so the body's free references
+   resolve to the captured values. The full struct is defined after
+   vm_obj_t, below. */
+typedef struct vm_closure vm_closure_t;
+
 typedef uint16_t vm_ext_type_id_t;
 
 struct vm_ext_type;
@@ -208,6 +227,8 @@ typedef union vm_obj_value {
   vm_port_t *port;
   const struct vm_procedure *procedure;
   struct vm_ext_object *ext_object;
+  vm_box_t *box;
+  vm_closure_t *closure;
 } vm_obj_value_t;
 
 /* VM objects consist of a type specifier and its corresponding
@@ -223,6 +244,37 @@ typedef struct vm_list_item {
   struct vm_obj obj;
   struct vm_list_item *next;
 } vm_list_item_t;
+
+/* VM_TYPE_BOX storage. Defined here (rather than alongside the other
+   value-representation structs) because the box holds a vm_obj inline
+   and so needs vm_obj_t to be a complete type. The vm_obj_value_t
+   union references vm_box_t through a pointer, which only needs the
+   forward typedef declared above. */
+struct vm_box {
+  vm_obj_t value;
+};
+
+/* VM_TYPE_CLOSURE storage. Defined here for the same reason as
+   vm_box: the captures array holds full vm_obj_t cells inline, so
+   vm_obj_t must be a complete type. The form_id points into the
+   program's expression table at the lambda body; argc is the number
+   of formal parameters; capture_count is the length of captures. */
+struct vm_closure {
+  vm_expr_id_t form_id;
+  uint8_t argc;
+  uint8_t capture_count;
+  vm_obj_t *captures;
+};
+
+/* Per-expression captures-list, populated by the loader from the
+   bytecode's captures section. captures->symbols[i] is the symbol_id
+   of the i-th free variable that the lambda at this expr_id captures.
+   When the lambda is evaluated, the values bound to those symbols at
+   that moment are snapshotted into a fresh closure. */
+typedef struct vm_captures {
+  uint8_t count;
+  vm_symbol_id_t *symbols;
+} vm_captures_t;
 
 /*
  * Definitions for external object types that can be defined by

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2017, RISE SICS AB
+ * Copyright (c) 2026, RISE Research Institutes of Sweden AB.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -27,32 +27,43 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
  * OF THE POSSIBILITY OF SUCH DAMAGE.
  *
- * Author: Nicolas Tsiftes <nvt@acm.org>
+ * Author: Nicolas Tsiftes <nicolas.tsiftes@ri.se>
  */
 
-#ifndef VM_BYTECODE_H
-#define VM_BYTECODE_H
+#include <string.h>
 
-#include <stdint.h>
+#include "vm.h"
+#include "vm-functions.h"
 
-/* The header consists of two bytes for the file ID and a byte for the
-   bytecode version. */
-#define VM_HEADER_SIZE 3
+VM_FUNCTION(box)
+{
+  if(vm_box_create(&thread->result, &argv[0]) == NULL) {
+    vm_signal_error(thread, VM_ERROR_HEAP);
+  }
+}
 
-#define VM_FILE_ID1 94
-#define VM_FILE_ID2 181
+VM_FUNCTION(box_ref)
+{
+  if(argv[0].type != VM_TYPE_BOX) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+  if(argv[0].value.box == NULL) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+    return;
+  }
+  memcpy(&thread->result, &argv[0].value.box->value, sizeof(vm_obj_t));
+}
 
-#define VM_BYTECODE_VERSION 3
-
-#define VM_TOKEN_ATOM 0
-#define VM_TOKEN_FORM 1
-
-#define VM_FORM_INLINE  0
-#define VM_FORM_LAMBDA  1
-#define VM_FORM_REF     2
-
-#define VM_ATOM_MASK 0x7
-
-#define VM_LOCAL_SYMBOL_OFFSET 128
-
-#endif /* !VM_BYTECODE_H */
+VM_FUNCTION(box_set)
+{
+  if(argv[0].type != VM_TYPE_BOX) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+  if(argv[0].value.box == NULL) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+    return;
+  }
+  memcpy(&argv[0].value.box->value, &argv[1], sizeof(vm_obj_t));
+}

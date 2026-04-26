@@ -24,16 +24,31 @@ These benchmarks are designed to measure VM performance characteristics and vali
 - Validates iterative marking algorithm handles arbitrary depths
 - Creates additional structures to trigger GC and verify integrity
 
+### Closures
+
+**closures.scm** - Closure creation + invocation throughput
+- Builds 100 independent counter closures, then increments each 1000
+  times (100k total calls)
+- Exercises closure dispatch, captures binding, and the box rewrite
+  path that gives mutable captures their shared heap storage
+- Every call goes through bind_function -> capture binding ->
+  box-ref / box-set! on the counter's state, so this is a regression
+  probe for the closure runtime and box primitive throughput
+- Sanity checks the first counter's final value at the end
+
 ## Running Benchmarks
 
 Compile and run benchmarks like any VeloxVM program:
 
 ```bash
 # Compile benchmark
-./compile-racket.sh apps/benchmarks/memory-stress.scm
+./compile-racket.sh benchmarks/closures.scm
 
 # Run benchmark
-bin/vm apps/benchmarks/memory-stress.vm
+bin/vm benchmarks/closures.vm
+
+# Or measure end-to-end wall clock
+time bin/vm benchmarks/closures.vm
 ```
 
 ## Interpreting Results
@@ -50,6 +65,14 @@ bin/vm apps/benchmarks/memory-stress.vm
 - **GC validation**: Structures survive automatic garbage collection
 - **Significance**: Validates iterative marking handles deep structures without C stack overflow
 - **Expected output**: "All deep structures survived GC" PASS
+
+### Closures
+
+- **Pass criteria**: First counter's final value matches `(+ n-increments 1)`
+  (one extra read at the end via `read-counter`)
+- **Significance**: Validates that closures created in a tight loop hold
+  independent state, that mutable captures persist across calls, and
+  that the box-rewrite path is functioning under load
 
 ## Adding New Benchmarks
 

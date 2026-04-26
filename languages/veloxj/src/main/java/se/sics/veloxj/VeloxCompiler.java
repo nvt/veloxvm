@@ -226,7 +226,8 @@ public class VeloxCompiler {
 	    "floor", "ceiling", "round", "truncate", "exp", "log", "sin", "cos",
 	    "tan", "asin", "acos", "atan", "sqrt", "expt", "exact->inexact", "inexact->exact",
 	    "call-with-current-continuation", "values", "call-with-values", "dynamic-wind", "eval", "bit-and", "bit-or", "bit-invert",
-	    "bit-not", "bit-xor", "bit-shift", "construct-packet", "deconstruct-packet", "symbol?", "symbol->string"
+	    "bit-not", "bit-xor", "bit-shift", "construct-packet", "deconstruct-packet", "symbol?", "symbol->string",
+	    "box", "box-ref", "box-set!"
 	};
 
 	internalSymbols = new VeloxTable<VeloxSymbol>();

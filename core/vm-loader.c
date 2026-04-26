@@ -78,6 +78,19 @@ free_program(vm_program_t *program)
     vm_table_destroy(&program->symbols);
     vm_table_destroy(&program->exprv);
 
+    if(program->captures != NULL) {
+      unsigned i;
+      for(i = 0; i < program->captures_size; i++) {
+        if(program->captures[i] != NULL) {
+          vm_free(program->captures[i]->symbols);
+          vm_free(program->captures[i]);
+        }
+      }
+      vm_free(program->captures);
+      program->captures = NULL;
+      program->captures_size = 0;
+    }
+
     VM_FREE(program->symbol_bindings);
 
     vm_free(program->name);
@@ -229,6 +242,8 @@ read_program(const char *name)
   memset(program, 0, sizeof(vm_program_t));
   program->name = NULL;
   program->symbol_bindings = NULL;
+  program->captures = NULL;
+  program->captures_size = 0;
 #if VM_INSTRUCTION_PROFILING
   program->exec_count = NULL;
 #endif
@@ -270,6 +285,71 @@ read_program(const char *name)
   if(read_table(&program->exprv, handle) == 0) {
     VM_DEBUG(VM_DEBUG_LOW, "Failed to read the form table");
     goto error;
+  }
+
+  /* Captures section: a sparse table of {expr_id, symbol_id_0, ...}
+     entries, one per lambda body that has free variables. The total
+     count comes first as uint16; each entry is 16-bit length-prefixed
+     by the read_table sentinel byte sequence we don't have, so it's
+     emitted directly as a count + (length, bytes) entries. */
+  {
+    uint16_t entry_count = 0;
+    READ_CHECK(handle, &entry_count, sizeof(entry_count));
+    if(entry_count > 0) {
+      program->captures_size = VM_TABLE_SIZE(program->exprv);
+      program->captures = VM_MALLOC(program->captures_size *
+                                    sizeof(vm_captures_t *));
+      if(program->captures == NULL) {
+        VM_DEBUG(VM_DEBUG_LOW, "Failed to allocate captures table");
+        goto error;
+      }
+      memset(program->captures, 0,
+             program->captures_size * sizeof(vm_captures_t *));
+
+      for(i = 0; i < entry_count; i++) {
+        uint16_t entry_length = 0;
+        uint16_t expr_id = 0;
+        unsigned capture_count;
+        unsigned k;
+        vm_captures_t *cap;
+
+        READ_CHECK(handle, &entry_length, sizeof(entry_length));
+        if(entry_length < 2 || (entry_length % 2) != 0) {
+          VM_DEBUG(VM_DEBUG_LOW, "Captures entry length %u invalid",
+                   entry_length);
+          goto error;
+        }
+        capture_count = (entry_length - 2) / 2;
+        if(capture_count > UINT8_MAX) {
+          VM_DEBUG(VM_DEBUG_LOW, "Captures entry %u exceeds limit", i);
+          goto error;
+        }
+        READ_CHECK(handle, &expr_id, sizeof(expr_id));
+        if(expr_id >= program->captures_size) {
+          VM_DEBUG(VM_DEBUG_LOW, "Captures expr_id %u out of range",
+                   (unsigned)expr_id);
+          goto error;
+        }
+
+        cap = vm_alloc(sizeof(vm_captures_t));
+        if(cap == NULL) {
+          goto error;
+        }
+        cap->count = (uint8_t)capture_count;
+        cap->symbols = capture_count == 0 ? NULL :
+                       vm_alloc(capture_count * sizeof(vm_symbol_id_t));
+        if(capture_count > 0 && cap->symbols == NULL) {
+          vm_free(cap);
+          goto error;
+        }
+        for(k = 0; k < capture_count; k++) {
+          uint16_t sym_id = 0;
+          READ_CHECK(handle, &sym_id, sizeof(sym_id));
+          cap->symbols[k] = sym_id;
+        }
+        program->captures[expr_id] = cap;
+      }
+    }
   }
 
   if(VM_TABLE_SIZE(program->symbols) > 0) {

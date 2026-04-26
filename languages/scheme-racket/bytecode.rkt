@@ -19,6 +19,7 @@
          add-symbol
          add-expr
          replace-expr
+         record-captures!
          write-bytecode-file
          ;; Encoding functions
          encode-integer
@@ -51,7 +52,11 @@
    symbols-rev        ; (listof symbol), reverse insertion order
    symbols-index      ; hash: symbol -> index
    exprs-rev          ; (listof expr-encoding), reverse insertion order
-   expr-count)        ; number of expressions added
+   expr-count         ; number of expressions added
+   captures-list)     ; (listof (cons expr-id (listof symbol-id))) -- populated
+                      ; by compile-lambda when a lambda's body references
+                      ; outer-scope locals; emitted into the bytecode's
+                      ; captures section by write-bytecode-file.
   #:mutable
   #:transparent)
 
@@ -68,13 +73,14 @@
 ;; Create new bytecode container
 (define (make-bytecode)
   (bytecode #x5EB5        ; Magic number
-            2             ; Version
+            3             ; Version
             '()           ; strings-rev
             (make-hash)   ; strings-index
             '()           ; symbols-rev
             (make-hash)   ; symbols-index
             '()           ; exprs-rev
-            0))           ; expr-count
+            0             ; expr-count
+            '()))         ; captures-list
 
 ;; Ordered (insertion-order) accessors. Reverse is O(n); callers that need
 ;; to iterate should cache the result rather than call in a loop.
@@ -114,6 +120,16 @@
     (set-bytecode-exprs-rev! bc (cons encoding (bytecode-exprs-rev bc)))
     (set-bytecode-expr-count! bc (+ idx 1))
     idx))
+
+;; Record a captures-list for a lambda's expr-id. captured-syms is a list
+;; of free-variable symbol names that the lambda body references; this
+;; resolves them to symbol-ids (allocating in the symbol table if needed)
+;; and stores the mapping for write-bytecode-file to emit later.
+(define (record-captures! bc expr-id captured-syms)
+  (when (not (null? captured-syms))
+    (let ([sym-ids (map (lambda (s) (add-symbol bc s)) captured-syms)])
+      (set-bytecode-captures-list! bc
+        (cons (cons expr-id sym-ids) (bytecode-captures-list bc))))))
 
 ;; Replace expression at given index.
 (define (replace-expr bc index encoding)
@@ -387,7 +403,23 @@
       (write-table (bytecode-symbols bc) write-symbol-entry)
 
       ;; Expression table
-      (write-table (bytecode-expressions bc) write-expr-entry))))
+      (write-table (bytecode-expressions bc) write-expr-entry)
+
+      ;; Captures section: count of {expr_id, [symbol_id, ...]} entries.
+      ;; Each entry is uint16-length-prefixed, then uint16 expr_id +
+      ;; uint16 symbol_id per captured free variable. compile-lambda
+      ;; populates bc's captures-list as it analyzes lambda bodies for
+      ;; free variables; here we serialize that out.
+      (let ([entries (bytecode-captures-list bc)])
+        (write-u16 (length entries))
+        (for ([entry entries])
+          (let* ([expr-id (car entry)]
+                 [sym-ids (cdr entry)]
+                 [entry-bytes (+ 2 (* 2 (length sym-ids)))])
+            (write-u16 entry-bytes)
+            (write-u16 expr-id)
+            (for ([sid sym-ids])
+              (write-u16 sid))))))))
 
 (define (write-table items write-item)
   (write-u16 (length items))

@@ -368,6 +368,25 @@ vm_write_object(vm_port_t *port, vm_obj_t *obj)
   case VM_TYPE_PORT:
     vm_write(port, "#(port %d)", obj->value.port->fd);
     break;
+  case VM_TYPE_BOX:
+    vm_write(port, "#<box ");
+    if(obj->value.box != NULL) {
+      vm_write_object(port, &obj->value.box->value);
+    } else {
+      vm_write(port, "?");
+    }
+    vm_write(port, ">");
+    break;
+  case VM_TYPE_CLOSURE:
+    if(obj->value.closure != NULL) {
+      vm_write(port, "#<closure form=%u argc=%u captures=%u>",
+               (unsigned)obj->value.closure->form_id,
+               (unsigned)obj->value.closure->argc,
+               (unsigned)obj->value.closure->capture_count);
+    } else {
+      vm_write(port, "#<closure ?>");
+    }
+    break;
   case VM_TYPE_PROCEDURE:
     vm_write(port, "#(libfunc %p)", obj->value.procedure);
     break;

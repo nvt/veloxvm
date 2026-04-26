@@ -176,3 +176,52 @@ vm_vector_set(vm_obj_t *vector, vm_integer_t index, vm_obj_t *obj)
 
   return 1;
 }
+
+vm_box_t *
+vm_box_create(vm_obj_t *obj, const vm_obj_t *value)
+{
+  vm_box_t *box;
+
+  obj->type = VM_TYPE_BOX;
+  obj->value.box = vm_alloc(sizeof(vm_box_t));
+  if(obj->value.box == NULL) {
+    return NULL;
+  }
+  box = obj->value.box;
+  if(value != NULL) {
+    memcpy(&box->value, value, sizeof(vm_obj_t));
+  } else {
+    box->value.type = VM_TYPE_NONE;
+  }
+  return box;
+}
+
+vm_closure_t *
+vm_closure_create(vm_obj_t *obj, vm_expr_id_t form_id, uint8_t argc,
+                  uint8_t capture_count)
+{
+  vm_closure_t *closure;
+  uint8_t i;
+
+  obj->type = VM_TYPE_CLOSURE;
+  obj->value.closure = vm_alloc(sizeof(vm_closure_t));
+  if(obj->value.closure == NULL) {
+    return NULL;
+  }
+  closure = obj->value.closure;
+  closure->form_id = form_id;
+  closure->argc = argc;
+  closure->capture_count = capture_count;
+  if(capture_count == 0) {
+    closure->captures = NULL;
+  } else {
+    closure->captures = vm_alloc(sizeof(vm_obj_t) * capture_count);
+    if(closure->captures == NULL) {
+      return NULL;
+    }
+    for(i = 0; i < capture_count; i++) {
+      closure->captures[i].type = VM_TYPE_NONE;
+    }
+  }
+  return closure;
+}

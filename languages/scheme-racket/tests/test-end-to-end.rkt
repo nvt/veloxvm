@@ -37,7 +37,7 @@
 (displayln "Test 1: Simple arithmetic (+ 1 2)")
 (define bc1 (compile-full '(+ 1 2)))
 (check-equal? (bytecode-magic bc1) #x5EB5 "Magic number correct")
-(check-equal? (bytecode-version bc1) 2 "Version correct")
+(check-equal? (bytecode-version bc1) 3 "Version correct")
 (check-true (contains-sym? '+ (rewrite-only '(+ 1 2)))
             "Rewritten form references '+'")
 (displayln "   PASSED\n")
@@ -157,7 +157,7 @@
 (define file-bytes (file->bytes test-file))
 (check-equal? (bytes-ref file-bytes 0) #x5E "Magic byte 1 correct")
 (check-equal? (bytes-ref file-bytes 1) #xB5 "Magic byte 2 correct")
-(check-equal? (bytes-ref file-bytes 2) 2 "Version byte correct")
+(check-equal? (bytes-ref file-bytes 2) 3 "Version byte correct")
 (displayln "   PASSED\n")
 
 ;; Clean up test file

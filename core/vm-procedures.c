@@ -415,6 +415,12 @@ static const vm_procedure_t operators[] = {
   /* Type conversion functions (R5RS compliance). */
   VM_OPERATOR(symbol_to_string, VM_TYPE_FLAG(VM_TYPE_SYMBOL),
               VM_PROCEDURE_EVAL_ARGS, 1, 1),
+
+  /* Box operations (used by the compiler for shared mutable storage in
+     closures over captured-and-mutated variables). */
+  VM_OPERATOR(box, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(box_ref, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(box_set, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 2, 2),
 };
 
 #define MAX_COMMON_SYMBOL_ID 127
@@ -464,11 +470,16 @@ vm_procedure_lookup(vm_program_t *program, vm_symbol_ref_t *symbol_ref)
   if(obj->type == VM_TYPE_PROCEDURE) {
     /* The symbol is bound to a library procedure. */
     return obj->value.procedure;
-  } else if(obj->type != VM_TYPE_FORM) {
-    /* At this point, we can only accept lambda forms. */
-    return NULL;
+  } else if(obj->type == VM_TYPE_FORM) {
+    lambda_proc.expr_id = obj->value.form.id;
+    return &lambda_proc;
+  } else if(obj->type == VM_TYPE_CLOSURE) {
+    /* A symbol bound to a closure dispatches into the closure's
+       body. The captures get bound by bind_function, which inspects
+       the calling expression's argv[0] to find the closure. */
+    lambda_proc.expr_id = obj->value.closure->form_id;
+    return &lambda_proc;
   }
 
-  lambda_proc.expr_id = obj->value.form.id;
-  return &lambda_proc;
+  return NULL;
 }

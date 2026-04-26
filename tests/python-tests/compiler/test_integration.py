@@ -81,7 +81,7 @@ for i in range(3):
             # Check header
             with open(output_path, 'rb') as f:
                 header = f.read(3)
-                self.assertEqual(header, bytes([0x5E, 0xB5, 0x02]))
+                self.assertEqual(header, bytes([0x5E, 0xB5, 0x03]))
         finally:
             output_path.unlink()
 

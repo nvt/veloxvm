@@ -122,6 +122,10 @@ static vm_symbol_t symbol_map[] = {
   SYM("vector-set!"), SYM("vector->list"), SYM("list->vector"),
   SYM("vector-fill!"), SYM("make-buffer"), SYM("buffer-append"),
 
+  /* Higher-order vector functions. */
+  SYM("vector-for-each"), SYM("vector-count"), SYM("vector-fold"),
+  SYM("vector-map"),
+
   /* I/O functions. */
   SYM("input-port?"), SYM("output-port?"), SYM("current-input-port"),
   SYM("current-output-port"), SYM("open-input-file"), SYM("open-output-file"),
@@ -153,7 +157,10 @@ static vm_symbol_t symbol_map[] = {
   SYM("symbol?"),
 
   /* Type conversion functions (R5RS compliance). */
-  SYM("symbol->string")
+  SYM("symbol->string"),
+
+  /* Box operations (compiler-emitted for closure mutable captures). */
+  SYM("box"), SYM("box-ref"), SYM("box-set!")
 };
 
 #define CORE_SYMBOL_COUNT VM_ARRAY_SIZE(symbol_map)

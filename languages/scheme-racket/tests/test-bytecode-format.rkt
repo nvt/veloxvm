@@ -28,7 +28,7 @@
   (check-equal? (bytes-ref file-bytes 1) #xB5 "Magic byte 2")
 
   (displayln "  Checking version...")
-  (check-equal? (bytes-ref file-bytes 2) 2 "Version")
+  (check-equal? (bytes-ref file-bytes 2) 3 "Version")
 
   (displayln "  Checking tables exist...")
   ;; Bytes 3-4: number of strings (16-bit little-endian)

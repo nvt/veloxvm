@@ -191,6 +191,24 @@ mark_object(vm_obj_t *obj)
       mark_memory(obj->value.ext_object);
     }
     break;
+  case VM_TYPE_BOX:
+    if(obj->value.box != NULL && !memory_is_marked(obj->value.box)) {
+      mark_memory(obj->value.box);
+      mark_object(&obj->value.box->value);
+    }
+    break;
+  case VM_TYPE_CLOSURE:
+    if(obj->value.closure != NULL && !memory_is_marked(obj->value.closure)) {
+      mark_memory(obj->value.closure);
+      if(obj->value.closure->captures != NULL &&
+         !memory_is_marked(obj->value.closure->captures)) {
+        mark_memory(obj->value.closure->captures);
+        for(k = 0; k < obj->value.closure->capture_count; k++) {
+          mark_object(&obj->value.closure->captures[k]);
+        }
+      }
+    }
+    break;
   default:
     break;
   }

@@ -142,24 +142,24 @@ VM_FUNCTION(bind_function)
   int i;
 
   if(thread->expr->eval_completed == 1) {
-    /* Initiate the evaluation of the bind expression. */
+    /* Initiate the evaluation of the bind expression.
+
+       The bind frame needs storage for the formal parameters AND, if
+       the caller is a closure, for its captured free variables. A
+       no-parameter closure (e.g. (lambda () ...)) still needs the
+       captures bound, so we set up bindv whenever any of the two
+       contributes a binding -- not only when there are formal params. */
+
+    calling_expr = (thread->exprc >= 2) ?
+                   thread->exprv[thread->exprc - 2] : NULL;
 
     if(argc > 1) {
-      /*
-       * The bind expression uses all arguments in the calling expression
-       * to bind the symbols specified as argument to the bind
-       * expression. In addition, the bind operator requires a final
-       * argument that is an expression to execute after the symbols have
-       * been bound.
-       */
-
-      if(thread->exprc < 2) {
+      if(calling_expr == NULL) {
 	/* Bind cannot execute if there is not a calling expression. */
 	vm_signal_error(thread, VM_ERROR_BYTECODE);
 	return;
       }
 
-      calling_expr = thread->exprv[thread->exprc - 2];
       if(calling_expr->argc + 1 != thread->expr->argc) {
 	/* There must be enough objects in the calling expression to bind
 	   the symbols specified as arguments to the called bind
@@ -167,14 +167,25 @@ VM_FUNCTION(bind_function)
 	vm_signal_error(thread, VM_ERROR_BYTECODE);
 	return;
       }
+    }
 
-      /* Create a stack for the argument symbol bindings. */
-      thread->expr->bindv = VM_MALLOC(sizeof(vm_symbol_bind_t) * (argc - 1));
-      if(thread->expr->bindv == NULL) {
-        vm_signal_error(thread, VM_ERROR_HEAP);
-        return;
+    {
+      unsigned bind_capacity = (argc > 1) ? (unsigned)(argc - 1) : 0;
+      if(calling_expr != NULL &&
+         calling_expr->argv[0].type == VM_TYPE_CLOSURE) {
+        bind_capacity += calling_expr->argv[0].value.closure->capture_count;
       }
+      if(bind_capacity > 0) {
+        thread->expr->bindv =
+          VM_MALLOC(sizeof(vm_symbol_bind_t) * bind_capacity);
+        if(thread->expr->bindv == NULL) {
+          vm_signal_error(thread, VM_ERROR_HEAP);
+          return;
+        }
+      }
+    }
 
+    if(argc > 1) {
       /* Bind the supplied arguments to the symbols of the bind expression. */
       for(i = 0; i < argc - 1; i++) {
         if(argv[i].type != VM_TYPE_SYMBOL) {
@@ -189,13 +200,74 @@ VM_FUNCTION(bind_function)
       }
     }
 
+    /* If the calling expression's operator is a closure, also bind
+       the captured free variables. The captures-list (symbol_ids)
+       lives in program->captures[form_id]; the captured values live
+       in closure->captures, indexed in the same order. */
+    if(calling_expr != NULL &&
+       calling_expr->argv[0].type == VM_TYPE_CLOSURE) {
+      vm_closure_t *closure = calling_expr->argv[0].value.closure;
+      if(thread->program->captures != NULL &&
+         closure->form_id < thread->program->captures_size &&
+         thread->program->captures[closure->form_id] != NULL) {
+        vm_captures_t *cap = thread->program->captures[closure->form_id];
+        uint8_t k;
+        for(k = 0; k < cap->count && k < closure->capture_count; k++) {
+          vm_symbol_ref_t ref;
+          ref.scope = VM_SYMBOL_SCOPE_APP;
+          ref.symbol_id = cap->symbols[k];
+          vm_symbol_bind(thread, &ref, &closure->captures[k]);
+          if(thread->status == VM_THREAD_ERROR) {
+            return;
+          }
+        }
+      }
+    }
+
     /* Instruct the scheduler to evaluate the actual lambda expression. */
     VM_EVAL_ARG(thread, argc - 1);
     VM_SET_FLAG(thread->expr->flags, VM_EXPR_TAIL_CALL);
   } else {
-    /* Evaluation finished. */
+    /* Evaluation finished.
+
+       If the body's value is a lambda form whose expr_id has captured
+       free variables, materialize a closure now -- this frame's
+       bindings (formal parameters of the enclosing lambda) are still
+       live, so vm_symbol_resolve can snapshot them. Doing this at
+       form-read time would be too early; the parameters aren't bound
+       yet at that point. */
     VM_EVAL_STOP(thread);
-    VM_PUSH(&argv[argc - 1]);
+    if(argv[argc - 1].type == VM_TYPE_FORM &&
+       argv[argc - 1].value.form.type == VM_FORM_LAMBDA &&
+       thread->program->captures != NULL &&
+       argv[argc - 1].value.form.id < thread->program->captures_size &&
+       thread->program->captures[argv[argc - 1].value.form.id] != NULL) {
+      vm_captures_t *cap =
+        thread->program->captures[argv[argc - 1].value.form.id];
+      vm_expr_id_t form_id = argv[argc - 1].value.form.id;
+      vm_obj_t closure_obj;
+      vm_closure_t *closure;
+      uint8_t k;
+
+      closure = vm_closure_create(&closure_obj, form_id, 0, cap->count);
+      if(closure == NULL) {
+        vm_signal_error(thread, VM_ERROR_HEAP);
+        return;
+      }
+      for(k = 0; k < cap->count; k++) {
+        vm_symbol_ref_t ref;
+        vm_obj_t *bound;
+        ref.scope = VM_SYMBOL_SCOPE_APP;
+        ref.symbol_id = cap->symbols[k];
+        bound = vm_symbol_resolve(thread, &ref);
+        if(bound != NULL) {
+          memcpy(&closure->captures[k], bound, sizeof(vm_obj_t));
+        }
+      }
+      VM_PUSH(&closure_obj);
+    } else {
+      VM_PUSH(&argv[argc - 1]);
+    }
   }
 }
 

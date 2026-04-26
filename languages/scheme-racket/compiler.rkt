@@ -163,6 +163,15 @@
            "variadic lambda parameters not supported by the VM: ~a"
            args))
   (let* ([extended-env (append args env)]  ; Add lambda parameters to env
+         ;; Box-rewrite: any param that is both captured by an inner lambda
+         ;; AND mutated via set! must live in shared (heap-allocated) storage
+         ;; so writes through one alias are visible through all aliases.
+         ;; rewrite-body wraps each such param at function entry with
+         ;; (set! p (box p)) and rewrites reads/writes in the rest of the
+         ;; body to go through box-ref / box-set!. Plain reads of non-boxed
+         ;; params are untouched.
+         [boxed-params (params-needing-box body args)]
+         [body (box-rewrite body boxed-params)]
          [bind-expr (if (> (length body) 1)
                         ;; Multiple body expressions: wrap in begin
                         `(bind_function ,@args (begin ,@body))
@@ -173,9 +182,198 @@
          [bind-enc (compile-expr bind-expr bc extended-env)]
          ;; Add to main bc and get its index
          [expr-id (bytecode-expression-count bc)]
-         [_ (add-expr bc bind-enc)])
+         [_ (add-expr bc bind-enc)]
+         ;; Free-variable analysis: identify names referenced in the body
+         ;; that come from an outer lambda's scope (env) but aren't bound
+         ;; by this lambda's own params. These are the captures the
+         ;; runtime needs to snapshot when this lambda is evaluated.
+         [captures (lambda-captures body args env)])
+    (record-captures! bc expr-id captures)
     ;; Return lambda form referencing the bind expression
     (encode-form-lambda expr-id)))
+
+;; ============================================================================
+;; Free-Variable Analysis (for closure capture)
+;; ============================================================================
+
+;; Compute the captures-list for a lambda whose body is body, parameters are
+;; params, and surrounding lexical scope is outer-env. A captured name is
+;; one that is referenced in body, is not bound by this lambda (params or
+;; any nested binder), and is bound in outer-env (so it's an outer
+;; lambda's local). Top-level globals resolve through symbol_bindings and
+;; don't need capturing.
+;;
+;; The primitive-ness of a name is irrelevant here: if a name is in
+;; outer-env it's a local that shadows any same-named primitive, and the
+;; closure must capture the local binding, not the primitive. (count is a
+;; VM primitive but is also a perfectly valid let-bound variable name.)
+;;
+;; Returns a deduplicated list of symbol names.
+(define (lambda-captures body params outer-env)
+  (let* ([fvs (apply append
+                     (map (lambda (e) (free-symbols e params)) body))]
+         [unique (remove-duplicates fvs)])
+    (filter (lambda (s) (member s outer-env)) unique)))
+
+;; Symbols referenced in expr that aren't bound by local (a list of
+;; names introduced by enclosing lambda/let/etc. binders).
+(define (free-symbols expr local)
+  (cond
+    [(symbol? expr)
+     (if (member expr local) '() (list expr))]
+    [(not (pair? expr)) '()]
+    [(eq? (car expr) 'quote) '()]
+    [(eq? (car expr) 'lambda)
+     ;; (lambda (inner-params...) inner-body...) -- inner-params shadow outer
+     (let ([inner-params (cadr expr)]
+           [inner-body (cddr expr)])
+       (apply append
+              (map (lambda (e) (free-symbols e (append inner-params local)))
+                   inner-body)))]
+    [(eq? (car expr) 'define)
+     ;; (define name val) or (define (name args...) body...)
+     ;; The name itself is bound; the value/body sees it in scope.
+     (let* ([target (cadr expr)]
+            [binding-name (if (pair? target) (car target) target)]
+            [val-expr (if (pair? target)
+                          `(lambda ,(cdr target) ,@(cddr expr))
+                          (caddr expr))])
+       (free-symbols val-expr (cons binding-name local)))]
+    [(eq? (car expr) 'set!)
+     ;; (set! name val) -- name is referenced (read for the binding lookup),
+     ;; val is the new value. Both contribute to free vars.
+     (append (free-symbols (cadr expr) local)
+             (free-symbols (caddr expr) local))]
+    [else
+     ;; if / begin / and / or / application / bind_function: union over all
+     ;; subexpressions. The operator is also walked, which is fine because
+     ;; primitives are filtered out by lambda-captures.
+     (apply append (map (lambda (e) (free-symbols e local)) expr))]))
+
+;; ============================================================================
+;; Box Rewriting (for set! on captured variables)
+;; ============================================================================
+
+;; A parameter needs boxing iff it is (a) captured by some inner lambda
+;; nested in body and (b) the target of a set! somewhere in body. Without
+;; the box, the inner lambda's snapshot is independent of the parent's
+;; binding (and of any other closure capturing the same param), so writes
+;; through one path are invisible to the others.
+(define (params-needing-box body params)
+  (let ([captured (params-captured-by-inner body params)]
+        [mutated (params-mutated-in body params)])
+    (filter (lambda (p) (and (member p captured) (member p mutated))) params)))
+
+;; Subset of params that are referenced inside any inner lambda nested in
+;; body, without that inner lambda or anything between rebinding the name.
+(define (params-captured-by-inner body params)
+  (define hits '())
+  (define (walk expr inside? local)
+    (cond
+      [(symbol? expr)
+       (when (and inside? (member expr params) (not (member expr local)))
+         (set! hits (cons expr hits)))]
+      [(not (pair? expr)) (void)]
+      [(eq? (car expr) 'quote) (void)]
+      [(eq? (car expr) 'lambda)
+       (let ([inner-params (cadr expr)]
+             [inner-body (cddr expr)])
+         (for-each (lambda (e) (walk e #t (append inner-params local)))
+                   inner-body))]
+      [(eq? (car expr) 'set!)
+       ;; The target itself isn't a "reference" -- it's the assignment
+       ;; LHS. Only the value expression contributes.
+       (walk (caddr expr) inside? local)]
+      [(eq? (car expr) 'define)
+       (let* ([target (cadr expr)]
+              [name (if (pair? target) (car target) target)]
+              [val (if (pair? target)
+                       `(lambda ,(cdr target) ,@(cddr expr))
+                       (caddr expr))])
+         (walk val inside? (cons name local)))]
+      [else
+       (for-each (lambda (e) (walk e inside? local)) expr)]))
+  (for-each (lambda (e) (walk e #f '())) body)
+  (remove-duplicates hits))
+
+;; Subset of params that appear as the target of a set! somewhere in body
+;; (in a scope where the name still refers to this lambda's param, i.e.
+;; not shadowed by an inner binder that rebinds the same name).
+(define (params-mutated-in body params)
+  (define hits '())
+  (define (walk expr local)
+    (cond
+      [(symbol? expr) (void)]
+      [(not (pair? expr)) (void)]
+      [(eq? (car expr) 'quote) (void)]
+      [(eq? (car expr) 'lambda)
+       (let ([inner-params (cadr expr)]
+             [inner-body (cddr expr)])
+         (for-each (lambda (e) (walk e (append inner-params local)))
+                   inner-body))]
+      [(eq? (car expr) 'set!)
+       (let ([target (cadr expr)])
+         (when (and (member target params) (not (member target local)))
+           (set! hits (cons target hits))))
+       (walk (caddr expr) local)]
+      [(eq? (car expr) 'define)
+       (let* ([target (cadr expr)]
+              [name (if (pair? target) (car target) target)]
+              [val (if (pair? target)
+                       `(lambda ,(cdr target) ,@(cddr expr))
+                       (caddr expr))])
+         (walk val (cons name local)))]
+      [else
+       (for-each (lambda (e) (walk e local)) expr)]))
+  (for-each (lambda (e) (walk e '())) body)
+  (remove-duplicates hits))
+
+;; Rewrite body so that boxed-params live in heap boxes:
+;;   * Inject (set! p (box p)) at function entry to wrap the initial value.
+;;   * Replace each read of p with (box-ref p).
+;;   * Replace each (set! p v) with (box-set! p v).
+;; The wraps are constructed AFTER rewriting so the (box p) inside them
+;; remains a plain reference. Inner lambdas that rebind a name are
+;; respected -- the rebound scope sees the inner-params, not the outer
+;; box-rewritten name.
+(define (box-rewrite body boxed-params)
+  (if (null? boxed-params)
+      body
+      (let ([rewritten (map (lambda (e) (box-rewrite-expr e boxed-params)) body)])
+        (append
+          (map (lambda (p) `(set! ,p (box ,p))) boxed-params)
+          rewritten))))
+
+(define (box-rewrite-expr expr boxed)
+  (cond
+    [(symbol? expr)
+     (if (member expr boxed) `(box-ref ,expr) expr)]
+    [(not (pair? expr)) expr]
+    [(eq? (car expr) 'quote) expr]
+    [(eq? (car expr) 'lambda)
+     ;; Inner lambda: drop any boxed names that the inner params shadow.
+     (let* ([inner-params (cadr expr)]
+            [inner-body (cddr expr)]
+            [active (filter (lambda (b) (not (member b inner-params))) boxed)])
+       `(lambda ,inner-params
+          ,@(map (lambda (e) (box-rewrite-expr e active)) inner-body)))]
+    [(eq? (car expr) 'set!)
+     (let ([target (cadr expr)]
+           [val (caddr expr)])
+       (if (member target boxed)
+           `(box-set! ,target ,(box-rewrite-expr val boxed))
+           `(set! ,target ,(box-rewrite-expr val boxed))))]
+    [(eq? (car expr) 'define)
+     ;; v1 of the box rewrite doesn't try to box internal-define bindings.
+     ;; The value expression is rewritten so any references to outer boxed
+     ;; names go through box-ref.
+     (let ([target (cadr expr)]
+           [val-or-body (cddr expr)])
+       (cons 'define
+             (cons target
+                   (map (lambda (e) (box-rewrite-expr e boxed)) val-or-body))))]
+    [else
+     (map (lambda (e) (box-rewrite-expr e boxed)) expr)]))
 
 ;; Compile a sub-expression of a compound form.
 ;;   - Atoms (non-pair) are compiled inline and their bytes embed directly

@@ -115,7 +115,9 @@
     construct-packet deconstruct-packet
 ;; Symbol functions.
     symbol?
-    symbol->string))
+    symbol->string
+;; Box functions (compiler-emitted for closure mutable captures).
+    box box-ref box-set!))
 
 ;; The following values are stored in the first two bytes of a VM app
 ;; to be able to identify the app.

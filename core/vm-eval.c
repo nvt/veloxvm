@@ -104,6 +104,7 @@ vm_eval_expr(vm_thread_t *thread, vm_expr_t *expr)
     proc = op->value.procedure;
     break;
   case VM_TYPE_FORM:
+  case VM_TYPE_CLOSURE:
     VM_EVAL_ARG(thread, 0);
     return;
   default:

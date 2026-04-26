@@ -101,6 +101,9 @@ VM_PRIMITIVES = [
 
     # Type conversion functions
     'symbol_to_string',
+
+    # Box operations (compiler-emitted for closure mutable captures)
+    'box', 'box_ref', 'box_set',
 ]
 
 # Create reverse lookup dictionary (name -> ID)
@@ -239,6 +242,8 @@ SCHEME_ALIASES = {
     'bit-not': 'bit_not',
     'bit-xor': 'bit_xor',
     'bit-shift': 'bit_shift',
+    'box-ref': 'box_ref',
+    'box-set!': 'box_set',
     'construct-packet': 'construct_packet',
     'deconstruct-packet': 'deconstruct_packet',
     'symbol->string': 'symbol_to_string',
@@ -253,7 +258,7 @@ def get_primitive_id(name: str) -> int:
         name: The primitive name (e.g., 'add', '+', 'list-ref')
 
     Returns:
-        The symbol ID (0-202) or None if not a primitive
+        The symbol ID (0-205) or None if not a primitive
     """
     # Check if it's a Scheme alias
     if name in SCHEME_ALIASES:
@@ -280,7 +285,7 @@ def get_primitive_name(symbol_id: int) -> str:
     Get the primitive name for a given symbol ID.
 
     Args:
-        symbol_id: The symbol ID (0-202)
+        symbol_id: The symbol ID (0-205)
 
     Returns:
         The primitive name or None if invalid ID
@@ -291,4 +296,4 @@ def get_primitive_name(symbol_id: int) -> str:
 
 
 # The primitive count must match core/vm-procedures.c exactly.
-assert len(VM_PRIMITIVES) == 203, f"Expected 203 primitives, got {len(VM_PRIMITIVES)}"
+assert len(VM_PRIMITIVES) == 206, f"Expected 206 primitives, got {len(VM_PRIMITIVES)}"

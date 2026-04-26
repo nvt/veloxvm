@@ -48,7 +48,7 @@
 
 ;; VM Primitives in exact order matching vm-procedures.c operator table
 ;; This list MUST match the operator order exactly to ensure
-;; correct primitive ID encoding. Total: 199 primitives.
+;; correct primitive ID encoding. Total: 202 primitives.
 (define vm-primitives
   '(+ - * / gcd lcm numerator denominator quotient remainder modulo
     = /= < <= > >= zero?
@@ -90,7 +90,8 @@
     bit-and bit-or bit-invert bit-not bit-xor bit-shift
     construct-packet deconstruct-packet
     symbol?
-    symbol->string))
+    symbol->string
+    box box-ref box-set!))
 
 ;; Check if symbol is a VM primitive
 (define (vm-primitive? sym)
