@@ -61,7 +61,7 @@ thread_obj_write(vm_port_t *port, vm_obj_t *obj)
 {
   vm_thread_t *thread;
 
-  thread = obj->value.ext_object.opaque_data;
+  thread = obj->value.ext_object->opaque_data;
   vm_write(port, "#<thread %ld>", (long)thread->id);
 }
 
@@ -131,9 +131,19 @@ vm_thread_init(void)
 void
 thread_obj_create(vm_obj_t *obj, vm_thread_t *thread)
 {
+  vm_ext_object_t *ext;
+
+  ext = vm_alloc(sizeof(vm_ext_object_t));
+  if(ext == NULL) {
+    /* No callers propagate a failure code; fall back to VM_TYPE_NONE
+       to keep the object well-formed. */
+    obj->type = VM_TYPE_NONE;
+    return;
+  }
+  ext->type = &ext_type_thread;
+  ext->opaque_data = thread;
+  obj->value.ext_object = ext;
   obj->type = VM_TYPE_EXTERNAL;
-  obj->value.ext_object.type = &ext_type_thread;
-  obj->value.ext_object.opaque_data = thread;
 }
 
 void

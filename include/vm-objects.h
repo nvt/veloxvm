@@ -202,7 +202,7 @@ typedef union vm_obj_value {
   vm_vector_t *vector;
   vm_port_t *port;
   const struct vm_procedure *procedure;
-  struct vm_ext_object ext_object;
+  struct vm_ext_object *ext_object;
 } vm_obj_value_t;
 
 /* VM objects consist of a type specifier and its corresponding
