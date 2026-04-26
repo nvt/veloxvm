@@ -90,6 +90,15 @@ static vm_memory_stats_t mem_stats;
  */
 static int gc_disabled = 0;
 
+/*
+ * Singly-linked list of every live vm_ext_object_t allocated via
+ * vm_ext_object_create. The GC walks this list after marking to call
+ * each unreferenced box's type->deallocate callback, freeing the
+ * type-specific opaque_data backing that the GC's heap sweep cannot
+ * see otherwise.
+ */
+static vm_ext_object_t *ext_object_list_head = NULL;
+
 static void
 free_vm_memory(void *ptr)
 {
@@ -302,6 +311,19 @@ vm_free_all(void)
 {
   unsigned i;
   unsigned deallocated;
+  vm_ext_object_t *box;
+  vm_obj_t obj;
+
+  /* Finalize every remaining ext-object so each type's deallocate
+     callback runs before we tear the heap down underneath it. */
+  while((box = ext_object_list_head) != NULL) {
+    ext_object_list_head = box->next;
+    if(box->type != NULL && box->type->deallocate != NULL) {
+      obj.type = VM_TYPE_EXTERNAL;
+      obj.value.ext_object = box;
+      box->type->deallocate(&obj);
+    }
+  }
 
   for(i = deallocated = 0; i < allocations.size; i++) {
     if(VM_HASH_SLOT_USED(&allocations, i)) {
@@ -329,6 +351,39 @@ vm_gc_enable(void)
 {
   if(gc_disabled > 0) {
     gc_disabled--;
+  }
+}
+
+/*
+ * Walk the live-ext-objects list and finalize any box that the mark
+ * phase did not reach. Calling type->deallocate gives the type a chance
+ * to free its opaque_data backing (mutex struct, complex struct, etc.)
+ * before the upcoming heap sweep frees the box itself.
+ *
+ * We unlink finalized boxes from the list but do not free the box
+ * memory here -- that happens in the heap sweep that runs immediately
+ * after, since the box was registered in the heap allocations hash by
+ * vm_alloc and is what the mark bit is keyed on.
+ */
+static void
+finalize_unmarked_ext_objects(void)
+{
+  vm_ext_object_t **link;
+  vm_ext_object_t *box;
+  vm_obj_t obj;
+
+  link = &ext_object_list_head;
+  while((box = *link) != NULL) {
+    if(memory_is_marked(box)) {
+      link = &box->next;
+      continue;
+    }
+    if(box->type != NULL && box->type->deallocate != NULL) {
+      obj.type = VM_TYPE_EXTERNAL;
+      obj.value.ext_object = box;
+      box->type->deallocate(&obj);
+    }
+    *link = box->next;
   }
 }
 
@@ -361,6 +416,11 @@ do_gc(int force)
       mark_thread_references(thread);
     }
   }
+
+  /* Run external-object finalizers before the sweep so each
+     type->deallocate callback can free its opaque_data backing while
+     the box is still valid. */
+  finalize_unmarked_ext_objects();
 
   /* Sweep phase: deallocate all unreferenced objects allocated on the heap. */
   for(i = deallocated = 0; i < allocations.size; i++) {
@@ -403,6 +463,34 @@ void
 vm_gc_force(void)
 {
   do_gc(1);
+}
+
+vm_ext_object_t *
+vm_ext_object_create(vm_obj_t *dst, vm_ext_type_t *type, void *opaque_data)
+{
+  vm_ext_object_t *box;
+
+  /* Disable GC across the multi-step setup so a sweep in the middle of
+     vm_alloc cannot observe an unreferenced half-built box. */
+  vm_gc_disable();
+
+  box = vm_alloc(sizeof(vm_ext_object_t));
+  if(box == NULL) {
+    vm_gc_enable();
+    memset(dst, 0, sizeof(vm_obj_t));
+    dst->type = VM_TYPE_NONE;
+    return NULL;
+  }
+  box->type = type;
+  box->opaque_data = opaque_data;
+  box->next = ext_object_list_head;
+  ext_object_list_head = box;
+
+  dst->value.ext_object = box;
+  dst->type = VM_TYPE_EXTERNAL;
+
+  vm_gc_enable();
+  return box;
 }
 
 void

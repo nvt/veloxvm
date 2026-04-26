@@ -180,6 +180,11 @@ struct vm_ext_type;
 typedef struct vm_ext_object {
   struct vm_ext_type *type;
   void *opaque_data;
+  /* Linkage for the global live-objects list maintained in vm-memory.c.
+     The GC walks this list after the mark phase to invoke each unmarked
+     box's type->deallocate callback before reclaiming the box. Internal
+     to the runtime; do not access from outside core/vm-memory.c. */
+  struct vm_ext_object *next;
 } vm_ext_object_t;
 
 /* Forward reference to a type definition needed by vm_obj_value_t. */

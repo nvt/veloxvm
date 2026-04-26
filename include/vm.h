@@ -268,6 +268,16 @@ int vm_memory_init(void);
 const vm_mempool_t *vm_object_pool(void);
 void vm_memory_profile_print(void);
 
+/* Allocate a vm_ext_object_t, fill its type/opaque_data, link it onto
+   the GC's live-objects list, and store the box pointer in dst (also
+   setting dst->type to VM_TYPE_EXTERNAL). Returns the box on success,
+   or NULL on allocation failure with dst zeroed and dst->type set to
+   VM_TYPE_NONE. The caller still owns opaque_data; the type's
+   deallocate callback is responsible for freeing it. */
+vm_ext_object_t *vm_ext_object_create(vm_obj_t *dst,
+                                       vm_ext_type_t *type,
+                                       void *opaque_data);
+
 /* Thread functions. (vm-thread.c) */
 int vm_thread_init(void);
 void thread_obj_create(vm_obj_t *, vm_thread_t *);

@@ -100,7 +100,6 @@ static void
 complex_create(vm_obj_t *dst, vm_real_t real, vm_real_t imag)
 {
   vm_complex_t *complex;
-  vm_ext_object_t *ext;
 
   complex = VM_MALLOC(sizeof(vm_complex_t));
   if(complex == NULL) {
@@ -108,17 +107,10 @@ complex_create(vm_obj_t *dst, vm_real_t real, vm_real_t imag)
     dst->type = VM_TYPE_NONE;
     return;
   }
-  ext = vm_alloc(sizeof(vm_ext_object_t));
-  if(ext == NULL) {
+  if(vm_ext_object_create(dst, &ext_type_complex, complex) == NULL) {
     VM_FREE(complex);
-    memset(dst, 0, sizeof(vm_obj_t));
-    dst->type = VM_TYPE_NONE;
     return;
   }
-  ext->type = &ext_type_complex;
-  ext->opaque_data = complex;
-  dst->value.ext_object = ext;
-  dst->type = VM_TYPE_EXTERNAL;
   complex->real = real;
   complex->imag = imag;
 }
