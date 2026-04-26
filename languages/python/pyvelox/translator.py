@@ -375,6 +375,57 @@ class PythonTranslator:
 
     # === Functions ===
 
+    def _compute_captures(self,
+                          body_stmts: List[ast.stmt],
+                          local_names: Set[str],
+                          outer_env: Set[str]) -> List[str]:
+        """
+        Compute the captures for a function or lambda body.
+
+        A captured name is one that is referenced (Load context) inside
+        body_stmts -- including nested functions/lambdas whose own binders
+        don't shadow it -- but is not bound by this function's params or
+        local assignments, and is bound in some enclosing function (outer_env).
+
+        Top-level globals are deliberately excluded from outer_env at the
+        call site, so they resolve through the program-wide symbol bindings
+        rather than being captured.
+
+        Returns a deduplicated list of safe names in first-reference order.
+        """
+        free: List[str] = []
+        seen: Set[str] = set()
+
+        def walk(node, bound: Set[str]):
+            if isinstance(node, ast.Name):
+                if isinstance(node.ctx, ast.Load):
+                    safe = self.get_safe_name(node.id)
+                    if safe not in bound and safe not in seen:
+                        seen.add(safe)
+                        free.append(safe)
+                return
+
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                inner_params = {self.get_safe_name(a.arg) for a in node.args.args}
+                inner_locals = self.collect_assigned_vars(node.body)
+                inner_bound = bound | inner_params | inner_locals
+                for stmt in node.body:
+                    walk(stmt, inner_bound)
+                return
+
+            if isinstance(node, ast.Lambda):
+                inner_params = {self.get_safe_name(a.arg) for a in node.args.args}
+                walk(node.body, bound | inner_params)
+                return
+
+            for child in ast.iter_child_nodes(node):
+                walk(child, bound)
+
+        for stmt in body_stmts:
+            walk(stmt, local_names)
+
+        return [n for n in free if n in outer_env]
+
     def collect_assigned_vars(self, stmts: List[ast.stmt]) -> Set[str]:
         """
         Collect all variable names that are assigned within a list of statements.
@@ -393,6 +444,11 @@ class PythonTranslator:
             elif isinstance(node, ast.AugAssign):
                 if isinstance(node.target, ast.Name):
                     assigned.add(self.get_safe_name(node.target.id))
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                # A nested def binds its name in the enclosing function's
+                # scope. We do not recurse into the def's body since that's
+                # a separate scope.
+                assigned.add(self.get_safe_name(node.name))
             elif isinstance(node, ast.For):
                 if isinstance(node.target, ast.Name):
                     assigned.add(self.get_safe_name(node.target.id))
@@ -453,10 +509,20 @@ class PythonTranslator:
         # NOTE: We compare SAFE names here because collect_assigned_vars returns safe names
         local_vars = assigned_vars - set(safe_params)
 
+        # Free-variable analysis: capture names referenced by the body that
+        # come from an enclosing function's scope. The global scope (index 0)
+        # is excluded because top-level names resolve through program-wide
+        # symbol bindings rather than via captures.
+        local_set = set(safe_params) | local_vars
+        is_nested = len(self.scope_stack) > 1
+        outer_env: Set[str] = set().union(*self.scope_stack[1:]) \
+            if is_nested else set()
+        captures = self._compute_captures(node.body, local_set, outer_env)
+
         # Push a new scope for the function body
         # Include both params AND local vars so they're all treated as "already defined"
         # NOTE: Store SAFE names in scope_stack
-        self.scope_stack.append(set(safe_params) | local_vars)
+        self.scope_stack.append(local_set)
 
         try:
             # Compile body with granular expression storage (like Racket compiler)
@@ -475,11 +541,23 @@ class PythonTranslator:
             # Store bind in expression table
             expr_id = self.bc.add_expression(bind_bytes)
 
+            # Record captured-symbol IDs for the runtime closure machinery.
+            if captures:
+                capture_ids = [self.bc.add_symbol(name) for name in captures]
+                self.bc.record_captures(expr_id, capture_ids)
+
             # Create lambda reference
             lambda_bytes = encode_form_lambda(expr_id)
 
-            # (define func_name lambda)
-            return create_inline_call('define', [func_name_symbol, lambda_bytes], self.bc)
+            # Top-level defs become global bindings via 'define'. Defs nested
+            # inside another function bind into the enclosing function's
+            # let-expansion local (collect_assigned_vars hoists the name),
+            # so we emit 'set!' instead. set!'s mid-arg evaluation gives the
+            # scheduler a chance to materialize a closure when the lambda
+            # has free-variable captures.
+            #
+            op = 'set' if is_nested else 'define'
+            return create_inline_call(op, [func_name_symbol, lambda_bytes], self.bc)
         finally:
             # Pop the function scope
             self.scope_stack.pop()
@@ -496,17 +574,37 @@ class PythonTranslator:
         params = [arg.arg for arg in node.args.args]
         safe_params = [self.get_safe_name(p) for p in params]
 
-        # Translate body directly - lambdas are single expressions, no hoisting needed
-        body_bytes = self.translate_expr(node.body)
+        # Free-variable analysis. Lambda bodies are single expressions but may
+        # still close over enclosing-function locals (the most common case).
+        local_set = set(safe_params)
+        outer_env: Set[str] = set().union(*self.scope_stack[1:]) \
+            if len(self.scope_stack) > 1 else set()
+        # _compute_captures expects a list of statements; wrap the lambda body
+        # in an Expr statement so the same analyzer applies.
+        captures = self._compute_captures(
+            [ast.Expr(value=node.body)], local_set, outer_env)
 
-        # Create bind_function form (lambdas are real functions, like def)
-        bind_bytes = create_bind_form(safe_params, body_bytes, self.bc, is_function=True)
+        # Lambdas don't currently hoist locals, so the new scope is just the
+        # parameters. Pushing it makes inner lambdas/defs see them as outer.
+        self.scope_stack.append(local_set)
+        try:
+            # Translate body directly - lambdas are single expressions
+            body_bytes = self.translate_expr(node.body)
 
-        # Store in expression table
-        expr_id = self.bc.add_expression(bind_bytes)
+            # Create bind_function form (lambdas are real functions, like def)
+            bind_bytes = create_bind_form(safe_params, body_bytes, self.bc, is_function=True)
 
-        # Return lambda reference
-        return encode_form_lambda(expr_id)
+            # Store in expression table
+            expr_id = self.bc.add_expression(bind_bytes)
+
+            if captures:
+                capture_ids = [self.bc.add_symbol(name) for name in captures]
+                self.bc.record_captures(expr_id, capture_ids)
+
+            # Return lambda reference
+            return encode_form_lambda(expr_id)
+        finally:
+            self.scope_stack.pop()
 
     def translate_return(self, node: ast.Return) -> bytes:
         """
@@ -640,7 +738,14 @@ class PythonTranslator:
             else:
                 func_bytes = self.translate_expr(node.func)
         else:
-            func_bytes = self.translate_expr(node.func)
+            # Compound operator (e.g. ((f x) y), or (obj.method() ...)). Lift
+            # it into a form-ref so the runtime sees a single token. Inlining
+            # a nested call here would corrupt byte parsing -- the byte
+            # loader advances past only the inline header, leaving the inner
+            # body to be misread as the outer call's arguments. is_simple_expr
+            # exempts ast.Lambda (a single lambda-form token), so a literal
+            # ((lambda ...) ...) still inlines.
+            func_bytes = self.translate_expr_with_ref(node.func)
         arg_bytes = [self.translate_expr_with_ref(arg) for arg in node.args]
 
         # Create inline call: inline(argc) + func + args

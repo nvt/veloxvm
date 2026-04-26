@@ -6,7 +6,7 @@ This module defines the data structures for managing VeloxVM bytecode compilatio
 - SymbolTable: Manages string and symbol tables with deduplication
 """
 
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 
 class SymbolTable:
@@ -89,6 +89,12 @@ class Bytecode:
         # Expression 0 is reserved as the entry point (pre-allocated)
         self.expressions: List[bytes] = []
 
+        # Captures map: expr_id -> list of captured symbol IDs.
+        # When a lambda body has free variables that resolve to an enclosing
+        # function's locals, those names are recorded here so the runtime can
+        # snapshot their values at lambda evaluation time.
+        self.captures: Dict[int, List[int]] = {}
+
         # Compilation state
         self.loop_counter = 0  # For generating unique loop names
         self.temp_counter = 0  # For generating temporary variable names
@@ -131,6 +137,21 @@ class Bytecode:
             self.expressions[expr_id] = bytecode
         else:
             raise IndexError(f"Expression ID {expr_id} out of range")
+
+    def record_captures(self, expr_id: int, symbol_ids: List[int]):
+        """
+        Record the captured-symbol IDs for a lambda's expression.
+
+        Called once per lambda after the bind expression has been added to the
+        expression table. The runtime reads these to know which free variables
+        of the lambda body must be snapshotted into a closure.
+
+        Args:
+            expr_id: The lambda's body expr_id (as returned by add_expression).
+            symbol_ids: List of application-scope symbol IDs the body captures.
+        """
+        if symbol_ids:
+            self.captures[expr_id] = list(symbol_ids)
 
     def get_unique_loop_name(self) -> str:
         """Generate a unique loop variable name."""
