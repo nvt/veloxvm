@@ -280,6 +280,17 @@ static const vm_procedure_t operators[] = {
               VM_PROCEDURE_EVAL_ARGS, 1, 1),
   VM_OPERATOR(buffer_append, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 3, 3),
 
+  /* Higher-order vector functions. The flags field is 0 (not
+     VM_PROCEDURE_EVAL_ARGS) so the procedure argument stays
+     unevaluated, mirroring the list versions. max_args is -1 because
+     these primitives append state slots to current_expr->argv during
+     iteration; the per-call user arity is enforced inside the
+     operator body. */
+  VM_OPERATOR(vector_for_each, VM_TYPE_FLAG_ANY, 0, 2, -1),
+  VM_OPERATOR(vector_count, VM_TYPE_FLAG_ANY, 0, 2, -1),
+  VM_OPERATOR(vector_fold, VM_TYPE_FLAG_ANY, 0, 3, -1),
+  VM_OPERATOR(vector_map, VM_TYPE_FLAG_ANY, 0, 2, -1),
+
   /* I/O functions. */
   VM_OPERATOR(input_portp, VM_TYPE_FLAG_ANY,
 	      VM_PROCEDURE_EVAL_ARGS, 1, 1),

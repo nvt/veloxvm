@@ -77,6 +77,7 @@
     make-vector vector vector? buffer? vector-merge vector-length vector-ref
     vector-set! vector->list list->vector vector-fill! make-buffer
     buffer-append
+    vector-for-each vector-count vector-fold vector-map
     input-port? output-port? current-input-port current-output-port
     open-input-file open-output-file close-input-port close-output-port
     read-char read peek-char eof-object? char-ready? write-char write

@@ -241,6 +241,12 @@ VM_DECLARE_FUNCTION(vector_fill);
 VM_DECLARE_FUNCTION(make_buffer);
 VM_DECLARE_FUNCTION(buffer_append);
 
+/* Higher-order vector functions. */
+VM_DECLARE_FUNCTION(vector_for_each);
+VM_DECLARE_FUNCTION(vector_count);
+VM_DECLARE_FUNCTION(vector_fold);
+VM_DECLARE_FUNCTION(vector_map);
+
 /* IP functions. */
 VM_DECLARE_FUNCTION(make_client);
 VM_DECLARE_FUNCTION(make_server);

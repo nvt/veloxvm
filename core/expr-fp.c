@@ -566,3 +566,328 @@ VM_FUNCTION(count)
   /* Set the current expression to be the synthetic COUNT expression. */
   execute_synthetic_expr(thread, count_expr, &argv[0], 4);
 }
+
+/*
+ * Vector higher-order operators. These mirror the list versions above but
+ * iterate the input by index rather than by walking a chain of cons cells,
+ * so they avoid materialising an intermediate list. The state per
+ * invocation lives in extra slots appended to current_expr->argv:
+ *   argv[argc-3] (vector_count, vector_map): integer index
+ *   argv[argc-2]                            : accumulator (count, list, ...)
+ *   argv[argc-1]                            : predicate result slot
+ * vector-for-each uses two extras (index + result slot); vector-fold uses
+ * two (index + accumulator) because the explicit init occupies argv[1].
+ */
+
+static void
+vector_read_element(vm_vector_t *vector, vm_integer_t index,
+                    vm_obj_t *out)
+{
+  if(VM_IS_SET(vector->flags, VM_VECTOR_FLAG_BUFFER)) {
+    out->type = VM_TYPE_CHARACTER;
+    out->value.character = vector->bytes[index];
+  } else {
+    memcpy(out, &vector->elements[index], sizeof(vm_obj_t));
+  }
+}
+
+VM_FUNCTION(vector_for_each)
+{
+  vm_vector_t *vector;
+  vm_expr_t *current_expr;
+  vm_expr_t *foreach_expr;
+  vm_integer_t index;
+  vm_obj_t element;
+
+  if(needs_further_eval(thread, argc, argv)) {
+    return;
+  }
+
+  if(!vm_is_procedure(thread, &argv[0]) ||
+     argv[1].type != VM_TYPE_VECTOR) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+
+  current_expr = thread->expr;
+  vector = argv[1].value.vector;
+
+  if(argc == 2) {
+    /* Initial entry: allocate state, reserve slots for index + result. */
+    foreach_expr = vm_thread_stack_alloc(thread);
+    if(foreach_expr == NULL) {
+      return;
+    }
+    foreach_expr->flags = VM_EXPR_HAVE_OBJECTS;
+    foreach_expr->argc = 2;
+
+    current_expr->argc += 2;
+    current_expr->argv[current_expr->argc - 2].type = VM_TYPE_INTEGER;
+    current_expr->argv[current_expr->argc - 2].value.integer = 0;
+  } else if(argc >= 4) {
+    /* Resumption: discard the predicate result, advance the index. */
+    foreach_expr = thread->exprv[thread->exprc];
+    current_expr->argv[current_expr->argc - 2].value.integer++;
+  } else {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_COUNT);
+    return;
+  }
+
+  foreach_expr->flags &= ~VM_EXPR_SAVE_FRAME;
+
+  index = current_expr->argv[current_expr->argc - 2].value.integer;
+  if(index >= vector->length) {
+    /* Done. for-each has no return value. */
+    VM_EVAL_STOP(thread);
+    vm_thread_stack_free(foreach_expr);
+    return;
+  }
+
+  vector_read_element(vector, index, &element);
+  memcpy(&foreach_expr->argv[1], &element, sizeof(vm_obj_t));
+
+  execute_synthetic_expr(thread, foreach_expr, &argv[0],
+                         current_expr->argc - 1);
+}
+
+VM_FUNCTION(vector_count)
+{
+  vm_vector_t *vector;
+  vm_expr_t *current_expr;
+  vm_expr_t *count_expr;
+  vm_integer_t index;
+  vm_obj_t element;
+
+  if(needs_further_eval(thread, argc, argv)) {
+    return;
+  }
+
+  if(!vm_is_procedure(thread, &argv[0]) ||
+     argv[1].type != VM_TYPE_VECTOR) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+
+  current_expr = thread->expr;
+  vector = argv[1].value.vector;
+
+  if(argc == 2) {
+    /* Initial entry: allocate state, reserve slots for
+       index, count, predicate result. */
+    count_expr = vm_thread_stack_alloc(thread);
+    if(count_expr == NULL) {
+      return;
+    }
+    count_expr->flags = VM_EXPR_HAVE_OBJECTS;
+    count_expr->argc = 2;
+
+    current_expr->argc += 3;
+    current_expr->argv[current_expr->argc - 3].type = VM_TYPE_INTEGER;
+    current_expr->argv[current_expr->argc - 3].value.integer = 0;
+    current_expr->argv[current_expr->argc - 2].type = VM_TYPE_INTEGER;
+    current_expr->argv[current_expr->argc - 2].value.integer = 0;
+  } else if(argc >= 5) {
+    count_expr = thread->exprv[thread->exprc];
+
+    if(argv[argc - 1].type != VM_TYPE_BOOLEAN) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+      return;
+    }
+
+    if(argv[argc - 1].value.boolean == VM_TRUE) {
+      current_expr->argv[current_expr->argc - 2].value.integer++;
+    }
+    current_expr->argv[current_expr->argc - 3].value.integer++;
+  } else {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_COUNT);
+    return;
+  }
+
+  count_expr->flags &= ~VM_EXPR_SAVE_FRAME;
+
+  index = current_expr->argv[current_expr->argc - 3].value.integer;
+  if(index >= vector->length) {
+    VM_PUSH(&current_expr->argv[current_expr->argc - 2]);
+    VM_EVAL_STOP(thread);
+    vm_thread_stack_free(count_expr);
+    return;
+  }
+
+  vector_read_element(vector, index, &element);
+  memcpy(&count_expr->argv[1], &element, sizeof(vm_obj_t));
+
+  execute_synthetic_expr(thread, count_expr, &argv[0],
+                         current_expr->argc - 1);
+}
+
+VM_FUNCTION(vector_fold)
+{
+  vm_vector_t *vector;
+  vm_expr_t *current_expr;
+  vm_expr_t *fold_expr;
+  vm_integer_t index;
+  vm_obj_t element;
+
+  if(needs_further_eval(thread, argc, argv)) {
+    return;
+  }
+  /* needs_further_eval covers args 0 and 1; vector-fold takes a third
+     argument (the vector) that must also be evaluated before use. */
+  if(argc >= 3 && !VM_EVAL_ARG_DONE(thread, 2)) {
+    VM_EVAL_ARG(thread, 2);
+    return;
+  }
+
+  if(!vm_is_procedure(thread, &argv[0]) ||
+     argv[2].type != VM_TYPE_VECTOR) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+
+  current_expr = thread->expr;
+  vector = argv[2].value.vector;
+
+  if(argc == 3) {
+    /* Initial entry: synthetic call shape is (f acc element), so the
+       synthetic frame holds three slots (function + acc + element).
+       Reserve two slots in the parent frame for the running index and
+       the accumulator (which is also the result destination). */
+    fold_expr = vm_thread_stack_alloc(thread);
+    if(fold_expr == NULL) {
+      return;
+    }
+    fold_expr->flags = VM_EXPR_HAVE_OBJECTS;
+    fold_expr->argc = 3;
+
+    current_expr->argc += 2;
+    current_expr->argv[current_expr->argc - 2].type = VM_TYPE_INTEGER;
+    current_expr->argv[current_expr->argc - 2].value.integer = 0;
+    /* Seed the accumulator from the caller's init argument. */
+    memcpy(&current_expr->argv[current_expr->argc - 1], &argv[1],
+           sizeof(vm_obj_t));
+  } else if(argc >= 5) {
+    fold_expr = thread->exprv[thread->exprc];
+    /* The predicate's return value is the new accumulator and already
+       lives in argv[argc-1] (the eval result destination). Just advance
+       the index. */
+    current_expr->argv[current_expr->argc - 2].value.integer++;
+  } else {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_COUNT);
+    return;
+  }
+
+  fold_expr->flags &= ~VM_EXPR_SAVE_FRAME;
+
+  index = current_expr->argv[current_expr->argc - 2].value.integer;
+  if(index >= vector->length) {
+    VM_PUSH(&current_expr->argv[current_expr->argc - 1]);
+    VM_EVAL_STOP(thread);
+    vm_thread_stack_free(fold_expr);
+    return;
+  }
+
+  vector_read_element(vector, index, &element);
+  /* Synthetic call: (f acc element). */
+  memcpy(&fold_expr->argv[1],
+         &current_expr->argv[current_expr->argc - 1], sizeof(vm_obj_t));
+  memcpy(&fold_expr->argv[2], &element, sizeof(vm_obj_t));
+
+  execute_synthetic_expr(thread, fold_expr, &argv[0],
+                         current_expr->argc - 1);
+}
+
+VM_FUNCTION(vector_map)
+{
+  vm_vector_t *vector;
+  vm_vector_t *result_vector;
+  vm_expr_t *current_expr;
+  vm_expr_t *map_expr;
+  vm_integer_t index;
+  vm_obj_t element;
+
+  if(needs_further_eval(thread, argc, argv)) {
+    return;
+  }
+
+  if(!vm_is_procedure(thread, &argv[0]) ||
+     argv[1].type != VM_TYPE_VECTOR) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+
+  current_expr = thread->expr;
+  vector = argv[1].value.vector;
+
+  if(argc == 2) {
+    /* Initial entry: pre-allocate the result vector at full length, then
+       fill element-by-element as the predicate returns. */
+    map_expr = vm_thread_stack_alloc(thread);
+    if(map_expr == NULL) {
+      return;
+    }
+    map_expr->flags = VM_EXPR_HAVE_OBJECTS;
+    map_expr->argc = 2;
+
+    /* Disable GC while the result vector is allocated and the new argv
+       slots are being initialised, to keep the half-built state from
+       being marked as live garbage. */
+    vm_gc_disable();
+
+    current_expr->argc += 3;
+
+    result_vector = vm_vector_create(
+      &current_expr->argv[current_expr->argc - 2],
+      vector->length, VM_VECTOR_FLAG_REGULAR);
+    if(result_vector == NULL) {
+      vm_gc_enable();
+      vm_thread_stack_free(map_expr);
+      vm_signal_error(thread, VM_ERROR_HEAP);
+      return;
+    }
+    /* Initialise elements to a known type so a mid-iteration GC pass
+       walking the result vector finds well-formed entries. */
+    for(index = 0; index < result_vector->length; index++) {
+      result_vector->elements[index].type = VM_TYPE_NONE;
+    }
+
+    current_expr->argv[current_expr->argc - 3].type = VM_TYPE_INTEGER;
+    current_expr->argv[current_expr->argc - 3].value.integer = 0;
+
+    vm_gc_enable();
+  } else if(argc >= 5) {
+    map_expr = thread->exprv[thread->exprc];
+
+    if(current_expr->argv[current_expr->argc - 2].type != VM_TYPE_VECTOR) {
+      vm_thread_stack_free(map_expr);
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+      return;
+    }
+
+    /* Store the predicate's return value into the next slot of the
+       result vector, then advance the index. */
+    result_vector = current_expr->argv[current_expr->argc - 2].value.vector;
+    index = current_expr->argv[current_expr->argc - 3].value.integer;
+    memcpy(&result_vector->elements[index],
+           &argv[argc - 1], sizeof(vm_obj_t));
+    current_expr->argv[current_expr->argc - 3].value.integer++;
+  } else {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_COUNT);
+    return;
+  }
+
+  map_expr->flags &= ~VM_EXPR_SAVE_FRAME;
+
+  index = current_expr->argv[current_expr->argc - 3].value.integer;
+  if(index >= vector->length) {
+    VM_PUSH(&current_expr->argv[current_expr->argc - 2]);
+    VM_EVAL_STOP(thread);
+    vm_thread_stack_free(map_expr);
+    return;
+  }
+
+  vector_read_element(vector, index, &element);
+  memcpy(&map_expr->argv[1], &element, sizeof(vm_obj_t));
+
+  execute_synthetic_expr(thread, map_expr, &argv[0],
+                         current_expr->argc - 1);
+}
