@@ -2,7 +2,7 @@
 
 ## Overview
 
-VeloxVM provides 199 core instructions (procedures/operators) that implement a Scheme-based runtime for IoT applications. Instructions are organized into functional categories and follow Scheme R5RS naming conventions with extensions for IoT-specific operations.
+VeloxVM provides 203 core instructions (procedures/operators) that implement a Scheme-based runtime for IoT applications. Instructions are organized into functional categories and follow Scheme R5RS naming conventions with extensions for IoT-specific operations.
 
 All instructions are implemented as procedures in the operators table defined in `core/vm-procedures.c`. Additional platform-specific instructions are available through loadable libraries on Contiki/Contiki-NG ports.
 
@@ -252,6 +252,23 @@ Array/buffer operations:
 | `buffer-append` | 3 | Append data to buffer. | Unspecified (side effect only) |
 
 **Implementation**: `core/expr-vector.c`
+
+### Higher-Order Vector Functions (4 instructions)
+
+Functional iteration directly over a vector, without materialising an
+intermediate list. Equivalent to `(map f (vector->list v))` and friends
+but avoids the per-element cons-cell allocation; on the sieve example,
+replacing `(count pred (vector->list v))` with `(vector-count pred v)`
+removes ~640 kB of pool churn (see `doc/memory-optimization-ideas.md`).
+
+| Instruction | Args | Description | Returns |
+|-------------|------|-------------|---------|
+| `vector-for-each` | 2 | Apply procedure to each element for side effects. | Unspecified (side effect only) |
+| `vector-count` | 2 | Count elements matching predicate. | Integer (count) |
+| `vector-fold` | 3 | Fold left over a vector with explicit initial accumulator: `(vector-fold f init v)`. | Final accumulator value |
+| `vector-map` | 2 | Apply procedure to each element. | New vector of results |
+
+**Implementation**: `core/expr-fp.c`
 
 ### I/O Operations (17 instructions)
 

@@ -70,6 +70,9 @@ VM_PRIMITIVES = [
     'vector_length', 'vector_ref', 'vector_set', 'vector_to_list',
     'list_to_vector', 'vector_fill', 'make_buffer', 'buffer_append',
 
+    # Higher-order vector functions
+    'vector_for_each', 'vector_count', 'vector_fold', 'vector_map',
+
     # I/O functions
     'input_portp', 'output_portp', 'current_input_port', 'current_output_port',
     'open_input_file', 'open_output_file', 'close_input_port', 'close_output_port',
@@ -182,6 +185,10 @@ SCHEME_ALIASES = {
     'list->vector': 'list_to_vector',
     'vector-fill!': 'vector_fill',
     'vector-merge': 'vector_merge',
+    'vector-for-each': 'vector_for_each',
+    'vector-count': 'vector_count',
+    'vector-fold': 'vector_fold',
+    'vector-map': 'vector_map',
     'buffer-append': 'buffer_append',
     'mutex-name': 'mutex_name',
     'mutex-specific': 'mutex_specific',
@@ -246,7 +253,7 @@ def get_primitive_id(name: str) -> int:
         name: The primitive name (e.g., 'add', '+', 'list-ref')
 
     Returns:
-        The symbol ID (0-190) or None if not a primitive
+        The symbol ID (0-202) or None if not a primitive
     """
     # Check if it's a Scheme alias
     if name in SCHEME_ALIASES:
@@ -273,7 +280,7 @@ def get_primitive_name(symbol_id: int) -> str:
     Get the primitive name for a given symbol ID.
 
     Args:
-        symbol_id: The symbol ID (0-190)
+        symbol_id: The symbol ID (0-202)
 
     Returns:
         The primitive name or None if invalid ID
@@ -284,4 +291,4 @@ def get_primitive_name(symbol_id: int) -> str:
 
 
 # The primitive count must match core/vm-procedures.c exactly.
-assert len(VM_PRIMITIVES) == 199, f"Expected 199 primitives, got {len(VM_PRIMITIVES)}"
+assert len(VM_PRIMITIVES) == 203, f"Expected 203 primitives, got {len(VM_PRIMITIVES)}"

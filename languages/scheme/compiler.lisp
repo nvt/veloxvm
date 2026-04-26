@@ -94,6 +94,8 @@
     make-vector vector vector? buffer? vector-merge vector-length vector-ref
     vector-set! vector->list list->vector vector-fill! make-buffer
     buffer-append
+;; Higher-order vector functions.
+    vector-for-each vector-count vector-fold vector-map
 ;; Input/output functions.
     input-port? output-port? current-input-port current-output-port
     open-input-file open-output-file close-input-port close-output-port
