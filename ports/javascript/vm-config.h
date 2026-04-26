@@ -149,4 +149,8 @@
 #define VM_LIST_PRINT_LIMIT 10
 #endif
 
+#ifndef VM_BUFFER_PRINT_LIMIT
+#define VM_BUFFER_PRINT_LIMIT 64
+#endif
+
 #endif /* !VM_CONFIG_H */
