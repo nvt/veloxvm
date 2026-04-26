@@ -322,10 +322,15 @@ VM_FUNCTION(define)
   } else {
     /* Object definition. */
 
-    if(argv[1].type == VM_TYPE_FORM &&
-       argv[1].value.form.type != VM_FORM_LAMBDA &&
-       !VM_EVAL_ARG_DONE(thread, 1)) {
-      /* Evaluate forms that are not lambda expressions. */
+    if(!VM_EVAL_ARG_DONE(thread, 1) &&
+       ((argv[1].type == VM_TYPE_FORM &&
+         argv[1].value.form.type != VM_FORM_LAMBDA) ||
+        argv[1].type == VM_TYPE_SYMBOL)) {
+      /* Evaluate non-lambda forms and bare symbol references so that
+         (define y x) binds y to the value of x rather than to the
+         symbol x itself. Lambda forms self-evaluate and integers,
+         strings, etc. evaluate to themselves, so they need no extra
+         pass through the scheduler. */
       VM_EVAL_ARG(thread, 1);
       return;
     }
