@@ -274,6 +274,11 @@ VM_DECLARE_FUNCTION(expt);
 VM_DECLARE_FUNCTION(exact_to_inexact);
 VM_DECLARE_FUNCTION(inexact_to_exact);
 
+/* Box operations. */
+VM_DECLARE_FUNCTION(box);
+VM_DECLARE_FUNCTION(box_ref);
+VM_DECLARE_FUNCTION(box_set);
+
 /* Bit operations. */
 VM_DECLARE_FUNCTION(bit_and);
 VM_DECLARE_FUNCTION(bit_or);

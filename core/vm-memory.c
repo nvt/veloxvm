@@ -191,6 +191,12 @@ mark_object(vm_obj_t *obj)
       mark_memory(obj->value.ext_object);
     }
     break;
+  case VM_TYPE_BOX:
+    if(obj->value.box != NULL && !memory_is_marked(obj->value.box)) {
+      mark_memory(obj->value.box);
+      mark_object(&obj->value.box->value);
+    }
+    break;
   default:
     break;
   }

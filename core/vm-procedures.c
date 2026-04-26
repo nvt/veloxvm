@@ -415,6 +415,12 @@ static const vm_procedure_t operators[] = {
   /* Type conversion functions (R5RS compliance). */
   VM_OPERATOR(symbol_to_string, VM_TYPE_FLAG(VM_TYPE_SYMBOL),
               VM_PROCEDURE_EVAL_ARGS, 1, 1),
+
+  /* Box operations (used by the compiler for shared mutable storage in
+     closures over captured-and-mutated variables). */
+  VM_OPERATOR(box, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(box_ref, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(box_set, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 2, 2),
 };
 
 #define MAX_COMMON_SYMBOL_ID 127
