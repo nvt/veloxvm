@@ -1384,14 +1384,15 @@ class PythonTranslator:
         Translate try/except:
         try: body except Exception as e: handler
         ->
-        (guard (e (#t handler)) body)
+        (guard exc handler body)
 
-        Only a single catch-all handler (bare `except:` or `except Exception:`)
-        is currently implementable; VeloxVM's guard form takes one test
-        expression and there is no exception-type introspection plumbed through
-        to Python yet. Typed handlers (except KeyError:) and multiple handlers
-        would silently become catch-alls if we translated them, so we refuse
-        them at compile time instead.
+        VeloxVM's `guard` takes exactly three arguments — the bound
+        exception variable, the handler, and the body — and runs the
+        handler on every exception. Only a single bare `except:` or
+        `except Exception:` is currently implementable; typed handlers
+        (`except KeyError:`) and multiple handlers would silently
+        become catch-alls if we translated them, so we refuse them at
+        compile time instead.
         """
         body_bytes = self.translate_block(node.body)
 
@@ -1420,20 +1421,16 @@ class PythonTranslator:
         # Handler body
         handler_bytes = self.translate_block(handler.body)
 
-        # For generic catch-all, use #t as test
-        test_bytes = encode_boolean(True)
-
-        # Store body and handler as separate expressions if complex
+        # Store body and handler as separate expressions
         body_id = self.bc.add_expression(body_bytes)
         body_ref = encode_form_ref(body_id)
 
         handler_id = self.bc.add_expression(handler_bytes)
         handler_ref = encode_form_ref(handler_id)
 
-        # (guard exc_var test handler body)
+        # (guard exc_var handler body) — guard's min/max argc is 3.
         return create_inline_call('guard', [
             encode_symbol(exc_var, self.bc),
-            test_bytes,
             handler_ref,
             body_ref
         ], self.bc)
@@ -1471,7 +1468,12 @@ class PythonTranslator:
         else:
             exc_name = 'Exception'
 
-        exc_bytes = encode_symbol(exc_name, self.bc)
+        # raise evaluates its argument before invocation. Without
+        # quoting, the exception type name would be looked up as a
+        # variable and fail with "Undefined symbol". Wrap the symbol in
+        # (quote ...) so it survives evaluation as a symbol literal.
+        exc_bytes = create_inline_call(
+            'quote', [encode_symbol(exc_name, self.bc)], self.bc)
         return create_inline_call('raise', [exc_bytes], self.bc)
 
     # === Subscripting ===

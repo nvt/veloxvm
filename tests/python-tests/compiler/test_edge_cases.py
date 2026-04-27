@@ -319,6 +319,30 @@ class TestEqualityCompilation(unittest.TestCase):
         self.assertNotIn(encode_symbol('equalp', bc), all_bytes)
 
 
+class TestTryExceptCompilation(unittest.TestCase):
+    """The VM's `guard` form takes exactly three arguments
+    (exc-symbol, handler, body). The translator previously emitted
+    four; the result was a runtime "Argument count" error on every
+    try/except. `raise X` also has to quote its symbol argument or
+    the VM tries to look X up as a variable."""
+
+    def test_try_except_uses_three_arg_guard(self):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(
+            "caught = False\n"
+            "try:\n"
+            "    raise ValueError\n"
+            "except:\n"
+            "    caught = True\n"
+        )
+        all_bytes = b''.join(bc.expressions)
+        self.assertIn(encode_symbol('guard', bc), all_bytes)
+        # `quote` is needed to keep the exception type from being
+        # looked up as a variable.
+        self.assertIn(encode_symbol('quote', bc), all_bytes)
+
+
 class TestStrConversion(unittest.TestCase):
     """`str(x)` must work for non-numeric types: literals route to the
     correct fast path at compile time; variables and other expressions
