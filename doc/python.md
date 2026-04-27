@@ -34,7 +34,7 @@ bytecode = compile_string('print("Hello, World!")')
   indices supported.
 - **Exception handling**: `try`/`except`/`except Exception as e`/
   `raise`.
-- **Built-ins**: `print`, `len`, `range(const)`, `int`, `str`,
+- **Built-ins**: `print`, `len`, `range` (1, 2, or 3 args), `int`, `str`,
   `enumerate`, `zip`, `map`, `filter`, `reversed`, `any`, `all`, `sum`,
   `min`, `max`, `abs`.
 - **f-strings**: `f"hello, {name}"` lowers to a chain of
@@ -60,6 +60,9 @@ loudly: identity operators (`is`, `is not`), default arguments,
 - Lists are cons cells; mutating operations produce new lists.
 - Floats require a VM built with `VM_ENABLE_REALS`; in the default
   build they may be truncated to integers.
-- `range()` accepts only a constant argument.
+- `range()` accepts variable arguments and 1-3 arity. Small literal
+  `range(N)` constant-folds to a list literal; everything else
+  routes through a per-program `_pyvelox_range` helper. Step `0` is
+  not detected and would loop forever — Python raises in that case.
 - Embedded builds cap per-expression bytecode at 255 bytes; keep
   individual statements modest.

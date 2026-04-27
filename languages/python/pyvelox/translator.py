@@ -78,6 +78,12 @@ class PythonTranslator:
         # Depth of the currently-being-translated loop nest. `break` and
         # `continue` are only legal when this is positive.
         self._loop_depth: int = 0
+        # Module-level bytecode emitted before any user statement —
+        # used to inject helpers (e.g. `_pyvelox_range`) on demand. The
+        # `_emitted_helpers` set guards against emitting the same helper
+        # twice when the construct appears more than once in a program.
+        self._preamble: bytearray = bytearray()
+        self._emitted_helpers: Set[str] = set()
 
     def is_vm_primitive(self, name: str) -> bool:
         """Check if a name conflicts with a VM primitive."""
@@ -156,13 +162,16 @@ class PythonTranslator:
         Returns:
             Compiled bytecode (to be stored in expression 0)
         """
-        accumulated = bytearray()
+        statements = bytearray()
 
         for stmt in module.body:
             bytecode = self.translate_stmt(stmt)
-            accumulated.extend(bytecode)
+            statements.extend(bytecode)
 
-        return bytes(accumulated)
+        # Helpers (filled in by translate_*) must run before user code,
+        # since user code may call them. They're emitted at translation
+        # time and concatenated here as the program prologue.
+        return bytes(self._preamble) + bytes(statements)
 
     @_located_dispatch
     def translate_stmt(self, stmt: ast.stmt) -> bytes:
@@ -2299,26 +2308,145 @@ class PythonTranslator:
         # TODO: Could inspect type to choose between length/string-length/vector-length
         return create_inline_call('length', [arg_bytes], self.bc)
 
+    # Inline-form argc fits in 6 bits (max 63), so a literal
+    # `(list 0 1 ... n-1)` form caps out at ~62 elements. We also
+    # don't want to bloat the symbol/expr tables for every modest
+    # range. Anything above this threshold falls through to the
+    # runtime helper.
+    _RANGE_LITERAL_LIMIT = 16
+
     def translate_range(self, args: List[ast.expr]) -> bytes:
+        """Translate `range(stop)` / `range(start, stop)` /
+        `range(start, stop, step)`.
+
+        A small literal `range(N)` constant-folds to
+        `(list 0 1 ... N-1)`. Everything else goes through a
+        per-module `_pyvelox_range` helper emitted into the program
+        prologue on first use.
         """
-        Translate range(n) to a list: (list 0 1 2 ... n-1).
+        if not 1 <= len(args) <= 3:
+            raise ValueError(
+                f"range() takes 1 to 3 arguments ({len(args)} given)")
 
-        For simplicity, only support constant ranges for now.
-        """
-        if len(args) != 1:
-            raise NotImplementedError("range() only supports single argument for now")
-
-        # Evaluate to get constant value (simplified)
-        if isinstance(args[0], ast.Constant):
-            n = args[0].value
-            if not isinstance(n, int):
-                raise ValueError("range() argument must be an integer")
-
-            # Generate (list 0 1 2 ... n-1)
-            elements = [encode_integer(i) for i in range(n)]
+        # Constant fast path: range(N) where N is a small integer
+        # literal. Avoids materializing huge inline lists.
+        if (len(args) == 1
+                and isinstance(args[0], ast.Constant)
+                and isinstance(args[0].value, int)
+                and not isinstance(args[0].value, bool)
+                and 0 <= args[0].value <= self._RANGE_LITERAL_LIMIT):
+            elements = [encode_integer(i) for i in range(args[0].value)]
             return create_inline_call('list', elements, self.bc)
+
+        self._emit_range_helper()
+
+        if len(args) == 1:
+            start_b = encode_integer(0)
+            stop_b = self.translate_expr_with_ref(args[0])
+            step_b = encode_integer(1)
+        elif len(args) == 2:
+            start_b = self.translate_expr_with_ref(args[0])
+            stop_b = self.translate_expr_with_ref(args[1])
+            step_b = encode_integer(1)
         else:
-            raise NotImplementedError("range() only supports constant arguments for now")
+            start_b = self.translate_expr_with_ref(args[0])
+            stop_b = self.translate_expr_with_ref(args[1])
+            step_b = self.translate_expr_with_ref(args[2])
+
+        return create_inline_call(
+            '_pyvelox_range', [start_b, stop_b, step_b], self.bc)
+
+    def _emit_range_helper(self) -> None:
+        """Emit a top-level `_pyvelox_range(start, stop, step)` helper
+        that returns `[start, start+step, ..., stop)` as a list. Idempotent
+        — only the first call adds bytecode to the prologue.
+
+        The implementation is two top-level defines:
+
+            (define _pyvelox_range_loop
+              (lambda (i stop step acc)
+                (if (or (and (> step 0) (>= i stop))
+                        (and (< step 0) (<= i stop)))
+                    (reverse acc)
+                    (_pyvelox_range_loop (+ i step) stop step
+                                         (cons i acc)))))
+
+            (define _pyvelox_range
+              (lambda (start stop step)
+                (_pyvelox_range_loop start stop step (list))))
+
+        stop and step are passed through the recursion so the inner
+        lambda doesn't have to capture them — keeping us off the
+        closure-materialisation path.
+        """
+        if '_pyvelox_range' in self._emitted_helpers:
+            return
+        self._emitted_helpers.add('_pyvelox_range')
+
+        sym_i = lambda: encode_symbol('i', self.bc)
+        sym_stop = lambda: encode_symbol('stop', self.bc)
+        sym_step = lambda: encode_symbol('step', self.bc)
+        sym_acc = lambda: encode_symbol('acc', self.bc)
+        sym_start = lambda: encode_symbol('start', self.bc)
+
+        # Termination predicate: counting up past stop, or counting
+        # down past stop. step=0 falls through and recurses forever;
+        # callers shouldn't pass it (Python raises ValueError there).
+        pos_done = create_inline_call(
+            'and',
+            [create_inline_call('greater_than',
+                                [sym_step(), encode_integer(0)], self.bc),
+             create_inline_call('greater_than_equal',
+                                [sym_i(), sym_stop()], self.bc)],
+            self.bc)
+        neg_done = create_inline_call(
+            'and',
+            [create_inline_call('less_than',
+                                [sym_step(), encode_integer(0)], self.bc),
+             create_inline_call('less_than_equal',
+                                [sym_i(), sym_stop()], self.bc)],
+            self.bc)
+        done_test = create_inline_call('or', [pos_done, neg_done], self.bc)
+
+        rev_acc = create_inline_call('reverse', [sym_acc()], self.bc)
+
+        next_i = create_inline_call('add', [sym_i(), sym_step()], self.bc)
+        next_acc = create_inline_call('cons', [sym_i(), sym_acc()], self.bc)
+        recurse = create_inline_call(
+            '_pyvelox_range_loop',
+            [next_i, sym_stop(), sym_step(), next_acc],
+            self.bc)
+
+        loop_body = create_inline_call(
+            'if', [done_test, rev_acc, recurse], self.bc)
+        loop_bind = create_bind_form(
+            ['i', 'stop', 'step', 'acc'], loop_body, self.bc,
+            is_function=True)
+        loop_lambda_id = self.bc.add_expression(loop_bind)
+        loop_lambda_ref = encode_form_lambda(loop_lambda_id)
+        define_loop = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_range_loop', self.bc),
+             loop_lambda_ref],
+            self.bc)
+
+        outer_call = create_inline_call(
+            '_pyvelox_range_loop',
+            [sym_start(), sym_stop(), sym_step(),
+             create_inline_call('list', [], self.bc)],
+            self.bc)
+        outer_bind = create_bind_form(
+            ['start', 'stop', 'step'], outer_call, self.bc,
+            is_function=True)
+        outer_lambda_id = self.bc.add_expression(outer_bind)
+        outer_lambda_ref = encode_form_lambda(outer_lambda_id)
+        define_outer = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_range', self.bc), outer_lambda_ref],
+            self.bc)
+
+        self._preamble.extend(define_loop)
+        self._preamble.extend(define_outer)
 
     def translate_int(self, args: List[ast.expr]) -> bytes:
         """Translate `int(x)`.

@@ -401,6 +401,80 @@ class TestTryExceptCompilation(unittest.TestCase):
         self.assertIn(encode_symbol('quote', bc), all_bytes)
 
 
+class TestRange(unittest.TestCase):
+    """range() supports 1, 2, or 3 arguments. Small literal range(N)
+    constant-folds to (list 0 1 ... N-1); everything else routes
+    through a `_pyvelox_range` helper emitted once into the program
+    prologue."""
+
+    def _compile(self, source):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(source)
+        return bc, b''.join(bc.expressions), encode_symbol
+
+    def test_small_constant_range_constant_folds(self):
+        bc, all_bytes, encode_symbol = self._compile('x = range(5)\n')
+        # Helper symbol should not appear for the fast path.
+        self.assertNotIn(
+            encode_symbol('_pyvelox_range', bc), all_bytes)
+
+    def test_variable_range_uses_helper(self):
+        bc, all_bytes, encode_symbol = self._compile(
+            'n = 4\nx = range(n)\n')
+        self.assertIn(encode_symbol('_pyvelox_range', bc), all_bytes)
+        self.assertIn(encode_symbol('_pyvelox_range_loop', bc), all_bytes)
+
+    def test_two_arg_range_uses_helper(self):
+        bc, all_bytes, encode_symbol = self._compile(
+            'x = range(2, 7)\n')
+        self.assertIn(encode_symbol('_pyvelox_range', bc), all_bytes)
+
+    def test_three_arg_range_uses_helper(self):
+        bc, all_bytes, encode_symbol = self._compile(
+            'x = range(0, 10, 2)\n')
+        self.assertIn(encode_symbol('_pyvelox_range', bc), all_bytes)
+
+    def test_large_constant_range_uses_helper(self):
+        # Above the inline-form argc cap a literal list isn't even
+        # representable; the runtime helper takes over.
+        bc, all_bytes, encode_symbol = self._compile(
+            'x = range(100)\n')
+        self.assertIn(encode_symbol('_pyvelox_range', bc), all_bytes)
+
+    def test_helper_emitted_only_once(self):
+        from pyvelox.compiler import compile_string
+        bc = compile_string(
+            'a = range(10, 20)\n'
+            'b = range(0, 50)\n'
+            'c = range(5, 100, 5)\n'
+        )
+        # The helper definition lives in the program prologue, prepended
+        # to expression 0. Two `define` calls (loop + range), regardless
+        # of how many call sites exist.
+        prologue = bytes(bc.expressions[0])
+        # `define` core symbol id (we don't need to compute it; just
+        # check that _pyvelox_range_loop appears exactly once as an
+        # app symbol in the program).
+        from pyvelox.encoder import encode_symbol
+        loop_sym = encode_symbol('_pyvelox_range_loop', bc)
+        # Each *use* of the symbol writes the same bytes; we just want
+        # to confirm exactly one `define _pyvelox_range_loop` lives in
+        # the prologue. Count occurrences of the define-the-loop pair:
+        # symbol id followed by a lambda form-ref.
+        self.assertEqual(prologue.count(loop_sym), 1)
+
+    def test_no_args_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError):
+            compile_string('x = range()\n')
+
+    def test_too_many_args_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError):
+            compile_string('x = range(1, 2, 3, 4)\n')
+
+
 class TestFStrings(unittest.TestCase):
     """f-strings (`ast.JoinedStr` / `ast.FormattedValue`) lower to a
     chain of `string_append` calls, with each interpolated value
