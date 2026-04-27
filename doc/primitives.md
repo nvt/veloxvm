@@ -3,10 +3,10 @@
 Canonical order of the VM's built-in operators. Every component that
 depends on primitive IDs must follow this order exactly: the C
 operator table in `core/vm-procedures.c`, the symbol table in
-`core/vm-symbols.c`, the Scheme-Racket compiler, the Python compiler,
-and the VeloxJ front-end.
+`core/vm-symbols.c`, the Scheme-Racket compiler, and the Python
+compiler.
 
-`tests/primitives/run-tests.sh` verifies consistency against all five
+`tests/primitives/run-tests.sh` verifies consistency against all four
 sources and fails the build on divergence.
 
 To add a primitive, append a row here, add matching entries at the
