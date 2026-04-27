@@ -634,6 +634,16 @@ VM_FUNCTION(string_to_number)
   }
 
   radix = argc == 2 ? argv[1].value.integer : 10;
+
+  /* Same string-table-id quirk as in string_append etc.: a string
+     loaded from the program's string table has length 0 / str == NULL
+     until vm_string_resolve materializes the bytes. Without this,
+     (string->number s) on a top-level (define s "42") read NULL and
+     segfaulted. */
+  if(vm_string_resolve(thread, argv[0].value.string) == NULL) {
+    return;
+  }
+
   str = argv[0].value.string->str;
 
   /* Skip leading whitespace */

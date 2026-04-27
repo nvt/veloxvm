@@ -104,5 +104,7 @@
 (assert-equal "ell" (substring top-s1 1 4) "substring on top-level var")
 (assert-true (< (string-compare top-s1 top-s2) 0) "string-compare on top-level vars")
 (assert-equal "hello world" (string-join " " (list top-s1 top-s2)) "string-join on top-level vars")
+(define top-num "42")
+(assert-equal 42 (string->number top-num) "string->number on top-level var")
 
 (test-summary)
