@@ -56,10 +56,10 @@ Based on testing, the following features have issues in the current PyVelox impl
 
 1. **Negative indexing**: `lst[-1]` not supported
 2. **Negative slice indices**: `lst[-2:]` not supported
-3. **Boolean comparisons**: `True == True` causes type error (use boolean values directly)
-4. **String comparisons**: `"a" == "a"` causes type error (compiler uses `=` instead of `equal?`)
-5. **List mutation**: Updating list elements `lst[0] = x` may have issues
-6. **sorted/reversed**: These functions may cause infinite loops (needs investigation)
+3. **List mutation**: Updating list elements `lst[0] = x` may have issues
+4. **sorted/reversed**: These functions may cause infinite loops (needs investigation)
+5. **bool/int cross-type equality**: `True == 1` returns `False` (the VM keeps
+   booleans and integers as distinct types). Compare like with like.
 
 ## Expected Output
 

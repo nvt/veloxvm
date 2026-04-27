@@ -1066,6 +1066,22 @@ class PythonTranslator:
         else:
             raise NotImplementedError(f"Unary operator not supported: {type(node.op).__name__}")
 
+    def _emit_eq(self, left_bytes: bytes, right_bytes: bytes,
+                 negate: bool) -> bytes:
+        """Emit Python-style equality.
+
+        Routes through the VM's `equalp` (deep, type-aware) primitive
+        rather than the numeric-only `equal`. `equal` silently returns
+        false for any non-numeric operand, which made `"a" == "a"` and
+        `True == True` evaluate to false. `equalp` returns false on
+        type mismatch, matching Python `==`'s cross-type behaviour.
+        """
+        eq_call = create_inline_call('equalp', [left_bytes, right_bytes], self.bc)
+        if not negate:
+            return eq_call
+        eq_id = self.bc.add_expression(eq_call)
+        return create_inline_call('not', [encode_form_ref(eq_id)], self.bc)
+
     def translate_compare(self, node: ast.Compare) -> bytes:
         """
         Translate comparison.
@@ -1073,9 +1089,10 @@ class PythonTranslator:
         Supports chaining: a < b < c -> (and (< a b) (< b c))
         Complex operands are stored separately.
         """
+        # `==` and `!=` are handled separately because they need to work
+        # for strings, booleans, lists, etc. — not just numbers. Other
+        # relational ops stay on the numeric primitives.
         op_map = {
-            ast.Eq: 'equal',
-            ast.NotEq: 'different',
             ast.Lt: 'less_than',
             ast.LtE: 'less_than_equal',
             ast.Gt: 'greater_than',
@@ -1129,12 +1146,17 @@ class PythonTranslator:
                     member_ref = encode_form_ref(member_id)
                     return create_inline_call('not', [member_ref], self.bc)
 
+            left_bytes = self.translate_expr_with_ref(node.left)
+            right_bytes = self.translate_expr_with_ref(node.comparators[0])
+
+            if op_type is ast.Eq:
+                return self._emit_eq(left_bytes, right_bytes, negate=False)
+            if op_type is ast.NotEq:
+                return self._emit_eq(left_bytes, right_bytes, negate=True)
+
             op = op_map.get(op_type)
             if not op:
                 raise NotImplementedError(f"Comparison operator not supported: {op_type.__name__}")
-
-            left_bytes = self.translate_expr_with_ref(node.left)
-            right_bytes = self.translate_expr_with_ref(node.comparators[0])
 
             return create_inline_call(op, [left_bytes, right_bytes], self.bc)
         else:
@@ -1143,14 +1165,20 @@ class PythonTranslator:
             left = node.left
 
             for op_node, right in zip(node.ops, node.comparators):
-                op = op_map.get(type(op_node))
-                if not op:
-                    raise NotImplementedError(f"Comparison operator not supported: {type(op_node).__name__}")
-
+                op_type = type(op_node)
                 left_bytes = self.translate_expr_with_ref(left)
                 right_bytes = self.translate_expr_with_ref(right)
 
-                comp_bytes = create_inline_call(op, [left_bytes, right_bytes], self.bc)
+                if op_type is ast.Eq:
+                    comp_bytes = self._emit_eq(left_bytes, right_bytes, negate=False)
+                elif op_type is ast.NotEq:
+                    comp_bytes = self._emit_eq(left_bytes, right_bytes, negate=True)
+                else:
+                    op = op_map.get(op_type)
+                    if not op:
+                        raise NotImplementedError(f"Comparison operator not supported: {op_type.__name__}")
+                    comp_bytes = create_inline_call(op, [left_bytes, right_bytes], self.bc)
+
                 # Store each comparison separately
                 comp_id = self.bc.add_expression(comp_bytes)
                 comparisons.append(encode_form_ref(comp_id))

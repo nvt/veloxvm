@@ -273,6 +273,52 @@ class TestListOperations(unittest.TestCase):
         self.assertTrue(len(bc.expressions) > 0)
 
 
+class TestEqualityCompilation(unittest.TestCase):
+    """`==` and `!=` must route through the type-aware `equalp`
+    primitive, not the numeric-only `equal`. The numeric path silently
+    returns false for strings, booleans, and lists."""
+
+    def _compile_and_collect_bytes(self, source):
+        """Compile a Python program and return (concatenated bytecode,
+        encoded equalp symbol, encoded equal symbol). Searching the
+        concatenation lets us detect the chosen primitive regardless of
+        which sub-expression contains it."""
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(source)
+        all_bytes = b''.join(bc.expressions)
+        return (all_bytes,
+                encode_symbol('equalp', bc),
+                encode_symbol('equal', bc))
+
+    def test_string_equality_uses_equalp(self):
+        all_bytes, equalp_sym, equal_sym = self._compile_and_collect_bytes(
+            'x = "a" == "b"\n')
+        self.assertIn(equalp_sym, all_bytes)
+        self.assertNotIn(equal_sym, all_bytes)
+
+    def test_inequality_uses_not_and_equalp(self):
+        all_bytes, equalp_sym, equal_sym = self._compile_and_collect_bytes(
+            'x = "a" != "b"\n')
+        self.assertIn(equalp_sym, all_bytes)
+        self.assertNotIn(equal_sym, all_bytes)
+
+    def test_chained_equality_uses_equalp(self):
+        all_bytes, equalp_sym, equal_sym = self._compile_and_collect_bytes(
+            'x = 1 == 1 == 2\n')
+        self.assertIn(equalp_sym, all_bytes)
+        self.assertNotIn(equal_sym, all_bytes)
+
+    def test_other_relops_unchanged(self):
+        # `<` should still emit less_than, not equalp.
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string('x = 1 < 2\n')
+        all_bytes = b''.join(bc.expressions)
+        self.assertIn(encode_symbol('less_than', bc), all_bytes)
+        self.assertNotIn(encode_symbol('equalp', bc), all_bytes)
+
+
 class TestCompileErrorLocation(unittest.TestCase):
     """Errors raised below translate_stmt/translate_expr should carry the
     offending node's source location, and the formatter should render it
