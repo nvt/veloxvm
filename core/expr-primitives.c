@@ -323,14 +323,18 @@ VM_FUNCTION(define)
     /* Object definition. */
 
     if(!VM_EVAL_ARG_DONE(thread, 1) &&
-       ((argv[1].type == VM_TYPE_FORM &&
-         argv[1].value.form.type != VM_FORM_LAMBDA) ||
+       (argv[1].type == VM_TYPE_FORM ||
         argv[1].type == VM_TYPE_SYMBOL)) {
-      /* Evaluate non-lambda forms and bare symbol references so that
+      /* Evaluate forms and bare symbol references so that
          (define y x) binds y to the value of x rather than to the
-         symbol x itself. Lambda forms self-evaluate and integers,
-         strings, etc. evaluate to themselves, so they need no extra
-         pass through the scheduler. */
+         symbol x itself. Lambda forms also pass through here: the
+         scheduler's mid-arg case sets the eval-completed bit without
+         dispatching into the body, but it does materialize a closure
+         when the lambda has captures. Without this, a nested
+         (define f (lambda...)) inside an outer function would store
+         the bare lambda and lose the capture context.
+         Integers, strings, and booleans evaluate to themselves and
+         need no extra scheduler pass. */
       VM_EVAL_ARG(thread, 1);
       return;
     }

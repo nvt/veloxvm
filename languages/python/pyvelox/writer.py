@@ -20,10 +20,10 @@ def write_bytecode_file(path: Union[str, Path], bc: Bytecode):
     - String table: count (16-bit) + items (16-bit length + data)
     - Symbol table: count (16-bit) + items (16-bit length + data)
     - Expression table: count (16-bit) + items (16-bit length + data)
-    - Captures section: count (16-bit) + entries (16-bit length +
-      uint16 expr_id + uint16 symbol_id per captured free variable).
-      Empty in v1 -- the Python frontend does not yet do free-variable
-      analysis.
+    - Captures section: count (16-bit) + entries. Each entry is
+      (length:uint16, expr_id:uint16, symbol_id:uint16 ...). The entry
+      length is the byte count of the entry's payload, i.e.
+      2 + 2 * len(symbol_ids).
 
     Args:
         path: Output file path
@@ -42,8 +42,25 @@ def write_bytecode_file(path: Union[str, Path], bc: Bytecode):
         # Write expression table
         _write_table(f, bc.expressions, _encode_bytes_item)
 
-        # Write captures section (empty for v1).
-        f.write(struct.pack('<H', 0))
+        # Write captures section
+        _write_captures_section(f, bc.captures)
+
+
+def _write_captures_section(f, captures):
+    """
+    Write the captures section.
+
+    Format: count (uint16), then for each entry: length (uint16),
+    expr_id (uint16), then one uint16 per captured symbol_id.
+    """
+    f.write(struct.pack('<H', len(captures)))
+    for expr_id, symbol_ids in captures.items():
+        # Payload is expr_id (2 bytes) + 2 bytes per symbol_id.
+        payload_length = 2 + 2 * len(symbol_ids)
+        f.write(struct.pack('<H', payload_length))
+        f.write(struct.pack('<H', expr_id))
+        for sym_id in symbol_ids:
+            f.write(struct.pack('<H', sym_id))
 
 
 def _write_table(f, items: List, encode_fn):
