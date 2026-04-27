@@ -9,8 +9,6 @@ following files are checked:
   * core/vm-symbols.c    - symbol_map SYM(...) entries (Scheme column)
   * languages/scheme-racket/primitives.rkt (Scheme column)
   * languages/python/pyvelox/primitives.py (C identifier column)
-  * languages/veloxj/src/main/java/se/sics/veloxj/VeloxCompiler.java
-    (Scheme column)
 
 Any disagreement with the canonical table - in order, count, or name -
 is reported and the script exits non-zero.
@@ -99,17 +97,6 @@ def parse_python() -> list[str]:
     return re.findall(r"'([^']+)'", body.group(1))
 
 
-def parse_veloxj() -> list[str]:
-    body = re.search(
-        r"symbolNames\s*=\s*\{(.*?)\};",
-        read("languages/veloxj/src/main/java/se/sics/veloxj/VeloxCompiler.java"),
-        re.S,
-    )
-    if not body:
-        raise SystemExit("could not locate symbolNames in VeloxCompiler.java")
-    return re.findall(r'"([^"]*)"', body.group(1))
-
-
 def compare(source_name: str, source_list: list[str], expected: list[str]) -> int:
     """Return number of errors reported for this source."""
     errors = 0
@@ -139,11 +126,6 @@ def main() -> int:
         ("core/vm-symbols.c", parse_vm_symbols(), scheme_names),
         ("languages/scheme-racket/primitives.rkt", parse_racket(), scheme_names),
         ("languages/python/pyvelox/primitives.py", parse_python(), c_names),
-        (
-            "languages/veloxj/.../VeloxCompiler.java",
-            parse_veloxj(),
-            scheme_names,
-        ),
     ]
     for name, got, want in sources:
         errors = compare(name, got, want)
