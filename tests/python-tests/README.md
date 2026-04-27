@@ -63,6 +63,10 @@ Based on testing, the following features have issues in the current PyVelox impl
 6. **`str(None)` on a variable yields `"False"`**: PyVelox encodes `None`
    as the boolean `False`, so they are indistinguishable at runtime.
    `str(None)` written as a literal still produces `"None"`.
+7. **`int(string_variable)` segfaults the VM**: `string_to_number`
+   crashes when its argument is a symbol reference rather than a string
+   literal. `int("42")` (literal) works. This is a VM-side bug,
+   independent of the Python frontend.
 
 ## Expected Output
 

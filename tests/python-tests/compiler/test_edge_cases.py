@@ -401,6 +401,43 @@ class TestTryExceptCompilation(unittest.TestCase):
         self.assertIn(encode_symbol('quote', bc), all_bytes)
 
 
+class TestIntConversion(unittest.TestCase):
+    """`int(x)` previously emitted only string_to_number, which raises
+    a type error for ints/bools. Literals now resolve at compile time;
+    variables go through a runtime numberp/stringp dispatch."""
+
+    def _compile_collect(self, source):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(source)
+        return bc, b''.join(bc.expressions), encode_symbol
+
+    def test_literal_int_is_inlined(self):
+        bc, all_bytes, encode_symbol = self._compile_collect('x = int(5)\n')
+        # No runtime dispatch and no string_to_number for a plain int.
+        self.assertNotIn(encode_symbol('string_to_number', bc), all_bytes)
+        self.assertNotIn(encode_symbol('numberp', bc), all_bytes)
+        self.assertNotIn(encode_symbol('stringp', bc), all_bytes)
+
+    def test_literal_bool_becomes_integer(self):
+        bc, all_bytes, encode_symbol = self._compile_collect('x = int(True)\n')
+        self.assertNotIn(encode_symbol('string_to_number', bc), all_bytes)
+        self.assertNotIn(encode_symbol('numberp', bc), all_bytes)
+
+    def test_literal_string_uses_string_to_number(self):
+        bc, all_bytes, encode_symbol = self._compile_collect('x = int("42")\n')
+        self.assertIn(encode_symbol('string_to_number', bc), all_bytes)
+        # Pure compile-time fast path — no runtime dispatch.
+        self.assertNotIn(encode_symbol('numberp', bc), all_bytes)
+
+    def test_variable_uses_runtime_dispatch(self):
+        bc, all_bytes, encode_symbol = self._compile_collect(
+            'y = 1\nx = int(y)\n')
+        self.assertIn(encode_symbol('numberp', bc), all_bytes)
+        self.assertIn(encode_symbol('stringp', bc), all_bytes)
+        self.assertIn(encode_symbol('string_to_number', bc), all_bytes)
+
+
 class TestStrConversion(unittest.TestCase):
     """`str(x)` must work for non-numeric types: literals route to the
     correct fast path at compile time; variables and other expressions

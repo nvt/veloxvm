@@ -2272,15 +2272,73 @@ class PythonTranslator:
             raise NotImplementedError("range() only supports constant arguments for now")
 
     def translate_int(self, args: List[ast.expr]) -> bytes:
-        """Translate int(x) -> (string->number x) or just x."""
+        """Translate `int(x)`.
+
+        Python's `int(x)` accepts ints, strings, and bools; ours
+        previously emitted only `string_to_number`, which raises a
+        type error for anything else (including ints — `int(5)` was
+        broken). Literal arguments resolve at compile time; variables
+        get a runtime type-dispatch:
+
+            (if (numberp x) x
+              (if (stringp x) (string-to-number x)
+                (if x 1 0)))
+
+        The fallback branch coerces by truthiness, matching Python's
+        `int(True) == 1` / `int(False) == 0`. Calling `int()` on a
+        list or None falls into the truthiness branch instead of
+        raising, which is a documented divergence from CPython.
+        """
         if len(args) != 1:
             raise ValueError("int() takes exactly 1 argument")
 
-        arg_bytes = self.translate_expr_with_ref(args[0])
+        arg = args[0]
 
-        # If it's already a number, return it; otherwise convert
-        # For simplicity, use string->number
-        return create_inline_call('string_to_number', [arg_bytes], self.bc)
+        if isinstance(arg, ast.Constant):
+            value = arg.value
+            # bool is an int subclass — check first.
+            if isinstance(value, bool):
+                return encode_integer(1 if value else 0)
+            if isinstance(value, int):
+                return encode_integer(value)
+            if isinstance(value, str):
+                return create_inline_call(
+                    'string_to_number',
+                    [self.translate_expr_with_ref(arg)],
+                    self.bc)
+            # Other constants (None, floats) fall through to runtime.
+
+        arg_bytes = self.translate_expr_with_ref(arg)
+
+        def _hoist(call_bytes: bytes) -> bytes:
+            return encode_form_ref(self.bc.add_expression(call_bytes))
+
+        # Innermost: (if x 1 0) — handles booleans (and any truthy
+        # value, gracefully degrading instead of crashing).
+        bool_branch_ref = _hoist(create_inline_call(
+            'if',
+            [arg_bytes, encode_integer(1), encode_integer(0)],
+            self.bc))
+
+        # (string-to-number x)
+        str_branch_ref = _hoist(create_inline_call(
+            'string_to_number', [arg_bytes], self.bc))
+
+        # (stringp x)
+        str_test_ref = _hoist(create_inline_call(
+            'stringp', [arg_bytes], self.bc))
+
+        # (if (stringp x) (string-to-number x) bool_branch)
+        inner_if_ref = _hoist(create_inline_call(
+            'if', [str_test_ref, str_branch_ref, bool_branch_ref], self.bc))
+
+        # (numberp x)
+        num_test_ref = _hoist(create_inline_call(
+            'numberp', [arg_bytes], self.bc))
+
+        # (if (numberp x) x inner_if)
+        return create_inline_call(
+            'if', [num_test_ref, arg_bytes, inner_if_ref], self.bc)
 
     def translate_str(self, args: List[ast.expr]) -> bytes:
         """Translate `str(x)`.
