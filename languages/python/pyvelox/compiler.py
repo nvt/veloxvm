@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Union, Optional
 from .bytecode import Bytecode
+from .errors import PyveloxCompileError
 from .translator import translate_python_to_bytecode
 from .writer import write_bytecode_file, dump_bytecode
 
@@ -25,16 +26,9 @@ def compile_string(source_code: str) -> Bytecode:
 
     Raises:
         SyntaxError: If Python code has syntax errors
-        NotImplementedError: If code uses unsupported features
+        PyveloxCompileError: If code uses unsupported features
     """
-    try:
-        return translate_python_to_bytecode(source_code)
-    except SyntaxError as e:
-        print(f"Python syntax error: {e}", file=sys.stderr)
-        raise
-    except Exception as e:
-        print(f"Compilation error: {e}", file=sys.stderr)
-        raise
+    return translate_python_to_bytecode(source_code)
 
 
 def compile_file(source_path: Union[str, Path],
@@ -56,7 +50,7 @@ def compile_file(source_path: Union[str, Path],
     Raises:
         FileNotFoundError: If source file doesn't exist
         SyntaxError: If Python code has syntax errors
-        NotImplementedError: If code uses unsupported features
+        PyveloxCompileError: If code uses unsupported features
     """
     source_path = Path(source_path)
 
@@ -81,8 +75,15 @@ def compile_file(source_path: Union[str, Path],
     # Compile to bytecode
     try:
         bc = compile_string(source_code)
-    except Exception:
-        # Error already printed by compile_string
+    except PyveloxCompileError as e:
+        # Re-render the error with the file path so users get a clickable
+        # location like `prog.py:14:5: <message>` instead of just the
+        # message body.
+        print(e.format(source_path=source_path), file=sys.stderr)
+        raise
+    except SyntaxError as e:
+        print(f"{source_path}:{e.lineno}: syntax error: {e.msg}",
+              file=sys.stderr)
         raise
 
     # Write bytecode file
@@ -148,6 +149,9 @@ Examples:
             dump=args.dump
         )
         return 0
+    except (PyveloxCompileError, SyntaxError):
+        # compile_file has already printed a located error; just exit non-zero.
+        return 1
     except Exception as e:
         print(f"Fatal error: {e}", file=sys.stderr)
         return 1

@@ -16,6 +16,7 @@ from pyvelox.translator import PythonTranslator
 from pyvelox.bytecode import Bytecode
 from pyvelox.compiler import compile_string
 from pyvelox.encoder import encode_integer
+from pyvelox.errors import PyveloxCompileError
 
 
 class TestBoundaryValues(unittest.TestCase):
@@ -270,6 +271,42 @@ class TestListOperations(unittest.TestCase):
         bc = compile_string(source)
         # Should create expressions for operations
         self.assertTrue(len(bc.expressions) > 0)
+
+
+class TestCompileErrorLocation(unittest.TestCase):
+    """Errors raised below translate_stmt/translate_expr should carry the
+    offending node's source location, and the formatter should render it
+    as `[path:]line:col: message` plus a snippet of the line."""
+
+    def test_unsupported_expression_carries_location(self):
+        source = "x = 1\ny = {n for n in [1, 2]}\n"
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(source)
+        err = ctx.exception
+        self.assertEqual(err.lineno, 2)
+        # `{n for n in [1, 2]}` starts at column 4 (0-indexed) on line 2.
+        self.assertEqual(err.col_offset, 4)
+        self.assertIn("SetComp", err.raw_message)
+
+    def test_unsupported_statement_carries_location(self):
+        # `break` is rejected at translate_stmt — the location should
+        # point at the `break` line, not the enclosing for loop.
+        source = "for x in [1]:\n    break\n"
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(source)
+        err = ctx.exception
+        self.assertEqual(err.lineno, 2)
+        self.assertIn("break", err.raw_message)
+
+    def test_format_includes_path_line_col_and_snippet(self):
+        source = "y = {n for n in [1, 2]}\n"
+        try:
+            compile_string(source)
+        except PyveloxCompileError as e:
+            rendered = e.format(source_path="prog.py")
+        self.assertIn("prog.py:1:5:", rendered)
+        self.assertIn("y = {n for n in [1, 2]}", rendered)
+        self.assertIn("^", rendered)
 
 
 if __name__ == '__main__':

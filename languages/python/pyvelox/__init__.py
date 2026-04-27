@@ -8,5 +8,6 @@ __version__ = '0.1.0'
 
 from .compiler import compile_file, compile_string
 from .bytecode import Bytecode
+from .errors import PyveloxCompileError
 
-__all__ = ['compile_file', 'compile_string', 'Bytecode']
+__all__ = ['compile_file', 'compile_string', 'Bytecode', 'PyveloxCompileError']

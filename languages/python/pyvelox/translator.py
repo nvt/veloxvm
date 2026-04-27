@@ -7,6 +7,7 @@ different Python constructs.
 """
 
 import ast
+import functools
 import sys
 from typing import List, Optional, Set, Dict
 from .bytecode import Bytecode
@@ -15,7 +16,30 @@ from .encoder import (
     encode_inline_form, encode_form_ref, encode_form_lambda,
     create_inline_call, create_inline_call_direct, create_bind_form
 )
+from .errors import PyveloxCompileError
 from .primitives import get_primitive_id
+
+
+def _located_dispatch(method):
+    """Decorate a translator method that takes an AST node so that any
+    exception raised below it gets re-raised as a PyveloxCompileError
+    with the node's source location attached. Inner frames see the
+    most-specific node; outer frames leave an already-located error
+    alone, so the deepest in-flight node wins."""
+    @functools.wraps(method)
+    def wrapper(self, node, *args, **kwargs):
+        try:
+            return method(self, node, *args, **kwargs)
+        except PyveloxCompileError:
+            raise
+        except Exception as exc:
+            raise PyveloxCompileError(
+                str(exc),
+                lineno=getattr(node, 'lineno', None),
+                col_offset=getattr(node, 'col_offset', None),
+                source_lines=self._source_lines,
+            ) from exc
+    return wrapper
 
 
 class PythonTranslator:
@@ -32,7 +56,7 @@ class PythonTranslator:
     - Built-in functions (print, len, etc.)
     """
 
-    def __init__(self, bc: Bytecode):
+    def __init__(self, bc: Bytecode, source_lines: Optional[List[str]] = None):
         self.bc = bc
         self.scope_stack: List[Set[str]] = [set()]  # Stack of scopes, outermost first
         # Per-scope set of boxed names. Parallel to scope_stack; entry i lists
@@ -40,6 +64,8 @@ class PythonTranslator:
         # (because they are both captured by an inner function AND mutated).
         self.boxed_stack: List[Set[str]] = [set()]
         self.renamed_vars: Dict[str, str] = {}  # Map original names to safe names
+        # Used by PyveloxCompileError to render source-line snippets.
+        self._source_lines: Optional[List[str]] = source_lines
 
     def is_vm_primitive(self, name: str) -> bool:
         """Check if a name conflicts with a VM primitive."""
@@ -126,6 +152,7 @@ class PythonTranslator:
 
         return bytes(accumulated)
 
+    @_located_dispatch
     def translate_stmt(self, stmt: ast.stmt) -> bytes:
         """Translate a statement node."""
         if isinstance(stmt, ast.Expr):
@@ -173,6 +200,7 @@ class PythonTranslator:
         else:
             raise NotImplementedError(f"Statement type not supported: {type(stmt).__name__}")
 
+    @_located_dispatch
     def translate_expr(self, expr: ast.expr) -> bytes:
         """Translate an expression node."""
         if isinstance(expr, ast.Constant):
@@ -2648,8 +2676,12 @@ def translate_python_to_bytecode(source_code: str) -> Bytecode:
     # Pre-allocate expression 0 (entry point)
     bc.add_expression(b'')
 
+    # Pre-split the source so PyveloxCompileError can quote the offending
+    # line. splitlines() drops the trailing newline, which is what we want.
+    source_lines = source_code.splitlines()
+
     # Translate module
-    translator = PythonTranslator(bc)
+    translator = PythonTranslator(bc, source_lines=source_lines)
     accumulated_bytes = translator.translate_module(tree)
 
     # Replace expression 0 with accumulated bytecode
