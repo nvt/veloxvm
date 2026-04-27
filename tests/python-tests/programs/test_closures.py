@@ -6,13 +6,14 @@ Phase 1 coverage: read-only captures (no mutation of captured names).
 Phase 2 will add the box-rewrite path for mutated captures.
 """
 
-failures = [0]  # list so we can mutate without `global`
+failures = 0
 
 def check(actual, expected, description):
+    global failures
     if actual == expected:
         print("  PASS:", description)
     else:
-        failures[0] = failures[0] + 1
+        failures = failures + 1
         print("  FAIL:", description, "expected", expected, "got", actual)
 
 # Lambda capturing one outer parameter (the canonical "make_adder").
@@ -141,8 +142,39 @@ check(s(), 1001, "offset counter step 1")
 check(s(), 1002, "offset counter step 2")
 check(s(), 1003, "offset counter step 3")
 
-if failures[0] > 0:
-    print("FAILURES:", failures[0])
+# --- Phase 3: global declaration ---
+
+# `global` makes a name resolve to the program-wide binding, regardless of
+# whether it would otherwise be a local of the function.
+module_counter = 0
+
+def bump_global():
+    global module_counter
+    module_counter = module_counter + 1
+    return module_counter
+
+check(bump_global(), 1, "global counter first bump")
+check(bump_global(), 2, "global counter second bump")
+check(module_counter, 2, "global counter visible at module level")
+
+# `global` mixed with a captured local: base is captured by value, total is
+# global.
+total_acc = 0
+
+def make_global_adder(base):
+    def step(x):
+        global total_acc
+        total_acc = total_acc + base + x
+        return total_acc
+    return step
+
+ga = make_global_adder(100)
+check(ga(1), 101, "global+capture: 0 + 100 + 1")
+check(ga(2), 203, "global+capture: 101 + 100 + 2")
+check(total_acc, 203, "global+capture: module total visible")
+
+if failures > 0:
+    print("FAILURES:", failures)
     raise Exception("test_closures: assertions failed")
 
 print("test_closures: all pass")

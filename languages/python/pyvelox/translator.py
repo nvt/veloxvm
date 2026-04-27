@@ -159,6 +159,11 @@ class PythonTranslator:
             # collect_assigned_vars and the box analysis), but emit no
             # runtime bytecode of their own.
             return encode_boolean(False)
+        elif isinstance(stmt, ast.Global):
+            # Global declarations are also a scoping signal; subsequent
+            # reads/writes of the named variables resolve to the
+            # program-wide symbol bindings rather than to a local.
+            return encode_boolean(False)
         elif isinstance(stmt, ast.Break):
             # Break needs special handling in loop context
             raise NotImplementedError("break statement requires loop context")
@@ -593,18 +598,25 @@ class PythonTranslator:
         This is used for Python's function-level scoping - all variables must be
         hoisted to the top of the function.
 
-        Names declared with `nonlocal` are excluded from the result: they refer
-        to bindings in an enclosing function and must not be hoisted as locals.
+        Names declared with `nonlocal` or `global` are excluded from the
+        result: nonlocal names refer to bindings in an enclosing function,
+        and global names refer to module-level (program-wide) bindings.
+        Neither should be hoisted as a function-local.
 
         Returns safe names (with 'py_' prefix if they conflict with VM primitives).
         """
         assigned = set()
         nonlocal_names = set()
+        global_names = set()
 
         def visit_node(node):
             if isinstance(node, ast.Nonlocal):
                 for name in node.names:
                     nonlocal_names.add(self.get_safe_name(name))
+                return
+            if isinstance(node, ast.Global):
+                for name in node.names:
+                    global_names.add(self.get_safe_name(name))
                 return
             if isinstance(node, ast.Assign):
                 for target in node.targets:
@@ -651,7 +663,7 @@ class PythonTranslator:
         for stmt in stmts:
             visit_node(stmt)
 
-        return assigned - nonlocal_names
+        return assigned - nonlocal_names - global_names
 
     def translate_function_def(self, node: ast.FunctionDef) -> bytes:
         """
