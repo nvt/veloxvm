@@ -2531,8 +2531,9 @@ class PythonTranslator:
 
         The fallback branch errors at runtime for unsupported types
         (e.g. lists), matching pre-existing behaviour. None is encoded
-        as `False` in PyVelox, so `str(None)` yields "False" — a
-        known divergence noted in tests/python-tests/README.md.
+        as `False` in PyVelox, so `str(None)` on a variable yields
+        "False" — see the `None`/`bool` row of doc/python.md's status
+        table.
         """
         if len(args) != 1:
             raise ValueError("str() takes exactly 1 argument")
