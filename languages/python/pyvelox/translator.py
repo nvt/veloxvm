@@ -2128,12 +2128,76 @@ class PythonTranslator:
         return create_inline_call('string_to_number', [arg_bytes], self.bc)
 
     def translate_str(self, args: List[ast.expr]) -> bytes:
-        """Translate str(x) -> (number->string x)."""
+        """Translate `str(x)`.
+
+        Python `str(x)` accepts any type; the VM has no single
+        `to_string` primitive, so we either pick the right conversion
+        at compile time (for literal arguments) or emit a small
+        runtime type-dispatch:
+
+            (if (stringp x) x
+              (if (booleanp x) (if x "True" "False")
+                (number-to-string x)))
+
+        The fallback branch errors at runtime for unsupported types
+        (e.g. lists), matching pre-existing behaviour. None is encoded
+        as `False` in PyVelox, so `str(None)` yields "False" — a
+        known divergence noted in tests/python-tests/README.md.
+        """
         if len(args) != 1:
             raise ValueError("str() takes exactly 1 argument")
 
-        arg_bytes = self.translate_expr_with_ref(args[0])
-        return create_inline_call('number_to_string', [arg_bytes], self.bc)
+        arg = args[0]
+
+        # Compile-time fast path: the source already tells us the type.
+        if isinstance(arg, ast.Constant):
+            value = arg.value
+            if isinstance(value, str):
+                return encode_string(value, self.bc)
+            # bool is a subclass of int; check it before the int branch.
+            if isinstance(value, bool):
+                return encode_string("True" if value else "False", self.bc)
+            if value is None:
+                return encode_string("None", self.bc)
+            if isinstance(value, int):
+                return create_inline_call(
+                    'number_to_string',
+                    [self.translate_expr_with_ref(arg)],
+                    self.bc)
+            # Other constant types fall through to the runtime path.
+
+        arg_bytes = self.translate_expr_with_ref(arg)
+
+        def _hoist(call_bytes: bytes) -> bytes:
+            return encode_form_ref(self.bc.add_expression(call_bytes))
+
+        # Inner branch for booleans: (if x "True" "False")
+        bool_branch_ref = _hoist(create_inline_call(
+            'if',
+            [arg_bytes,
+             encode_string("True", self.bc),
+             encode_string("False", self.bc)],
+            self.bc))
+
+        # Numeric/fallback branch: (number-to-string x)
+        num_branch_ref = _hoist(create_inline_call(
+            'number_to_string', [arg_bytes], self.bc))
+
+        # (booleanp x)
+        bool_test_ref = _hoist(create_inline_call(
+            'booleanp', [arg_bytes], self.bc))
+
+        # (if (booleanp x) bool_branch num_branch)
+        inner_if_ref = _hoist(create_inline_call(
+            'if', [bool_test_ref, bool_branch_ref, num_branch_ref], self.bc))
+
+        # (stringp x)
+        str_test_ref = _hoist(create_inline_call(
+            'stringp', [arg_bytes], self.bc))
+
+        # (if (stringp x) x inner_if)
+        return create_inline_call(
+            'if', [str_test_ref, arg_bytes, inner_if_ref], self.bc)
 
     def translate_abs(self, args: List[ast.expr]) -> bytes:
         """Translate abs(x) -> (if (< x 0) (- 0 x) x)."""

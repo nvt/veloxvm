@@ -319,6 +319,46 @@ class TestEqualityCompilation(unittest.TestCase):
         self.assertNotIn(encode_symbol('equalp', bc), all_bytes)
 
 
+class TestStrConversion(unittest.TestCase):
+    """`str(x)` must work for non-numeric types: literals route to the
+    correct fast path at compile time; variables and other expressions
+    fall through to a runtime type-dispatch."""
+
+    def _compile_collect(self, source):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(source)
+        return bc, b''.join(bc.expressions), encode_symbol
+
+    def test_literal_string_is_identity(self):
+        # str("hi") should NOT emit number_to_string, stringp, or booleanp.
+        bc, all_bytes, encode_symbol = self._compile_collect('x = str("hi")\n')
+        self.assertNotIn(encode_symbol('number_to_string', bc), all_bytes)
+        self.assertNotIn(encode_symbol('booleanp', bc), all_bytes)
+        self.assertNotIn(encode_symbol('stringp', bc), all_bytes)
+
+    def test_literal_int_uses_number_to_string(self):
+        bc, all_bytes, encode_symbol = self._compile_collect('x = str(5)\n')
+        self.assertIn(encode_symbol('number_to_string', bc), all_bytes)
+        # No runtime dispatch needed for a literal int.
+        self.assertNotIn(encode_symbol('booleanp', bc), all_bytes)
+
+    def test_literal_bool_is_inlined(self):
+        bc, all_bytes, encode_symbol = self._compile_collect('x = str(True)\n')
+        # Pure compile-time: no number_to_string, no type predicates.
+        self.assertNotIn(encode_symbol('number_to_string', bc), all_bytes)
+        self.assertNotIn(encode_symbol('booleanp', bc), all_bytes)
+
+    def test_variable_uses_runtime_dispatch(self):
+        bc, all_bytes, encode_symbol = self._compile_collect(
+            'y = 1\nx = str(y)\n')
+        # Runtime dispatch should emit stringp, booleanp, and
+        # number_to_string for the fallback.
+        self.assertIn(encode_symbol('stringp', bc), all_bytes)
+        self.assertIn(encode_symbol('booleanp', bc), all_bytes)
+        self.assertIn(encode_symbol('number_to_string', bc), all_bytes)
+
+
 class TestCompileErrorLocation(unittest.TestCase):
     """Errors raised below translate_stmt/translate_expr should carry the
     offending node's source location, and the formatter should render it

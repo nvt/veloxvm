@@ -60,6 +60,9 @@ Based on testing, the following features have issues in the current PyVelox impl
 4. **sorted/reversed**: These functions may cause infinite loops (needs investigation)
 5. **bool/int cross-type equality**: `True == 1` returns `False` (the VM keeps
    booleans and integers as distinct types). Compare like with like.
+6. **`str(None)` on a variable yields `"False"`**: PyVelox encodes `None`
+   as the boolean `False`, so they are indistinguishable at runtime.
+   `str(None)` written as a literal still produces `"None"`.
 
 ## Expected Output
 
