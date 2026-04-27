@@ -35,6 +35,10 @@ class PythonTranslator:
     def __init__(self, bc: Bytecode):
         self.bc = bc
         self.scope_stack: List[Set[str]] = [set()]  # Stack of scopes, outermost first
+        # Per-scope set of boxed names. Parallel to scope_stack; entry i lists
+        # the names in scope_stack[i] that live in heap-allocated boxes
+        # (because they are both captured by an inner function AND mutated).
+        self.boxed_stack: List[Set[str]] = [set()]
         self.renamed_vars: Dict[str, str] = {}  # Map original names to safe names
 
     def is_vm_primitive(self, name: str) -> bool:
@@ -150,6 +154,11 @@ class PythonTranslator:
         elif isinstance(stmt, ast.Pass):
             # Pass translates to #f (false) - no-op
             return encode_boolean(False)
+        elif isinstance(stmt, ast.Nonlocal):
+            # Nonlocal declarations affect scoping (handled in
+            # collect_assigned_vars and the box analysis), but emit no
+            # runtime bytecode of their own.
+            return encode_boolean(False)
         elif isinstance(stmt, ast.Break):
             # Break needs special handling in loop context
             raise NotImplementedError("break statement requires loop context")
@@ -256,7 +265,7 @@ class PythonTranslator:
     def translate_name(self, node: ast.Name) -> bytes:
         """Translate a variable reference."""
         safe_name = self.get_safe_name(node.id)
-        return encode_symbol(safe_name, self.bc)
+        return self._emit_name_load(safe_name)
 
     def translate_assign(self, node: ast.Assign) -> bytes:
         """
@@ -326,11 +335,14 @@ class PythonTranslator:
         in_outer_scope = any(safe_name in scope for scope in self.scope_stack[:-1])
 
         if safe_name in current_scope:
-            # Re-assignment in current scope - use set!
-            return create_inline_call('set', [encode_symbol(safe_name, self.bc), value_bytes], self.bc)
+            # Re-assignment in current scope: set! (or box-set! if boxed).
+            op = 'box_set' if self._is_boxed(safe_name) else 'set'
+            return create_inline_call(op, [encode_symbol(safe_name, self.bc), value_bytes], self.bc)
         elif in_outer_scope:
-            # Assignment to variable from outer scope - use set! to modify, not shadow
-            return create_inline_call('set', [encode_symbol(safe_name, self.bc), value_bytes], self.bc)
+            # Assignment to variable from outer scope: set! to modify, not shadow.
+            # If the outer binding is boxed, route through box-set!.
+            op = 'box_set' if self._is_boxed(safe_name) else 'set'
+            return create_inline_call(op, [encode_symbol(safe_name, self.bc), value_bytes], self.bc)
         else:
             # First assignment in current scope - use define
             current_scope.add(safe_name)
@@ -361,8 +373,9 @@ class PythonTranslator:
         if not op:
             raise NotImplementedError(f"Aug assign operator not supported: {type(node.op).__name__}")
 
-        # (op var value)
-        var_bytes = encode_symbol(safe_name, self.bc)
+        # (op var value) -- read of var goes through _emit_name_load so a
+        # boxed binding emits (box-ref var).
+        var_bytes = self._emit_name_load(safe_name)
         value_bytes = self.translate_expr_with_ref(node.value)
         result_bytes = create_inline_call(op, [var_bytes, value_bytes], self.bc)
 
@@ -370,8 +383,11 @@ class PythonTranslator:
         result_id = self.bc.add_expression(result_bytes)
         result_ref = encode_form_ref(result_id)
 
-        # (set! var result)
-        return create_inline_call('set', [encode_symbol(safe_name, self.bc), result_ref], self.bc)
+        # (set! var result) or (box-set! var result) when boxed.
+        write_op = 'box_set' if self._is_boxed(safe_name) else 'set'
+        return create_inline_call(write_op,
+                                  [encode_symbol(safe_name, self.bc), result_ref],
+                                  self.bc)
 
     # === Functions ===
 
@@ -426,17 +442,170 @@ class PythonTranslator:
 
         return [n for n in free if n in outer_env]
 
+    def _is_boxed(self, safe_name: str) -> bool:
+        """
+        True if safe_name resolves to a binding that lives in a heap box at
+        this point in translation. Walks the scope stack inward-to-outward
+        and checks the box flag of the innermost scope that contains the
+        name -- so a shadowing local in an inner scope correctly hides an
+        outer boxed binding.
+        """
+        for i in range(len(self.scope_stack) - 1, -1, -1):
+            if safe_name in self.scope_stack[i]:
+                return safe_name in self.boxed_stack[i]
+        return False
+
+    def _emit_name_load(self, safe_name: str) -> bytes:
+        """
+        Emit bytecode for a Load of safe_name. If the binding is boxed, wrap
+        in (box_ref name); otherwise emit the bare symbol.
+        """
+        if self._is_boxed(safe_name):
+            return create_inline_call(
+                'box_ref', [encode_symbol(safe_name, self.bc)], self.bc)
+        return encode_symbol(safe_name, self.bc)
+
+    def _make_box_init_bytes(self, safe_name: str) -> bytes:
+        """
+        Emit (set! name (box name)) -- the function-entry wrap that replaces
+        the initial value of name with a box containing it. Subsequent reads
+        of name will be rewritten to (box-ref name) by _emit_name_load. The
+        inner (box name) is a plain symbol reference; we cannot route it
+        through _emit_name_load because at this point name still holds its
+        unboxed value.
+        """
+        box_call = create_inline_call('box',
+                                      [encode_symbol(safe_name, self.bc)],
+                                      self.bc)
+        return create_inline_call('set',
+                                  [encode_symbol(safe_name, self.bc), box_call],
+                                  self.bc)
+
+    def _params_captured_by_inner(self,
+                                  body_stmts: List[ast.stmt],
+                                  owned_names: Set[str]) -> Set[str]:
+        """
+        Names from owned_names that are referenced (Load) inside any nested
+        function or lambda whose binders don't shadow them. These are the
+        names that an inner closure would capture from this function.
+        """
+        hits: Set[str] = set()
+
+        def walk(node, inside: bool, local: Set[str]):
+            if isinstance(node, ast.Name):
+                if isinstance(node.ctx, ast.Load):
+                    safe = self.get_safe_name(node.id)
+                    if inside and safe in owned_names and safe not in local:
+                        hits.add(safe)
+                return
+
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                inner_params = {self.get_safe_name(a.arg) for a in node.args.args}
+                inner_locals = self.collect_assigned_vars(node.body)
+                inner_local = local | inner_params | inner_locals
+                for stmt in node.body:
+                    walk(stmt, True, inner_local)
+                return
+
+            if isinstance(node, ast.Lambda):
+                inner_params = {self.get_safe_name(a.arg) for a in node.args.args}
+                walk(node.body, True, local | inner_params)
+                return
+
+            for child in ast.iter_child_nodes(node):
+                walk(child, inside, local)
+
+        for stmt in body_stmts:
+            walk(stmt, False, set())
+
+        return hits
+
+    def _params_mutated_in(self,
+                           body_stmts: List[ast.stmt],
+                           owned_names: Set[str]) -> Set[str]:
+        """
+        Names from owned_names that are the target of an assignment somewhere
+        in body_stmts, where intermediate binders don't rebind the name. A
+        name declared `nonlocal` inside a nested function does NOT rebind it
+        (collect_assigned_vars subtracts nonlocal declarations), so writes
+        through that nested function count as mutations of the outer name.
+        """
+        hits: Set[str] = set()
+
+        def record_target(t, local: Set[str]):
+            if isinstance(t, ast.Name):
+                safe = self.get_safe_name(t.id)
+                if safe in owned_names and safe not in local:
+                    hits.add(safe)
+            elif isinstance(t, ast.Tuple):
+                for elt in t.elts:
+                    record_target(elt, local)
+
+        def walk(node, local: Set[str]):
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    record_target(t, local)
+                walk(node.value, local)
+                return
+            if isinstance(node, ast.AugAssign):
+                record_target(node.target, local)
+                walk(node.value, local)
+                return
+
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                inner_params = {self.get_safe_name(a.arg) for a in node.args.args}
+                inner_locals = self.collect_assigned_vars(node.body)
+                inner_local = local | inner_params | inner_locals
+                for stmt in node.body:
+                    walk(stmt, inner_local)
+                return
+
+            if isinstance(node, ast.Lambda):
+                inner_params = {self.get_safe_name(a.arg) for a in node.args.args}
+                walk(node.body, local | inner_params)
+                return
+
+            for child in ast.iter_child_nodes(node):
+                walk(child, local)
+
+        for stmt in body_stmts:
+            walk(stmt, set())
+
+        return hits
+
+    def _params_needing_box(self,
+                            body_stmts: List[ast.stmt],
+                            owned_names: Set[str]) -> Set[str]:
+        """
+        Subset of owned_names that need to live in heap-allocated boxes:
+        captured by an inner function AND mutated somewhere. A captured-only
+        name is fine as a value capture; a mutated-but-not-captured name is
+        fine as a plain local. Only the intersection has the alias-sharing
+        problem (writes through one path must be visible through all).
+        """
+        captured = self._params_captured_by_inner(body_stmts, owned_names)
+        mutated = self._params_mutated_in(body_stmts, owned_names)
+        return captured & mutated
+
     def collect_assigned_vars(self, stmts: List[ast.stmt]) -> Set[str]:
         """
         Collect all variable names that are assigned within a list of statements.
         This is used for Python's function-level scoping - all variables must be
         hoisted to the top of the function.
 
+        Names declared with `nonlocal` are excluded from the result: they refer
+        to bindings in an enclosing function and must not be hoisted as locals.
+
         Returns safe names (with 'py_' prefix if they conflict with VM primitives).
         """
         assigned = set()
+        nonlocal_names = set()
 
         def visit_node(node):
+            if isinstance(node, ast.Nonlocal):
+                for name in node.names:
+                    nonlocal_names.add(self.get_safe_name(name))
+                return
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
@@ -482,7 +651,7 @@ class PythonTranslator:
         for stmt in stmts:
             visit_node(stmt)
 
-        return assigned
+        return assigned - nonlocal_names
 
     def translate_function_def(self, node: ast.FunctionDef) -> bytes:
         """
@@ -519,15 +688,23 @@ class PythonTranslator:
             if is_nested else set()
         captures = self._compute_captures(node.body, local_set, outer_env)
 
+        # Box analysis: which params/locals must live in shared boxes because
+        # they are both captured by an inner function AND mutated. Computed
+        # before we push scope/box state so it sees only THIS function's
+        # body shape.
+        boxed_names = self._params_needing_box(node.body, local_set)
+
         # Push a new scope for the function body
         # Include both params AND local vars so they're all treated as "already defined"
         # NOTE: Store SAFE names in scope_stack
         self.scope_stack.append(local_set)
+        self.boxed_stack.append(boxed_names)
 
         try:
             # Compile body with granular expression storage (like Racket compiler)
             # Each statement is stored as a separate expression, then referenced in a begin form
-            body_bytes = self.translate_function_body(node.body, local_vars)
+            body_bytes = self.translate_function_body(
+                node.body, local_vars, box_inits=boxed_names)
 
             # Don't store body as form ref - inline it directly in bind form
             # This matches what Racket does: (bind args body) where body is compiled directly
@@ -561,6 +738,7 @@ class PythonTranslator:
         finally:
             # Pop the function scope
             self.scope_stack.pop()
+            self.boxed_stack.pop()
 
     def translate_lambda(self, node: ast.Lambda) -> bytes:
         """
@@ -584,12 +762,26 @@ class PythonTranslator:
         captures = self._compute_captures(
             [ast.Expr(value=node.body)], local_set, outer_env)
 
+        # A lambda's body is a single expression, so the only assignments it
+        # can contribute are inside nested functions/lambdas. Its own params
+        # could still be captured + mutated by an inner closure that uses
+        # nonlocal -- so the box analysis still applies.
+        boxed_names = self._params_needing_box(
+            [ast.Expr(value=node.body)], local_set)
+
         # Lambdas don't currently hoist locals, so the new scope is just the
         # parameters. Pushing it makes inner lambdas/defs see them as outer.
         self.scope_stack.append(local_set)
+        self.boxed_stack.append(boxed_names)
         try:
-            # Translate body directly - lambdas are single expressions
+            # Translate body directly - lambdas are single expressions.
             body_bytes = self.translate_expr(node.body)
+            if boxed_names:
+                # Prepend (set! p (box p)) wraps for each boxed param. We
+                # build (begin wrap1 ... wrapN body) and use that as the
+                # bind body.
+                wraps = [self._make_box_init_bytes(name) for name in sorted(boxed_names)]
+                body_bytes = create_inline_call('begin', wraps + [body_bytes], self.bc)
 
             # Create bind_function form (lambdas are real functions, like def)
             bind_bytes = create_bind_form(safe_params, body_bytes, self.bc, is_function=True)
@@ -605,6 +797,7 @@ class PythonTranslator:
             return encode_form_lambda(expr_id)
         finally:
             self.scope_stack.pop()
+            self.boxed_stack.pop()
 
     def translate_return(self, node: ast.Return) -> bytes:
         """
@@ -2322,7 +2515,10 @@ class PythonTranslator:
 
     # === Utilities ===
 
-    def translate_function_body(self, stmts: List[ast.stmt], local_vars: Set[str] = None) -> bytes:
+    def translate_function_body(self,
+                                stmts: List[ast.stmt],
+                                local_vars: Set[str] = None,
+                                box_inits: Set[str] = None) -> bytes:
         """
         Translate function body with granular expression storage.
 
@@ -2349,25 +2545,38 @@ class PythonTranslator:
         """
         if local_vars is None:
             local_vars = set()
+        if box_inits is None:
+            box_inits = set()
+
+        # Build a list of (form-ref or inline) bytes for each step the body
+        # runs, prepended by the box-init wraps for any params/locals that
+        # need to live in heap boxes. The wraps must execute first so that
+        # subsequent reads/writes (already routed through box-ref/box-set!
+        # by translate_name and translate_assign) see a box.
+        wrap_refs = []
+        for name in sorted(box_inits):
+            wrap_bytes = self._make_box_init_bytes(name)
+            wrap_id = self.bc.add_expression(wrap_bytes)
+            wrap_refs.append(encode_form_ref(wrap_id))
 
         # Translate the function body statements
         # All returns (including final ones) now use exception-based unwinding
         if len(stmts) == 0:
-            inner_body_bytes = encode_boolean(False)
-        elif len(stmts) == 1:
-            inner_body_bytes = self.translate_stmt(stmts[0])
+            stmt_bytes_list = [encode_boolean(False)]
         else:
-            # Multiple statements - store each as a separate expression,
-            # then create a begin form that references them
-            stmt_refs = []
+            stmt_bytes_list = [self.translate_stmt(stmt) for stmt in stmts]
 
-            for stmt in stmts:
-                # Translate and store as separate expression
-                stmt_bytes = self.translate_stmt(stmt)
+        # Combine: if there are wraps OR multiple statements, use a begin
+        # over (wraps + stmts) where each stmt is hoisted to its own
+        # expression (form-ref). The wraps are already form-refs.
+        all_stmt_refs = list(wrap_refs)
+        if len(stmt_bytes_list) == 1 and not wrap_refs:
+            inner_body_bytes = stmt_bytes_list[0]
+        else:
+            for stmt_bytes in stmt_bytes_list:
                 stmt_id = self.bc.add_expression(stmt_bytes)
-                stmt_refs.append(encode_form_ref(stmt_id))
-
-            inner_body_bytes = create_inline_call('begin', stmt_refs, self.bc)
+                all_stmt_refs.append(encode_form_ref(stmt_id))
+            inner_body_bytes = create_inline_call('begin', all_stmt_refs, self.bc)
 
         # No need for guard wrapper - the VM's return primitive now works correctly!
         # It distinguishes between bind_function frames (actual functions) and regular

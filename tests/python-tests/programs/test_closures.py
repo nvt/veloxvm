@@ -67,6 +67,80 @@ def add(x, y):
 adder = make_pair_op(add)
 check(adder(3)(4), 7, "lambda-in-lambda over function-valued capture")
 
+# --- Phase 2: mutable captures (the box rewrite) ---
+
+# A counter that owns a captured-and-mutated local. Each call sees the
+# updated value; independent counters do not interfere.
+def make_counter():
+    count = 0
+    def inc():
+        nonlocal count
+        count = count + 1
+        return count
+    return inc
+
+c1 = make_counter()
+c2 = make_counter()
+check(c1(), 1, "counter c1 first call")
+check(c1(), 2, "counter c1 second call")
+check(c1(), 3, "counter c1 third call")
+check(c2(), 1, "counter c2 starts fresh")
+check(c1(), 4, "c1 unaffected by c2")
+
+# Two closures sharing the same captured-and-mutated binding. Writes through
+# one must be visible through the other -- the captures must reference a
+# shared box, not snapshot the value.
+def make_pair():
+    shared = 0
+    def writer():
+        nonlocal shared
+        shared = shared + 1
+        return shared
+    def reader():
+        return shared
+    return [writer, reader]
+
+pair = make_pair()
+write_fn = pair[0]
+read_fn = pair[1]
+check(write_fn(), 1, "shared writer first")
+check(write_fn(), 2, "shared writer second")
+check(read_fn(), 2, "shared reader sees writer's value")
+check(write_fn(), 3, "shared writer third")
+check(read_fn(), 3, "shared reader sees latest")
+
+# Deep nesting: innermost function mutates a name two scopes out.
+def outer_mut():
+    x = 100
+    def middle():
+        def inner():
+            nonlocal x
+            x = x + 1
+            return x
+        return inner
+    return middle
+
+deep = outer_mut()()
+check(deep(), 101, "deep mutation: 101")
+check(deep(), 102, "deep mutation: 102")
+check(deep(), 103, "deep mutation: 103")
+
+# Mixed read-only + mutable captures in the same lambda body. The constant
+# `base` is captured by value; `n` is captured-and-mutated so it lives in
+# a box.
+def make_offset_counter(base):
+    n = 0
+    def step():
+        nonlocal n
+        n = n + 1
+        return base + n
+    return step
+
+s = make_offset_counter(1000)
+check(s(), 1001, "offset counter step 1")
+check(s(), 1002, "offset counter step 2")
+check(s(), 1003, "offset counter step 3")
+
 if failures[0] > 0:
     print("FAILURES:", failures[0])
     raise Exception("test_closures: assertions failed")
