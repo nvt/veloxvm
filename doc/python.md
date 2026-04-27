@@ -37,6 +37,10 @@ bytecode = compile_string('print("Hello, World!")')
 - **Built-ins**: `print`, `len`, `range(const)`, `int`, `str`,
   `enumerate`, `zip`, `map`, `filter`, `reversed`, `any`, `all`, `sum`,
   `min`, `max`, `abs`.
+- **f-strings**: `f"hello, {name}"` lowers to a chain of
+  `string-append`. Interpolated values run through the same `str()`
+  conversion as the built-in. Format specs (`:.2f`) and conversions
+  (`!r`, `!s`, `!a`) are rejected at compile time.
 
 ## Not supported
 
@@ -48,7 +52,7 @@ currently include `sorted()`, typed `except T:` clauses, multiple
 Other Python constructs are not parsed or translated and will fail
 loudly: identity operators (`is`, `is not`), default arguments,
 `*args`/`**kwargs`, `nonlocal`/`global`, classes, comprehensions,
-`with` statements, generators (`yield`), decorators, and f-strings.
+`with` statements, generators (`yield`), and decorators.
 
 ## Runtime caveats
 

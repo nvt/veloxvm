@@ -401,6 +401,55 @@ class TestTryExceptCompilation(unittest.TestCase):
         self.assertIn(encode_symbol('quote', bc), all_bytes)
 
 
+class TestFStrings(unittest.TestCase):
+    """f-strings (`ast.JoinedStr` / `ast.FormattedValue`) lower to a
+    chain of `string_append` calls, with each interpolated value
+    routed through our `str()` conversion. Format specs and conversion
+    flags are rejected at compile time."""
+
+    def _compile_collect(self, source):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(source)
+        return bc, b''.join(bc.expressions), encode_symbol
+
+    def test_plain_fstring_is_just_a_string(self):
+        # No interpolation — should not emit string_append.
+        bc, all_bytes, encode_symbol = self._compile_collect(
+            'x = f"hello"\n')
+        self.assertNotIn(encode_symbol('string_append', bc), all_bytes)
+
+    def test_fstring_with_interpolation_uses_string_append(self):
+        bc, all_bytes, encode_symbol = self._compile_collect(
+            'name = "world"\n'
+            'x = f"hello {name}"\n'
+        )
+        self.assertIn(encode_symbol('string_append', bc), all_bytes)
+
+    def test_fstring_with_literal_int_constant_folds(self):
+        # int literal inside the hole goes through str()'s fast path,
+        # so the runtime type-dispatch shouldn't appear.
+        bc, all_bytes, encode_symbol = self._compile_collect(
+            'x = f"answer={42}"\n')
+        # No runtime stringp/booleanp/numberp dispatch needed.
+        self.assertNotIn(encode_symbol('numberp', bc), all_bytes)
+        self.assertNotIn(encode_symbol('booleanp', bc), all_bytes)
+
+    def test_format_spec_rejected_with_location(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('x = 1\nprint(f"{x:.2f}")\n')
+        self.assertEqual(ctx.exception.lineno, 2)
+        self.assertIn("format spec", ctx.exception.raw_message)
+
+    def test_conversion_rejected_with_location(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('x = "a"\nprint(f"{x!r}")\n')
+        self.assertEqual(ctx.exception.lineno, 2)
+        self.assertIn("conversion", ctx.exception.raw_message)
+
+
 class TestIntConversion(unittest.TestCase):
     """`int(x)` previously emitted only string_to_number, which raises
     a type error for ints/bools. Literals now resolve at compile time;

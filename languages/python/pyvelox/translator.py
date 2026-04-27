@@ -249,6 +249,8 @@ class PythonTranslator:
             return self.translate_list_comp(expr)
         elif isinstance(expr, ast.Attribute):
             return self.translate_attribute(expr)
+        elif isinstance(expr, ast.JoinedStr):
+            return self.translate_joined_str(expr)
         else:
             raise NotImplementedError(f"Expression type not supported: {type(expr).__name__}")
 
@@ -273,6 +275,53 @@ class PythonTranslator:
             return encode_integer(int(value))
         else:
             raise NotImplementedError(f"Constant type not supported: {type(value)}")
+
+    def translate_joined_str(self, node: ast.JoinedStr) -> bytes:
+        """Translate an f-string into a chain of `string_append` calls.
+
+        `f"hello {name}!"` parses as a JoinedStr whose `values` are a
+        mix of `ast.Constant` (the literal segments) and
+        `ast.FormattedValue` (the `{...}` interpolations). Each
+        formatted value is routed through our `str()` conversion
+        (literal fast paths plus runtime stringp/booleanp dispatch),
+        and everything is concatenated with `string_append`.
+
+        Format specs (`f"{x:.2f}"`) and conversions (`f"{x!r}"`) are
+        not yet supported and raise at compile time so they can't
+        silently produce wrong output.
+        """
+        parts: List[bytes] = []
+        for piece in node.values:
+            if isinstance(piece, ast.Constant) and isinstance(piece.value, str):
+                # An empty segment (e.g. `f"{x}{y}"` between the two
+                # placeholders) contributes nothing — skip it so the
+                # `string_append` call doesn't include zero-length args.
+                if piece.value:
+                    parts.append(encode_string(piece.value, self.bc))
+            elif isinstance(piece, ast.FormattedValue):
+                if piece.conversion != -1:
+                    raise NotImplementedError(
+                        "f-string conversions (`!s`, `!r`, `!a`) "
+                        "are not yet supported")
+                if piece.format_spec is not None:
+                    raise NotImplementedError(
+                        "f-string format specs (`:.2f`, `:>5`, ...) "
+                        "are not yet supported")
+                # Reuse the str() pipeline: literals constant-fold,
+                # variables get the runtime type-dispatch.
+                parts.append(self.translate_str([piece.value]))
+            else:
+                raise NotImplementedError(
+                    f"Unexpected f-string component: "
+                    f"{type(piece).__name__}")
+
+        if not parts:
+            return encode_string("", self.bc)
+        if len(parts) == 1:
+            # No concatenation needed — a single segment is already a
+            # string-typed expression.
+            return parts[0]
+        return create_inline_call('string_append', parts, self.bc)
 
     def translate_list(self, node: ast.List) -> bytes:
         """Translate a list literal: [1, 2, 3] -> (list 1 2 3). Complex elements stored separately."""
