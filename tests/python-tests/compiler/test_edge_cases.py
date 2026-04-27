@@ -319,6 +319,64 @@ class TestEqualityCompilation(unittest.TestCase):
         self.assertNotIn(encode_symbol('equalp', bc), all_bytes)
 
 
+class TestLoopControl(unittest.TestCase):
+    """break and continue desugar to (raise '__pyvelox_break__) and
+    (raise '__pyvelox_continue__) and are caught by guards installed
+    around the loop body and the loop itself. break/continue outside
+    a loop is a compile error."""
+
+    def test_break_inside_loop_compiles(self):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(
+            "for x in [1, 2, 3]:\n"
+            "    if x == 2:\n"
+            "        break\n"
+        )
+        all_bytes = b''.join(bc.expressions)
+        # The loop body raises the break sentinel and the surrounding
+        # guard catches it.
+        self.assertIn(encode_symbol('__pyvelox_break__', bc), all_bytes)
+        self.assertIn(encode_symbol('guard', bc), all_bytes)
+
+    def test_continue_inside_loop_compiles(self):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(
+            "for x in [1, 2, 3]:\n"
+            "    if x == 2:\n"
+            "        continue\n"
+        )
+        all_bytes = b''.join(bc.expressions)
+        self.assertIn(encode_symbol('__pyvelox_continue__', bc), all_bytes)
+
+    def test_break_outside_loop_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string("x = 1\nbreak\n")
+        self.assertEqual(ctx.exception.lineno, 2)
+        self.assertIn("break", ctx.exception.raw_message)
+
+    def test_continue_outside_loop_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string("continue\n")
+        self.assertEqual(ctx.exception.lineno, 1)
+        self.assertIn("continue", ctx.exception.raw_message)
+
+    def test_break_inside_function_inside_loop_is_compile_error(self):
+        # The function body is a fresh scope; break/continue don't
+        # cross function boundaries.
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError):
+            compile_string(
+                "for x in [1]:\n"
+                "    def f():\n"
+                "        break\n"
+                "    f()\n"
+            )
+
+
 class TestTryExceptCompilation(unittest.TestCase):
     """The VM's `guard` form takes exactly three arguments
     (exc-symbol, handler, body). The translator previously emitted
@@ -399,9 +457,10 @@ class TestCompileErrorLocation(unittest.TestCase):
         self.assertIn("SetComp", err.raw_message)
 
     def test_unsupported_statement_carries_location(self):
-        # `break` is rejected at translate_stmt — the location should
-        # point at the `break` line, not the enclosing for loop.
-        source = "for x in [1]:\n    break\n"
+        # `break` outside a loop is rejected at translate_stmt; the
+        # location should point at the `break` line, not the enclosing
+        # def or module.
+        source = "def f():\n    break\n"
         with self.assertRaises(PyveloxCompileError) as ctx:
             compile_string(source)
         err = ctx.exception

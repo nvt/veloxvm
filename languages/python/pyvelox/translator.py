@@ -56,6 +56,15 @@ class PythonTranslator:
     - Built-in functions (print, len, etc.)
     """
 
+    # Sentinel symbols raised by `break`/`continue` and caught by the
+    # surrounding loop. They are module-level (not per-loop) because
+    # each loop installs its own break/continue guard, so the nearest
+    # enclosing one always catches first. User except handlers
+    # re-raise these so loop control isn't accidentally swallowed by
+    # `except:` inside a loop body.
+    BREAK_SENTINEL = '__pyvelox_break__'
+    CONTINUE_SENTINEL = '__pyvelox_continue__'
+
     def __init__(self, bc: Bytecode, source_lines: Optional[List[str]] = None):
         self.bc = bc
         self.scope_stack: List[Set[str]] = [set()]  # Stack of scopes, outermost first
@@ -66,6 +75,9 @@ class PythonTranslator:
         self.renamed_vars: Dict[str, str] = {}  # Map original names to safe names
         # Used by PyveloxCompileError to render source-line snippets.
         self._source_lines: Optional[List[str]] = source_lines
+        # Depth of the currently-being-translated loop nest. `break` and
+        # `continue` are only legal when this is positive.
+        self._loop_depth: int = 0
 
     def is_vm_primitive(self, name: str) -> bool:
         """Check if a name conflicts with a VM primitive."""
@@ -192,11 +204,15 @@ class PythonTranslator:
             # program-wide symbol bindings rather than to a local.
             return encode_boolean(False)
         elif isinstance(stmt, ast.Break):
-            # Break needs special handling in loop context
-            raise NotImplementedError("break statement requires loop context")
+            if self._loop_depth == 0:
+                raise NotImplementedError(
+                    "'break' outside loop")
+            return self._raise_sentinel(self.BREAK_SENTINEL)
         elif isinstance(stmt, ast.Continue):
-            # Continue needs special handling in loop context
-            raise NotImplementedError("continue statement requires loop context")
+            if self._loop_depth == 0:
+                raise NotImplementedError(
+                    "'continue' outside loop")
+            return self._raise_sentinel(self.CONTINUE_SENTINEL)
         else:
             raise NotImplementedError(f"Statement type not supported: {type(stmt).__name__}")
 
@@ -739,6 +755,11 @@ class PythonTranslator:
         # NOTE: Store SAFE names in scope_stack
         self.scope_stack.append(local_set)
         self.boxed_stack.append(boxed_names)
+        # Loops don't cross function boundaries: a function defined
+        # inside a loop has its own break/continue scope (which is
+        # empty until the function itself contains a loop).
+        saved_loop_depth = self._loop_depth
+        self._loop_depth = 0
 
         try:
             # Compile body with granular expression storage (like Racket compiler)
@@ -779,6 +800,7 @@ class PythonTranslator:
             # Pop the function scope
             self.scope_stack.pop()
             self.boxed_stack.pop()
+            self._loop_depth = saved_loop_depth
 
     def translate_lambda(self, node: ast.Lambda) -> bytes:
         """
@@ -813,6 +835,8 @@ class PythonTranslator:
         # parameters. Pushing it makes inner lambdas/defs see them as outer.
         self.scope_stack.append(local_set)
         self.boxed_stack.append(boxed_names)
+        saved_loop_depth = self._loop_depth
+        self._loop_depth = 0
         try:
             # Translate body directly - lambdas are single expressions.
             body_bytes = self.translate_expr(node.body)
@@ -838,6 +862,7 @@ class PythonTranslator:
         finally:
             self.scope_stack.pop()
             self.boxed_stack.pop()
+            self._loop_depth = saved_loop_depth
 
     def translate_return(self, node: ast.Return) -> bytes:
         """
@@ -1233,6 +1258,52 @@ class PythonTranslator:
 
         return create_inline_call('if', [test_bytes, body_bytes, alt_bytes], self.bc)
 
+    def _raise_sentinel(self, sentinel_name: str) -> bytes:
+        """Emit `(raise (quote <sentinel>))`. raise evaluates its
+        argument, so the symbol must be quoted to survive lookup."""
+        sym_bytes = create_inline_call(
+            'quote', [encode_symbol(sentinel_name, self.bc)], self.bc)
+        return create_inline_call('raise', [sym_bytes], self.bc)
+
+    def _wrap_with_sentinel_guard(self, body_bytes: bytes,
+                                  sentinel_name: str) -> bytes:
+        """Wrap body in a guard that swallows raises of `sentinel_name`
+        and re-raises everything else:
+
+            (guard _exc
+              (if (eqp _exc (quote <sentinel>)) #f (raise _exc))
+              <body>)
+
+        The exception variable name is fixed (`_exc`); the VM doesn't
+        evaluate it, so the same name can nest without conflict."""
+        exc_name = '_exc'
+        sentinel_quoted = create_inline_call(
+            'quote', [encode_symbol(sentinel_name, self.bc)], self.bc)
+        eq_check = create_inline_call(
+            'eqp',
+            [encode_symbol(exc_name, self.bc), sentinel_quoted],
+            self.bc)
+        eq_id = self.bc.add_expression(eq_check)
+        eq_ref = encode_form_ref(eq_id)
+
+        rethrow = create_inline_call(
+            'raise', [encode_symbol(exc_name, self.bc)], self.bc)
+        rethrow_id = self.bc.add_expression(rethrow)
+        rethrow_ref = encode_form_ref(rethrow_id)
+
+        handler = create_inline_call(
+            'if', [eq_ref, encode_boolean(False), rethrow_ref], self.bc)
+        handler_id = self.bc.add_expression(handler)
+        handler_ref = encode_form_ref(handler_id)
+
+        body_id = self.bc.add_expression(body_bytes)
+        body_ref = encode_form_ref(body_id)
+
+        return create_inline_call(
+            'guard',
+            [encode_symbol(exc_name, self.bc), handler_ref, body_ref],
+            self.bc)
+
     def translate_for(self, node: ast.For) -> bytes:
         """
         Translate for loop: for x in iterable: body -> (for-each (lambda (x) body) iterable).
@@ -1246,7 +1317,17 @@ class PythonTranslator:
         if isinstance(node.target, ast.Name):
             param = node.target.id
             safe_param = self.get_safe_name(param)
-            body_bytes = self.translate_block(node.body)
+
+            self._loop_depth += 1
+            try:
+                body_bytes = self.translate_block(node.body)
+            finally:
+                self._loop_depth -= 1
+
+            # Wrap each iteration's body so `continue` returns from the
+            # body lambda without escaping for_each.
+            body_bytes = self._wrap_with_sentinel_guard(
+                body_bytes, self.CONTINUE_SENTINEL)
 
             # Store body as separate expression
             body_id = self.bc.add_expression(body_bytes)
@@ -1261,7 +1342,12 @@ class PythonTranslator:
             iterable_bytes = self.translate_expr_with_ref(node.iter)
 
             # (for-each lambda iterable)
-            return create_inline_call('for_each', [lambda_bytes, iterable_bytes], self.bc)
+            for_each_call = create_inline_call(
+                'for_each', [lambda_bytes, iterable_bytes], self.bc)
+            # Wrap the whole loop so `break` exits it without
+            # propagating further.
+            return self._wrap_with_sentinel_guard(
+                for_each_call, self.BREAK_SENTINEL)
 
         # Handle tuple unpacking: for x, y in pairs
         elif isinstance(node.target, ast.Tuple):
@@ -1281,7 +1367,13 @@ class PythonTranslator:
             item_param = self.bc.get_unique_var_name("_item")
 
             # Translate the loop body
-            body_bytes = self.translate_block(node.body)
+            self._loop_depth += 1
+            try:
+                body_bytes = self.translate_block(node.body)
+            finally:
+                self._loop_depth -= 1
+            body_bytes = self._wrap_with_sentinel_guard(
+                body_bytes, self.CONTINUE_SENTINEL)
 
             # Create inner lambda that takes unpacked variables as parameters
             # (lambda (x y) body)
@@ -1314,7 +1406,10 @@ class PythonTranslator:
             iterable_bytes = self.translate_expr_with_ref(node.iter)
 
             # (for-each outer_lambda iterable)
-            return create_inline_call('for_each', [outer_lambda_ref, iterable_bytes], self.bc)
+            for_each_call = create_inline_call(
+                'for_each', [outer_lambda_ref, iterable_bytes], self.bc)
+            return self._wrap_with_sentinel_guard(
+                for_each_call, self.BREAK_SENTINEL)
 
         else:
             raise NotImplementedError(f"For loop target type not supported: {type(node.target).__name__}")
@@ -1341,7 +1436,17 @@ class PythonTranslator:
         test_bytes = self.translate_expr(node.test)
 
         # Translate loop body (which may contain set! for variables)
-        body_bytes = self.translate_block(node.body)
+        self._loop_depth += 1
+        try:
+            body_bytes = self.translate_block(node.body)
+        finally:
+            self._loop_depth -= 1
+
+        # `continue` raises a sentinel that this guard swallows, so the
+        # body lambda returns #f and the recursive call below fires the
+        # next iteration.
+        body_bytes = self._wrap_with_sentinel_guard(
+            body_bytes, self.CONTINUE_SENTINEL)
 
         # Create recursive call with NO arguments (closure captures variables)
         recurse_bytes = create_inline_call(loop_name, [], self.bc)
@@ -1375,7 +1480,10 @@ class PythonTranslator:
         wrapper_lambda = encode_form_lambda(wrapper_id)
 
         # Call the wrapper lambda: ((lambda () (define loop ...) (loop)))
-        return create_inline_call_direct(wrapper_lambda, [], self.bc)
+        loop_call = create_inline_call_direct(wrapper_lambda, [], self.bc)
+        # Wrap the entire while construct so `break` exits cleanly.
+        return self._wrap_with_sentinel_guard(
+            loop_call, self.BREAK_SENTINEL)
 
     # === Exceptions ===
 
@@ -1421,6 +1529,14 @@ class PythonTranslator:
         # Handler body
         handler_bytes = self.translate_block(handler.body)
 
+        # Inside a loop, an `except:` written by the user shouldn't
+        # accidentally swallow our break/continue sentinels. Prepend a
+        # filter that re-raises if the bound exception is one of those
+        # sentinels:
+        #   (if (or (eqp exc 'break) (eqp exc 'continue)) (raise exc) <user-handler>)
+        if self._loop_depth > 0:
+            handler_bytes = self._filter_loop_sentinels(exc_var, handler_bytes)
+
         # Store body and handler as separate expressions
         body_id = self.bc.add_expression(body_bytes)
         body_ref = encode_form_ref(body_id)
@@ -1434,6 +1550,43 @@ class PythonTranslator:
             handler_ref,
             body_ref
         ], self.bc)
+
+    def _filter_loop_sentinels(self, exc_var: str,
+                               handler_bytes: bytes) -> bytes:
+        """Return `(if (or (eqp exc 'break) (eqp exc 'continue))
+                       (raise exc) <handler>)` so loop-control
+        exceptions raised inside a try-block get propagated rather
+        than absorbed by a user-written `except:` clause."""
+        break_quoted = create_inline_call(
+            'quote', [encode_symbol(self.BREAK_SENTINEL, self.bc)], self.bc)
+        cont_quoted = create_inline_call(
+            'quote', [encode_symbol(self.CONTINUE_SENTINEL, self.bc)], self.bc)
+
+        is_break = create_inline_call(
+            'eqp', [encode_symbol(exc_var, self.bc), break_quoted], self.bc)
+        is_break_id = self.bc.add_expression(is_break)
+        is_break_ref = encode_form_ref(is_break_id)
+
+        is_cont = create_inline_call(
+            'eqp', [encode_symbol(exc_var, self.bc), cont_quoted], self.bc)
+        is_cont_id = self.bc.add_expression(is_cont)
+        is_cont_ref = encode_form_ref(is_cont_id)
+
+        is_sentinel = create_inline_call(
+            'or', [is_break_ref, is_cont_ref], self.bc)
+        is_sentinel_id = self.bc.add_expression(is_sentinel)
+        is_sentinel_ref = encode_form_ref(is_sentinel_id)
+
+        rethrow = create_inline_call(
+            'raise', [encode_symbol(exc_var, self.bc)], self.bc)
+        rethrow_id = self.bc.add_expression(rethrow)
+        rethrow_ref = encode_form_ref(rethrow_id)
+
+        handler_id = self.bc.add_expression(handler_bytes)
+        handler_ref = encode_form_ref(handler_id)
+
+        return create_inline_call(
+            'if', [is_sentinel_ref, rethrow_ref, handler_ref], self.bc)
 
     def translate_import(self, node: ast.Import) -> bytes:
         """Translate `import lib` to the VM's `(import "lib")` primitive.
