@@ -84,6 +84,12 @@ class PythonTranslator:
         # twice when the construct appears more than once in a program.
         self._preamble: bytearray = bytearray()
         self._emitted_helpers: Set[str] = set()
+        # Defaults table populated by a pre-pass over the AST. Maps a
+        # function's safe name to a list whose i-th entry is either
+        # None (the i-th positional argument is required) or the
+        # already-encoded bytes of its literal default value. Used by
+        # translate_call to pad missing arguments at the call site.
+        self._function_defaults: Dict[str, List[Optional[bytes]]] = {}
 
     def is_vm_primitive(self, name: str) -> bool:
         """Check if a name conflicts with a VM primitive."""
@@ -162,6 +168,13 @@ class PythonTranslator:
         Returns:
             Compiled bytecode (to be stored in expression 0)
         """
+        # Pre-pass: validate every function/lambda signature and
+        # record positional defaults. Doing it before any per-statement
+        # translation means call sites in earlier code can resolve
+        # defaults of functions defined later, matching Python's late
+        # binding for direct calls.
+        self._collect_function_defaults(module)
+
         statements = bytearray()
 
         for stmt in module.body:
@@ -172,6 +185,91 @@ class PythonTranslator:
         # since user code may call them. They're emitted at translation
         # time and concatenated here as the program prologue.
         return bytes(self._preamble) + bytes(statements)
+
+    def _collect_function_defaults(self, node: ast.AST) -> None:
+        """Walk `node` recursively, validating every FunctionDef and
+        Lambda signature and recording literal positional defaults.
+        Errors are re-raised as PyveloxCompileError with the offending
+        function's source location."""
+        if isinstance(node, (ast.FunctionDef, ast.Lambda,
+                             ast.AsyncFunctionDef)):
+            try:
+                self._validate_function_signature(
+                    node, isinstance(node, ast.Lambda))
+            except NotImplementedError as exc:
+                raise PyveloxCompileError(
+                    str(exc),
+                    lineno=getattr(node, 'lineno', None),
+                    col_offset=getattr(node, 'col_offset', None),
+                    source_lines=self._source_lines,
+                ) from exc
+
+        # Recurse. ast.iter_child_nodes covers function body, lambda
+        # body, expression children — everything we need.
+        for child in ast.iter_child_nodes(node):
+            self._collect_function_defaults(child)
+
+    def _validate_function_signature(self, node, is_lambda: bool) -> None:
+        """Refuse vararg/kwarg/kw-only/positional-only forms; for
+        FunctionDefs also encode and record any literal defaults.
+        Raises NotImplementedError on anything we don't handle — the
+        caller wraps it with a source location."""
+        args = node.args
+        if args.vararg is not None:
+            raise NotImplementedError(
+                "*args is not yet supported in pyvelox")
+        if args.kwarg is not None:
+            raise NotImplementedError(
+                "**kwargs is not yet supported in pyvelox")
+        if args.kwonlyargs:
+            raise NotImplementedError(
+                "Keyword-only arguments (after `*`) are not yet "
+                "supported in pyvelox")
+        if getattr(args, 'posonlyargs', None):
+            raise NotImplementedError(
+                "Positional-only arguments (the `/` separator) are not "
+                "yet supported in pyvelox")
+
+        if not args.defaults:
+            return
+
+        if is_lambda:
+            raise NotImplementedError(
+                "Default arguments on `lambda` are not supported. Use "
+                "a `def` for the same signature.")
+
+        # Encode each default. Defaults align right: the last
+        # len(args.defaults) positional args are the ones with defaults.
+        n_args = len(args.args)
+        n_defaults = len(args.defaults)
+        encoded: List[Optional[bytes]] = []
+        for i in range(n_args):
+            if i < n_args - n_defaults:
+                encoded.append(None)
+                continue
+            default_node = args.defaults[i - (n_args - n_defaults)]
+            encoded.append(self._encode_literal_default(default_node))
+
+        self._function_defaults[self.get_safe_name(node.name)] = encoded
+
+    def _encode_literal_default(self, default_node: ast.expr) -> bytes:
+        """Default values must be literal constants so they can be
+        emitted at every call site without re-evaluating side effects.
+        Mutable defaults (`x=[]`) would be a footgun even if we
+        supported them, so we don't try."""
+        if not isinstance(default_node, ast.Constant):
+            raise NotImplementedError(
+                f"Default argument values must be literal constants "
+                f"(got {type(default_node).__name__}). Defaults are "
+                f"materialised at each call site, so non-literal "
+                f"defaults would re-evaluate their expression every "
+                f"time.")
+        value = default_node.value
+        if not isinstance(value, (int, str, bool)) and value is not None:
+            raise NotImplementedError(
+                f"Default argument values must be int, bool, str, or "
+                f"None (got {type(value).__name__})")
+        return self.translate_constant(default_node)
 
     @_located_dispatch
     def translate_stmt(self, stmt: ast.stmt) -> bytes:
@@ -1063,6 +1161,28 @@ class PythonTranslator:
             # ((lambda ...) ...) still inlines.
             func_bytes = self.translate_expr_with_ref(node.func)
         arg_bytes = [self.translate_expr_with_ref(arg) for arg in node.args]
+
+        # If this call names a function with recorded defaults, pad
+        # missing trailing arguments with the defaults' encoded bytes.
+        # The pre-pass restricts defaults to literals, so reusing the
+        # same bytes at every call site is safe.
+        if isinstance(node.func, ast.Name):
+            safe_fname = self.get_safe_name(node.func.id)
+            defaults = self._function_defaults.get(safe_fname)
+            if defaults is not None:
+                n_provided = len(arg_bytes)
+                n_total = len(defaults)
+                if n_provided > n_total:
+                    raise NotImplementedError(
+                        f"{node.func.id}() takes at most {n_total} "
+                        f"positional arguments but {n_provided} were given")
+                for i in range(n_provided, n_total):
+                    if defaults[i] is None:
+                        raise NotImplementedError(
+                            f"{node.func.id}() missing required "
+                            f"positional argument: "
+                            f"{node.func.id}'s parameter at index {i}")
+                    arg_bytes.append(defaults[i])
 
         # Create inline call: inline(argc) + func + args
         result = bytearray()

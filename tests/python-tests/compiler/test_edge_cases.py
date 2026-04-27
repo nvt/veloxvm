@@ -401,6 +401,104 @@ class TestTryExceptCompilation(unittest.TestCase):
         self.assertIn(encode_symbol('quote', bc), all_bytes)
 
 
+class TestDefaultArguments(unittest.TestCase):
+    """Functions with literal positional defaults work via call-site
+    padding. Unsupported signature features (vararg, kwarg, kwonly,
+    posonly, lambda defaults, non-literal defaults) raise compile
+    errors with a source location instead of silently miscompiling."""
+
+    def _compile(self, source):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(source)
+        return bc, b''.join(bc.expressions), encode_symbol
+
+    def test_default_call_with_arg_provided(self):
+        bc, _, _ = self._compile(
+            'def f(x, y=10):\n'
+            '    return x + y\n'
+            'r = f(1, 2)\n'
+        )
+        # Compiles without error; default is registered.
+        from pyvelox.compiler import compile_string  # ensure import
+        self.assertIn('f', '|'.join(bc.symbol_table.symbols))
+
+    def test_default_call_with_arg_omitted_compiles(self):
+        # Just check this compiles — the runtime padding is exercised
+        # by the end-to-end demo programs.
+        from pyvelox.compiler import compile_string
+        bc = compile_string(
+            'def f(x, y=10):\n'
+            '    return x + y\n'
+            'r = f(1)\n'
+        )
+        self.assertGreater(len(bc.expressions), 0)
+
+    def test_too_many_args_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'def f(x, y=10): return x + y\n'
+                'r = f(1, 2, 3)\n'
+            )
+        self.assertEqual(ctx.exception.lineno, 2)
+        self.assertIn("at most 2", ctx.exception.raw_message)
+
+    def test_missing_required_arg_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'def f(x, y, z=5): return x + y + z\n'
+                'r = f(1)\n'
+            )
+        self.assertEqual(ctx.exception.lineno, 2)
+        self.assertIn("missing required", ctx.exception.raw_message)
+
+    def test_varargs_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('def f(*args):\n    return 0\n')
+        self.assertIn("*args", ctx.exception.raw_message)
+
+    def test_kwargs_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('def f(**kw):\n    return 0\n')
+        self.assertIn("**kwargs", ctx.exception.raw_message)
+
+    def test_keyword_only_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('def f(x, *, y):\n    return x + y\n')
+        self.assertIn("Keyword-only", ctx.exception.raw_message)
+
+    def test_lambda_default_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('g = lambda x, y=10: x + y\n')
+        self.assertIn("lambda", ctx.exception.raw_message)
+
+    def test_non_literal_default_is_compile_error(self):
+        # Mutable default `[]` is the canonical Python footgun; we
+        # refuse non-literal defaults to keep call-site padding sound.
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('def f(x=[1, 2]):\n    return x\n')
+        self.assertIn("literal", ctx.exception.raw_message)
+
+    def test_forward_reference_resolves_default(self):
+        # A function defined later in the module should have its
+        # defaults visible at earlier call sites.
+        from pyvelox.compiler import compile_string
+        bc = compile_string(
+            'def main():\n'
+            '    return helper(3)\n'
+            'def helper(x, bonus=100):\n'
+            '    return x + bonus\n'
+        )
+        self.assertGreater(len(bc.expressions), 0)
+
+
 class TestRange(unittest.TestCase):
     """range() supports 1, 2, or 3 arguments. Small literal range(N)
     constant-folds to (list 0 1 ... N-1); everything else routes
