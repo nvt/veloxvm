@@ -516,19 +516,19 @@ class PythonTranslator:
             return parts[0]
         return create_inline_call('string_append', parts, self.bc)
 
-    def translate_list(self, node: ast.List) -> bytes:
-        """Translate a list literal: [1, 2, 3] -> (list 1 2 3). Complex elements stored separately."""
+    def translate_list(self, node) -> bytes:
+        """Translate `[1, 2, 3]` or `(1, 2, 3)` to `(list 1 2 3)`.
+
+        Tuples are represented as lists in VeloxVM (both are
+        immutable from the user's perspective), so list and tuple
+        literals share this handler. Complex elements are stored
+        separately so the inline form's argc cap doesn't bite.
+        """
         elem_bytecode = [self.translate_expr_with_ref(e) for e in node.elts]
         return create_inline_call('list', elem_bytecode, self.bc)
 
-    def translate_tuple(self, node: ast.Tuple) -> bytes:
-        """
-        Translate a tuple literal: (1, 2, 3) -> (list 1 2 3).
-        Tuples are represented as lists in VeloxVM since both are immutable.
-        Complex elements stored separately.
-        """
-        elem_bytecode = [self.translate_expr_with_ref(e) for e in node.elts]
-        return create_inline_call('list', elem_bytecode, self.bc)
+    # `(1, 2, 3)` lowers identically to `[1, 2, 3]`; alias the dispatch.
+    translate_tuple = translate_list
 
     def translate_dict(self, node: ast.Dict) -> bytes:
         """
