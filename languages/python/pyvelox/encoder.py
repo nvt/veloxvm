@@ -142,7 +142,7 @@ def encode_string(s: str, bc: Bytecode) -> bytes:
     Returns:
         2-3 byte encoding
     """
-    string_id = bc.add_string(s)
+    string_id = bc.symbol_table.add_string(s)
 
     # Header byte
     header = (VM_TOKEN_ATOM << 7) | VM_TYPE_STRING
@@ -204,7 +204,7 @@ def encode_symbol(name: str, bc: Bytecode) -> bytes:
     else:
         # Application symbol (user-defined)
         scope = VM_SYMBOL_SCOPE_APP
-        symbol_id = bc.add_symbol(name)
+        symbol_id = bc.symbol_table.add_symbol(name)
 
     # Header byte
     header = (VM_TOKEN_ATOM << 7) | VM_TYPE_SYMBOL
@@ -294,89 +294,56 @@ def encode_form_ref(expr_id: int) -> bytes:
         return bytes([0x80 | (VM_FORM_REF << 5) | high, low])
 
 
-def create_inline_call(operator: str, args: list, bc: Bytecode) -> bytes:
+def _is_inline_form_byte(arg: bytes) -> bool:
+    """True if `arg` begins with an inline-form header byte.
+
+    An inline form's header is `1<form-type=00><argc:6>`, i.e. the
+    high bit set with the form-type bits both clear. Nesting an
+    inline form inside another would produce malformed bytecode (the
+    byte loader expects the outer form's argc bytes to be argument
+    tokens, not another inline header), so callers detect this case
+    and hoist the nested form into the expression table.
     """
-    Create an inline function call: inline(argc) + operator-symbol + arg-bytes.
+    return (len(arg) > 0
+            and (arg[0] & 0x80) != 0
+            and ((arg[0] >> 5) & 0x03) == 0)
 
-    The inline form comes FIRST, then the operator, then arguments.
 
-    If any argument is an inline form, we must store it separately
-    and use a form ref to avoid nested inline forms (which creates malformed bytecode).
+def create_inline_call(operator, args: list, bc: Bytecode) -> bytes:
+    """Emit an inline call: `inline(argc) + operator + args`.
 
-    Args:
-        operator: The operator name (e.g., 'add', '+', 'if')
-        args: List of already-encoded argument bytecode
-        bc: Bytecode container
+    `operator` may be either a symbol name (str) — encoded with
+    `encode_symbol(operator, bc)` — or pre-encoded operator bytes
+    (e.g. a lambda form-ref). The latter form was historically a
+    separate `create_inline_call_direct` helper.
 
-    Returns:
-        Complete inline call bytecode
+    Any argument that is itself an inline form is hoisted into the
+    expression table and replaced by a form-ref, since nested inline
+    forms aren't representable in the bytecode.
     """
     argc = 1 + len(args)  # operator + arguments
 
     result = bytearray()
-
-    # 1. Inline form header FIRST
     result.extend(encode_inline_form(argc))
 
-    # 2. Operator symbol
-    result.extend(encode_symbol(operator, bc))
+    if isinstance(operator, str):
+        result.extend(encode_symbol(operator, bc))
+    else:
+        result.extend(operator)
 
-    # 3. Arguments - check each for inline forms to prevent nesting
     for arg in args:
-        # Check if arg is an inline form (would create nested inlines)
-        # Inline forms start with byte >= 0x80 and form_type == 0 (bits 6-5 == 00)
-        if len(arg) > 0 and (arg[0] & 0x80) and ((arg[0] >> 5) & 0x03) == 0:
-            # Arg is an inline form - store it separately and use a form ref
-            # This prevents nested inline forms which are malformed bytecode
-            arg_expr_id = bc.add_expression(arg)
-            result.extend(encode_form_ref(arg_expr_id))
+        if _is_inline_form_byte(arg):
+            result.extend(encode_form_ref(bc.add_expression(arg)))
         else:
-            # Arg is an atom, lambda, or form ref - can inline directly
             result.extend(arg)
 
     return bytes(result)
 
 
-def create_inline_call_direct(operator_bytes: bytes, args: list, bc: Bytecode = None) -> bytes:
-    """
-    Create an inline function call with pre-encoded operator bytes.
-    Used for lambda calls: inline(argc) + lambda-bytes + arg-bytes.
-
-    If any argument is an inline form and bc is provided, we must store it separately
-    and use a form ref to avoid nested inline forms (which creates malformed bytecode).
-
-    Args:
-        operator_bytes: Already-encoded operator (e.g., lambda form)
-        args: List of already-encoded argument bytecode
-        bc: Optional Bytecode container for storing nested inline forms
-
-    Returns:
-        Complete inline call bytecode
-    """
-    argc = 1 + len(args)  # operator + arguments
-
-    result = bytearray()
-
-    # 1. Inline form header FIRST
-    result.extend(encode_inline_form(argc))
-
-    # 2. Operator (already encoded)
-    result.extend(operator_bytes)
-
-    # 3. Arguments - check each for inline forms if bc is provided
-    for arg in args:
-        # Check if arg is an inline form (would create nested inlines)
-        # Only store separately if bc is provided
-        if (bc is not None and len(arg) > 0 and (arg[0] & 0x80) and
-            ((arg[0] >> 5) & 0x03) == 0):
-            # Arg is an inline form - store it separately and use a form ref
-            arg_expr_id = bc.add_expression(arg)
-            result.extend(encode_form_ref(arg_expr_id))
-        else:
-            # Arg is an atom, lambda, form ref, or bc not provided - inline directly
-            result.extend(arg)
-
-    return bytes(result)
+# Historical alias. Both flavours now share `create_inline_call`,
+# which dispatches on whether `operator` is a string or pre-encoded
+# bytes. New code should call `create_inline_call` directly.
+create_inline_call_direct = create_inline_call
 
 
 def create_bind_form(params: list, body: bytes, bc: Bytecode, is_function: bool = False) -> bytes:
@@ -411,15 +378,11 @@ def create_bind_form(params: list, body: bytes, bc: Bytecode, is_function: bool 
     for param in params:
         result.extend(encode_symbol(param, bc))
 
-    # Body handling: Check if body is an inline form (would create nested inlines)
-    # Inline forms start with byte >= 0x80 and form_type == 0 (bits 6-5 == 00)
-    if len(body) > 0 and (body[0] & 0x80) and ((body[0] >> 5) & 0x03) == 0:
-        # Body is an inline form - store it separately and use a form ref
-        # This prevents nested inline forms which are malformed bytecode
-        body_expr_id = bc.add_expression(body)
-        result.extend(encode_form_ref(body_expr_id))
+    # Body — hoist if it's a nested inline form so the outer bind
+    # remains parseable.
+    if _is_inline_form_byte(body):
+        result.extend(encode_form_ref(bc.add_expression(body)))
     else:
-        # Body is an atom, lambda, or form ref - can inline directly
         result.extend(body)
 
     return bytes(result)

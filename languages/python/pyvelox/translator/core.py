@@ -38,14 +38,16 @@ import ast
 import functools
 import sys
 from typing import Callable, Dict, List, Optional, Set
-from .bytecode import Bytecode
-from .encoder import (
+from ..bytecode import Bytecode
+from ..encoder import (
     encode_integer, encode_boolean, encode_string, encode_symbol,
-    encode_inline_form, encode_form_ref, encode_form_lambda,
-    create_inline_call, create_inline_call_direct, create_bind_form
+    encode_form_ref, encode_form_lambda,
+    create_inline_call, create_bind_form
 )
-from .errors import PyveloxCompileError
-from .primitives import get_primitive_id
+from ..errors import PyveloxCompileError
+from ..primitives import get_primitive_id
+from .builtins import _BuiltinHandlers
+from .methods import _MethodHandlers
 
 
 def _located_dispatch(method):
@@ -70,18 +72,19 @@ def _located_dispatch(method):
     return wrapper
 
 
-class PythonTranslator:
-    """
-    Translates Python AST to VeloxVM bytecode.
 
-    Handles:
-    - Literals (int, bool, str, list, dict)
-    - Variables (assignment and reference)
-    - Functions (def, lambda, calls)
-    - Control flow (if, for, while)
-    - Operators (arithmetic, comparison, logical, bitwise)
-    - Exceptions (try/except/raise)
-    - Built-in functions (print, len, etc.)
+
+class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
+    """Translate Python AST nodes to VeloxVM bytecode.
+
+    The class itself owns dispatch (`translate_stmt`, `translate_expr`),
+    scope and closure analysis (`_analyze_body`, `collect_assigned_vars`),
+    expression-table helpers (`_hoist`, `_evaluate_once`,
+    `_emit_name_load`, `_make_box_init_bytes`), the basic operators
+    and control-flow handlers, and the function/lambda/call
+    machinery. Per-built-in (`print`, `range`, `int`, ...) and
+    per-receiver method (`.append`, `.keys`, `.upper`, ...) handlers
+    live in the `_BuiltinHandlers` and `_MethodHandlers` mixins.
     """
 
     # Sentinel symbols raised by `break`/`continue` and caught by the
@@ -92,64 +95,6 @@ class PythonTranslator:
     # `except:` inside a loop body.
     BREAK_SENTINEL = '__pyvelox_break__'
     CONTINUE_SENTINEL = '__pyvelox_continue__'
-
-    # Built-in name -> handler-method-name. translate_call dispatches
-    # `name(args)` calls through this table when `name` is an
-    # ast.Name. Each handler takes (self, args: List[ast.expr]) and
-    # returns bytes. Adding a new built-in is a one-line addition
-    # plus a `translate_<name>` method below.
-    _BUILTIN_HANDLERS: Dict[str, str] = {
-        'print':     'translate_print',
-        'len':       'translate_len',
-        'range':     'translate_range',
-        'int':       'translate_int',
-        'str':       'translate_str',
-        'abs':       'translate_abs',
-        'min':       'translate_min',
-        'max':       'translate_max',
-        'sum':       'translate_sum',
-        'sorted':    'translate_sorted',
-        'reversed':  'translate_reversed',
-        'map':       'translate_map',
-        'filter':    'translate_filter',
-        'reduce':    'translate_reduce',
-        'all':       'translate_all',
-        'any':       'translate_any',
-        'list':      'translate_list_constructor',
-        'enumerate': 'translate_enumerate',
-        'zip':       'translate_zip',
-    }
-
-    # Method name -> dispatch lambda. The lambda receives
-    # (translator, receiver_expr, args) and adapts to whichever
-    # underlying handler signature the method needs (some take
-    # `args`, some don't). Adding a new method dispatch is a
-    # one-line addition.
-    _METHOD_HANDLERS: Dict[str, Callable] = {
-        # Dict methods
-        'keys':       lambda t, o, a: t.translate_dict_keys(o),
-        'values':     lambda t, o, a: t.translate_dict_values(o),
-        'items':      lambda t, o, a: t.translate_dict_items(o),
-        'get':        lambda t, o, a: t.translate_dict_get(o, a),
-        # List methods
-        'append':     lambda t, o, a: t.translate_list_append(o, a),
-        'extend':     lambda t, o, a: t.translate_list_extend(o, a),
-        'pop':        lambda t, o, a: t.translate_list_pop(o, a),
-        'remove':     lambda t, o, a: t.translate_list_remove(o, a),
-        'reverse':    lambda t, o, a: t.translate_list_reverse(o),
-        'count':      lambda t, o, a: t.translate_list_count(o, a),
-        'index':      lambda t, o, a: t.translate_list_index(o, a),
-        'insert':     lambda t, o, a: t.translate_list_insert(o, a),
-        # String methods
-        'upper':      lambda t, o, a: t.translate_string_upper(o),
-        'lower':      lambda t, o, a: t.translate_string_lower(o),
-        'split':      lambda t, o, a: t.translate_string_split(o, a),
-        'join':       lambda t, o, a: t.translate_string_join(o, a),
-        'startswith': lambda t, o, a: t.translate_string_startswith(o, a),
-        'endswith':   lambda t, o, a: t.translate_string_endswith(o, a),
-        'strip':      lambda t, o, a: t.translate_string_strip(o),
-        'replace':    lambda t, o, a: t.translate_string_replace(o, a),
-    }
 
     def __init__(self, bc: Bytecode, source_lines: Optional[List[str]] = None):
         self.bc = bc
@@ -208,17 +153,17 @@ class PythonTranslator:
 
         return name
 
-    def is_simple_expr(self, expr: ast.expr) -> bool:
-        """
-        Check if an expression is simple enough to inline.
+    def encodes_as_single_token(self, expr: ast.expr) -> bool:
+        """True if `expr` lowers to a single bytecode token (an atom
+        or a lambda form-ref) rather than an inline call.
 
-        Simple expressions:
-        - Literals (int, bool, str, None)
-        - Variable references
-        - Lambda expressions (they're already lambda forms, not expressions to evaluate)
+        Such expressions can be embedded directly as arguments to
+        other inline forms; everything else has to be hoisted into
+        the expression table and referenced by form-ref to avoid
+        nested inline forms (which the byte loader can't parse).
 
-        Complex expressions (should be stored separately):
-        - Binary operations, function calls, lists, etc.
+        Currently the qualifying shapes are `Constant` (atom),
+        `Name` (atom: symbol), and `Lambda` (lambda form-ref).
         """
         return isinstance(expr, (ast.Constant, ast.Name, ast.Lambda))
 
@@ -230,8 +175,8 @@ class PythonTranslator:
         - Inlined bytecode for simple expressions
         - Form reference for complex expressions
         """
-        if self.is_simple_expr(expr):
-            # Simple expression - inline it
+        if self.encodes_as_single_token(expr):
+            # Single-token expression — safe to embed inline.
             return self.translate_expr(expr)
         else:
             # Complex expression - store separately and return form ref
@@ -447,8 +392,6 @@ class PythonTranslator:
         else:
             raise NotImplementedError(f"Expression type not supported: {type(expr).__name__}")
 
-    # === Literals ===
-
     def translate_constant(self, node: ast.Constant) -> bytes:
         """Translate a constant literal (int, bool, str, None)."""
         value = node.value
@@ -516,19 +459,18 @@ class PythonTranslator:
             return parts[0]
         return create_inline_call('string_append', parts, self.bc)
 
-    def translate_list(self, node: ast.List) -> bytes:
-        """Translate a list literal: [1, 2, 3] -> (list 1 2 3). Complex elements stored separately."""
+    def translate_list(self, node) -> bytes:
+        """Translate `[1, 2, 3]` or `(1, 2, 3)` to `(list 1 2 3)`.
+
+        Tuples are represented as lists in VeloxVM (both are
+        immutable from the user's perspective), so list and tuple
+        literals share this handler. Complex elements are stored
+        separately so the inline form's argc cap doesn't bite.
+        """
         elem_bytecode = [self.translate_expr_with_ref(e) for e in node.elts]
         return create_inline_call('list', elem_bytecode, self.bc)
 
-    def translate_tuple(self, node: ast.Tuple) -> bytes:
-        """
-        Translate a tuple literal: (1, 2, 3) -> (list 1 2 3).
-        Tuples are represented as lists in VeloxVM since both are immutable.
-        Complex elements stored separately.
-        """
-        elem_bytecode = [self.translate_expr_with_ref(e) for e in node.elts]
-        return create_inline_call('list', elem_bytecode, self.bc)
+    translate_tuple = translate_list
 
     def translate_dict(self, node: ast.Dict) -> bytes:
         """
@@ -545,13 +487,10 @@ class PythonTranslator:
             # Create (cons key value)
             pair_bytes = create_inline_call('cons', [key_bytes, val_bytes], self.bc)
             # Store each cons pair separately
-            pair_id = self.bc.add_expression(pair_bytes)
-            pairs.append(encode_form_ref(pair_id))
+            pairs.append(self._hoist(pair_bytes))
 
         # Wrap in (list pair1 pair2 ...)
         return create_inline_call('list', pairs, self.bc)
-
-    # === Variables ===
 
     def translate_name(self, node: ast.Name) -> bytes:
         """Translate a variable reference."""
@@ -671,8 +610,7 @@ class PythonTranslator:
         result_bytes = create_inline_call(op, [var_bytes, value_bytes], self.bc)
 
         # Store the operation separately and reference it
-        result_id = self.bc.add_expression(result_bytes)
-        result_ref = encode_form_ref(result_id)
+        result_ref = self._hoist(result_bytes)
 
         # (set! var result) or (box-set! var result) when boxed.
         write_op = 'box_set' if self._is_boxed(safe_name) else 'set'
@@ -680,58 +618,97 @@ class PythonTranslator:
                                   [encode_symbol(safe_name, self.bc), result_ref],
                                   self.bc)
 
-    # === Functions ===
+    def _analyze_body(self,
+                      body_stmts: List[ast.stmt],
+                      local_names: Set[str],
+                      outer_env: Set[str]) -> "tuple[List[str], Set[str]]":
+        """One AST walk that returns everything `translate_function_def`
+        and `translate_lambda` need about their body's free-variable
+        and binding behaviour:
 
-    def _compute_captures(self,
-                          body_stmts: List[ast.stmt],
-                          local_names: Set[str],
-                          outer_env: Set[str]) -> List[str]:
-        """
-        Compute the captures for a function or lambda body.
+        - **captures** — free references (Load of a name not bound in
+          this function), filtered to names that exist in `outer_env`
+          and ordered by first reference. Top-level globals are
+          excluded by leaving them out of `outer_env`, so they resolve
+          via program-wide symbol bindings rather than as captures.
 
-        A captured name is one that is referenced (Load context) inside
-        body_stmts -- including nested functions/lambdas whose own binders
-        don't shadow it -- but is not bound by this function's params or
-        local assignments, and is bound in some enclosing function (outer_env).
+        - **needs_box** — the subset of `local_names` that has to live
+          in a heap-allocated box: captured by some nested closure
+          AND mutated somewhere. Pure value captures and mutated-but-
+          uncaptured locals are fine as plain bindings; only the
+          intersection has the alias-sharing problem.
 
-        Top-level globals are deliberately excluded from outer_env at the
-        call site, so they resolve through the program-wide symbol bindings
-        rather than being captured.
-
-        Returns a deduplicated list of safe names in first-reference order.
+        Folds three walkers into one. The bookkeeping splits into
+        `bound` (all bindings visible at the current point, used to
+        detect free names) and `inner_local` (bindings introduced
+        AFTER entering a nested function, used to detect shadowing of
+        our locals from inside a nested closure).
         """
         free: List[str] = []
         seen: Set[str] = set()
+        captured_by_inner: Set[str] = set()
+        mutated: Set[str] = set()
 
-        def walk(node, bound: Set[str]):
+        def record_target(target, inner_local: Set[str]) -> None:
+            if isinstance(target, ast.Name):
+                safe = self.get_safe_name(target.id)
+                if safe in local_names and safe not in inner_local:
+                    mutated.add(safe)
+            elif isinstance(target, ast.Tuple):
+                for elt in target.elts:
+                    record_target(elt, inner_local)
+
+        def walk(node, bound: Set[str], inside: bool,
+                 inner_local: Set[str]) -> None:
             if isinstance(node, ast.Name):
                 if isinstance(node.ctx, ast.Load):
                     safe = self.get_safe_name(node.id)
                     if safe not in bound and safe not in seen:
                         seen.add(safe)
                         free.append(safe)
+                    if (inside and safe in local_names
+                            and safe not in inner_local):
+                        captured_by_inner.add(safe)
+                return
+
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    record_target(t, inner_local)
+                walk(node.value, bound, inside, inner_local)
+                return
+            if isinstance(node, ast.AugAssign):
+                record_target(node.target, inner_local)
+                walk(node.value, bound, inside, inner_local)
                 return
 
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                inner_params = {self.get_safe_name(a.arg) for a in node.args.args}
+                inner_params = {self.get_safe_name(a.arg)
+                                for a in node.args.args}
                 inner_locals = self.collect_assigned_vars(node.body)
-                inner_bound = bound | inner_params | inner_locals
+                new_bound = bound | inner_params | inner_locals
+                new_inner_local = inner_local | inner_params | inner_locals
                 for stmt in node.body:
-                    walk(stmt, inner_bound)
+                    walk(stmt, new_bound, True, new_inner_local)
                 return
 
             if isinstance(node, ast.Lambda):
-                inner_params = {self.get_safe_name(a.arg) for a in node.args.args}
-                walk(node.body, bound | inner_params)
+                inner_params = {self.get_safe_name(a.arg)
+                                for a in node.args.args}
+                walk(node.body,
+                     bound | inner_params,
+                     True,
+                     inner_local | inner_params)
                 return
 
             for child in ast.iter_child_nodes(node):
-                walk(child, bound)
+                walk(child, bound, inside, inner_local)
 
         for stmt in body_stmts:
-            walk(stmt, local_names)
+            walk(stmt, local_names, False, set())
 
-        return [n for n in free if n in outer_env]
+        captures = [n for n in free if n in outer_env]
+        needs_box = captured_by_inner & mutated
+        return captures, needs_box
 
     def _is_boxed(self, safe_name: str) -> bool:
         """
@@ -756,6 +733,41 @@ class PythonTranslator:
                 'box_ref', [encode_symbol(safe_name, self.bc)], self.bc)
         return encode_symbol(safe_name, self.bc)
 
+    def _hoist(self, call_bytes: bytes) -> bytes:
+        """Stash `call_bytes` in the expression table and return the
+        form-ref that references it. Used wherever a complex inline
+        form has to appear in a context that only accepts a single
+        token (an `if` branch, a nested-form argument, etc.).
+        """
+        return encode_form_ref(self.bc.add_expression(call_bytes))
+
+    def _evaluate_once(self, arg_node: ast.expr,
+                       build: Callable[[bytes], bytes]) -> bytes:
+        """Evaluate `arg_node` exactly once, then run the bytecode
+        produced by `build(arg_token)`.
+
+        For single-token args (Constant, Name, Lambda) the value
+        token has no side effects on re-read, so we hand it straight
+        to `build`. For everything else — function calls, arithmetic,
+        comprehensions, etc. — we wrap in `((lambda (_t) <build(_t)>)
+        <arg>)` so the argument's side effects fire once and `_t` is
+        a plain symbol thereafter.
+
+        Used by handlers that emit a runtime type-dispatch
+        (`int`, `str`, `abs`, ...) where the dispatch references the
+        argument from multiple branches.
+        """
+        if self.encodes_as_single_token(arg_node):
+            return build(self.translate_expr(arg_node))
+
+        arg_bytes = self.translate_expr_with_ref(arg_node)
+        temp_name = self.bc.get_unique_var_name("_t")
+        temp_token = encode_symbol(temp_name, self.bc)
+        body_bytes = build(temp_token)
+        bind_bytes = create_bind_form([temp_name], body_bytes, self.bc)
+        lambda_ref = encode_form_lambda(self.bc.add_expression(bind_bytes))
+        return create_inline_call(lambda_ref, [arg_bytes], self.bc)
+
     def _make_box_init_bytes(self, safe_name: str) -> bytes:
         """
         Emit (set! name (box name)) -- the function-entry wrap that replaces
@@ -771,112 +783,6 @@ class PythonTranslator:
         return create_inline_call('set',
                                   [encode_symbol(safe_name, self.bc), box_call],
                                   self.bc)
-
-    def _params_captured_by_inner(self,
-                                  body_stmts: List[ast.stmt],
-                                  owned_names: Set[str]) -> Set[str]:
-        """
-        Names from owned_names that are referenced (Load) inside any nested
-        function or lambda whose binders don't shadow them. These are the
-        names that an inner closure would capture from this function.
-        """
-        hits: Set[str] = set()
-
-        def walk(node, inside: bool, local: Set[str]):
-            if isinstance(node, ast.Name):
-                if isinstance(node.ctx, ast.Load):
-                    safe = self.get_safe_name(node.id)
-                    if inside and safe in owned_names and safe not in local:
-                        hits.add(safe)
-                return
-
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                inner_params = {self.get_safe_name(a.arg) for a in node.args.args}
-                inner_locals = self.collect_assigned_vars(node.body)
-                inner_local = local | inner_params | inner_locals
-                for stmt in node.body:
-                    walk(stmt, True, inner_local)
-                return
-
-            if isinstance(node, ast.Lambda):
-                inner_params = {self.get_safe_name(a.arg) for a in node.args.args}
-                walk(node.body, True, local | inner_params)
-                return
-
-            for child in ast.iter_child_nodes(node):
-                walk(child, inside, local)
-
-        for stmt in body_stmts:
-            walk(stmt, False, set())
-
-        return hits
-
-    def _params_mutated_in(self,
-                           body_stmts: List[ast.stmt],
-                           owned_names: Set[str]) -> Set[str]:
-        """
-        Names from owned_names that are the target of an assignment somewhere
-        in body_stmts, where intermediate binders don't rebind the name. A
-        name declared `nonlocal` inside a nested function does NOT rebind it
-        (collect_assigned_vars subtracts nonlocal declarations), so writes
-        through that nested function count as mutations of the outer name.
-        """
-        hits: Set[str] = set()
-
-        def record_target(t, local: Set[str]):
-            if isinstance(t, ast.Name):
-                safe = self.get_safe_name(t.id)
-                if safe in owned_names and safe not in local:
-                    hits.add(safe)
-            elif isinstance(t, ast.Tuple):
-                for elt in t.elts:
-                    record_target(elt, local)
-
-        def walk(node, local: Set[str]):
-            if isinstance(node, ast.Assign):
-                for t in node.targets:
-                    record_target(t, local)
-                walk(node.value, local)
-                return
-            if isinstance(node, ast.AugAssign):
-                record_target(node.target, local)
-                walk(node.value, local)
-                return
-
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                inner_params = {self.get_safe_name(a.arg) for a in node.args.args}
-                inner_locals = self.collect_assigned_vars(node.body)
-                inner_local = local | inner_params | inner_locals
-                for stmt in node.body:
-                    walk(stmt, inner_local)
-                return
-
-            if isinstance(node, ast.Lambda):
-                inner_params = {self.get_safe_name(a.arg) for a in node.args.args}
-                walk(node.body, local | inner_params)
-                return
-
-            for child in ast.iter_child_nodes(node):
-                walk(child, local)
-
-        for stmt in body_stmts:
-            walk(stmt, set())
-
-        return hits
-
-    def _params_needing_box(self,
-                            body_stmts: List[ast.stmt],
-                            owned_names: Set[str]) -> Set[str]:
-        """
-        Subset of owned_names that need to live in heap-allocated boxes:
-        captured by an inner function AND mutated somewhere. A captured-only
-        name is fine as a value capture; a mutated-but-not-captured name is
-        fine as a plain local. Only the intersection has the alias-sharing
-        problem (writes through one path must be visible through all).
-        """
-        captured = self._params_captured_by_inner(body_stmts, owned_names)
-        mutated = self._params_mutated_in(body_stmts, owned_names)
-        return captured & mutated
 
     def collect_assigned_vars(self, stmts: List[ast.stmt]) -> Set[str]:
         """
@@ -984,13 +890,13 @@ class PythonTranslator:
         is_nested = len(self.scope_stack) > 1
         outer_env: Set[str] = set().union(*self.scope_stack[1:]) \
             if is_nested else set()
-        captures = self._compute_captures(node.body, local_set, outer_env)
-
-        # Box analysis: which params/locals must live in shared boxes because
-        # they are both captured by an inner function AND mutated. Computed
-        # before we push scope/box state so it sees only THIS function's
+        # Single AST walk that returns both the body's free-variable
+        # captures and the locals that must live in heap boxes
+        # (captured by an inner closure AND mutated). Computed before
+        # we push scope/box state so it sees only THIS function's
         # body shape.
-        boxed_names = self._params_needing_box(node.body, local_set)
+        captures, boxed_names = self._analyze_body(
+            node.body, local_set, outer_env)
 
         # Push a new scope for the function body
         # Include both params AND local vars so they're all treated as "already defined"
@@ -1023,7 +929,7 @@ class PythonTranslator:
 
             # Record captured-symbol IDs for the runtime closure machinery.
             if captures:
-                capture_ids = [self.bc.add_symbol(name) for name in captures]
+                capture_ids = [self.bc.symbol_table.add_symbol(name) for name in captures]
                 self.bc.record_captures(expr_id, capture_ids)
 
             # Create lambda reference
@@ -1056,22 +962,16 @@ class PythonTranslator:
         params = [arg.arg for arg in node.args.args]
         safe_params = [self.get_safe_name(p) for p in params]
 
-        # Free-variable analysis. Lambda bodies are single expressions but may
-        # still close over enclosing-function locals (the most common case).
+        # Free-variable + box analysis in one pass. Lambda bodies are
+        # single expressions but can still close over enclosing
+        # locals; their own params can still be captured + mutated by
+        # an inner closure that uses nonlocal. _analyze_body expects a
+        # statement list, so wrap the body in an Expr.
         local_set = set(safe_params)
         outer_env: Set[str] = set().union(*self.scope_stack[1:]) \
             if len(self.scope_stack) > 1 else set()
-        # _compute_captures expects a list of statements; wrap the lambda body
-        # in an Expr statement so the same analyzer applies.
-        captures = self._compute_captures(
+        captures, boxed_names = self._analyze_body(
             [ast.Expr(value=node.body)], local_set, outer_env)
-
-        # A lambda's body is a single expression, so the only assignments it
-        # can contribute are inside nested functions/lambdas. Its own params
-        # could still be captured + mutated by an inner closure that uses
-        # nonlocal -- so the box analysis still applies.
-        boxed_names = self._params_needing_box(
-            [ast.Expr(value=node.body)], local_set)
 
         # Lambdas don't currently hoist locals, so the new scope is just the
         # parameters. Pushing it makes inner lambdas/defs see them as outer.
@@ -1096,7 +996,7 @@ class PythonTranslator:
             expr_id = self.bc.add_expression(bind_bytes)
 
             if captures:
-                capture_ids = [self.bc.add_symbol(name) for name in captures]
+                capture_ids = [self.bc.symbol_table.add_symbol(name) for name in captures]
                 self.bc.record_captures(expr_id, capture_ids)
 
             # Return lambda reference
@@ -1107,14 +1007,11 @@ class PythonTranslator:
             self._loop_depth = saved_loop_depth
 
     def translate_return(self, node: ast.Return) -> bytes:
-        """
-        Translate return statement using the VM's return primitive (now fixed!).
+        """Translate `return value` to `(return value)`.
 
-        The VM's return primitive has been fixed to distinguish between bind_function
-        frames (actual functions) and regular bind frames (control flow like while loops).
-        It now properly unwinds the stack back to the nearest bind_function frame.
-
-        return value  ->  (return value)
+        The VM's `return` primitive distinguishes `bind_function` frames
+        (actual functions) from regular `bind` frames (while loops,
+        let-expansion), so it unwinds to the nearest enclosing function.
         """
         if node.value:
             value_bytes = self.translate_expr_with_ref(node.value)
@@ -1135,76 +1032,69 @@ class PythonTranslator:
              `_BUILTIN_HANDLERS`.
           3. Otherwise, generic call: emit `(callee args...)`.
         """
+        # Special-case 1: known method calls.
         if isinstance(node.func, ast.Attribute):
             handler = self._METHOD_HANDLERS.get(node.func.attr)
             if handler is not None:
                 return handler(self, node.func.value, node.args)
-            # Unknown method: fall through to the generic call path.
 
+        # Resolve a Name callee once. callee_name is the source-level
+        # name (or None for compound callees); func_bytes is the
+        # encoded operator to emit.
         if isinstance(node.func, ast.Name):
-            handler_name = self._BUILTIN_HANDLERS.get(node.func.id)
+            callee_name = node.func.id
+            # Special-case 2: known built-ins.
+            handler_name = self._BUILTIN_HANDLERS.get(callee_name)
             if handler_name is not None:
                 return getattr(self, handler_name)(node.args)
-
-        # Regular function call. Resolve the callee carefully: when a
-        # user binding shadows a primitive (tracked in renamed_vars by
-        # get_safe_name), call the user's py_-prefixed function;
-        # otherwise, if the name matches a primitive, emit the
-        # primitive ID directly instead of going through the variable
-        # path (which would rename thread_sleep -> py_thread_sleep and
-        # produce an unbound app symbol).
-        if isinstance(node.func, ast.Name):
-            fname = node.func.id
-            if fname in self.renamed_vars:
-                func_bytes = encode_symbol(self.renamed_vars[fname], self.bc)
-            elif self.is_vm_primitive(fname):
-                func_bytes = encode_symbol(fname, self.bc)
+            # Resolve the callee carefully: when a user binding shadows
+            # a primitive (tracked in renamed_vars by get_safe_name),
+            # call the user's py_-prefixed function; otherwise, if the
+            # name matches a primitive, emit the primitive ID directly
+            # instead of going through the variable path (which would
+            # rename thread_sleep -> py_thread_sleep and produce an
+            # unbound app symbol).
+            if callee_name in self.renamed_vars:
+                func_bytes = encode_symbol(self.renamed_vars[callee_name], self.bc)
+            elif self.is_vm_primitive(callee_name):
+                func_bytes = encode_symbol(callee_name, self.bc)
             else:
                 func_bytes = self.translate_expr(node.func)
         else:
-            # Compound operator (e.g. ((f x) y), or (obj.method() ...)). Lift
-            # it into a form-ref so the runtime sees a single token. Inlining
-            # a nested call here would corrupt byte parsing -- the byte
-            # loader advances past only the inline header, leaving the inner
-            # body to be misread as the outer call's arguments. is_simple_expr
-            # exempts ast.Lambda (a single lambda-form token), so a literal
-            # ((lambda ...) ...) still inlines.
+            # Compound callee (e.g. ((f x) y), or (obj.method() ...)).
+            # Lift to a form-ref so the runtime sees a single token —
+            # inlining would corrupt byte parsing. encodes_as_single_token
+            # exempts ast.Lambda, so a literal ((lambda ...) ...) still
+            # inlines.
+            callee_name = None
             func_bytes = self.translate_expr_with_ref(node.func)
+
         arg_bytes = [self.translate_expr_with_ref(arg) for arg in node.args]
 
         # If this call names a function with recorded defaults, pad
         # missing trailing arguments with the defaults' encoded bytes.
         # The pre-pass restricts defaults to literals, so reusing the
         # same bytes at every call site is safe.
-        if isinstance(node.func, ast.Name):
-            safe_fname = self.get_safe_name(node.func.id)
-            defaults = self._function_defaults.get(safe_fname)
+        if callee_name is not None:
+            defaults = self._function_defaults.get(self.get_safe_name(callee_name))
             if defaults is not None:
                 n_provided = len(arg_bytes)
                 n_total = len(defaults)
                 if n_provided > n_total:
                     raise NotImplementedError(
-                        f"{node.func.id}() takes at most {n_total} "
+                        f"{callee_name}() takes at most {n_total} "
                         f"positional arguments but {n_provided} were given")
                 for i in range(n_provided, n_total):
                     if defaults[i] is None:
                         raise NotImplementedError(
-                            f"{node.func.id}() missing required "
-                            f"positional argument: "
-                            f"{node.func.id}'s parameter at index {i}")
+                            f"{callee_name}() missing required "
+                            f"positional argument at index {i}")
                     arg_bytes.append(defaults[i])
 
-        # Create inline call: inline(argc) + func + args
-        result = bytearray()
-        argc = 1 + len(arg_bytes)
-        result.extend(encode_inline_form(argc))
-        result.extend(func_bytes)
-        for arg in arg_bytes:
-            result.extend(arg)
-
-        return bytes(result)
-
-    # === Operators ===
+        # Emit (callee args...). create_inline_call accepts pre-encoded
+        # operator bytes and handles the nested-inline-form auto-hoist
+        # for arguments — no need to open-code the form construction.
+        return create_inline_call(func_bytes, arg_bytes, self.bc)
 
     def translate_binop(self, node: ast.BinOp) -> bytes:
         """
@@ -1252,10 +1142,10 @@ class PythonTranslator:
         if isinstance(node.op, ast.RShift):
             # Right shift: negate the shift amount
             right_expr_bytes = self.translate_expr_with_ref(node.right)
-            right_bytes = create_inline_call('subtract', [encode_integer(0), right_expr_bytes], self.bc)
-            # Store the negation separately
-            negate_id = self.bc.add_expression(right_bytes)
-            right_bytes = encode_form_ref(negate_id)
+            right_bytes = self._hoist(
+                create_inline_call('subtract',
+                                   [encode_integer(0), right_expr_bytes],
+                                   self.bc))
         else:
             right_bytes = self.translate_expr_with_ref(node.right)
 
@@ -1292,8 +1182,7 @@ class PythonTranslator:
         eq_call = create_inline_call('equalp', [left_bytes, right_bytes], self.bc)
         if not negate:
             return eq_call
-        eq_id = self.bc.add_expression(eq_call)
-        return create_inline_call('not', [encode_form_ref(eq_id)], self.bc)
+        return create_inline_call('not', [self._hoist(eq_call)], self.bc)
 
     def translate_compare(self, node: ast.Compare) -> bytes:
         """
@@ -1328,15 +1217,13 @@ class PythonTranslator:
                 if is_dict_literal:
                     # key in dict-literal -> (if (assoc key dict) #t #f)
                     assoc_call = create_inline_call('assoc', [left_bytes, right_bytes], self.bc)
-                    assoc_id = self.bc.add_expression(assoc_call)
-                    assoc_ref = encode_form_ref(assoc_id)
+                    assoc_ref = self._hoist(assoc_call)
                     return create_inline_call('if', [assoc_ref, encode_boolean(True), encode_boolean(False)], self.bc)
                 else:
                     # x in container -> (if (member x container) #t #f)
                     # Note: For dict variables, use d.get(key) is not None instead
                     member_call = create_inline_call('member', [left_bytes, right_bytes], self.bc)
-                    member_id = self.bc.add_expression(member_call)
-                    member_ref = encode_form_ref(member_id)
+                    member_ref = self._hoist(member_call)
                     return create_inline_call('if', [member_ref, encode_boolean(True), encode_boolean(False)], self.bc)
 
             elif op_type == ast.NotIn:
@@ -1349,14 +1236,12 @@ class PythonTranslator:
                 if is_dict_literal:
                     # key not in dict-literal -> (not (assoc key dict))
                     assoc_call = create_inline_call('assoc', [left_bytes, right_bytes], self.bc)
-                    assoc_id = self.bc.add_expression(assoc_call)
-                    assoc_ref = encode_form_ref(assoc_id)
+                    assoc_ref = self._hoist(assoc_call)
                     return create_inline_call('not', [assoc_ref], self.bc)
                 else:
                     # x not in container -> (not (member x container))
                     member_call = create_inline_call('member', [left_bytes, right_bytes], self.bc)
-                    member_id = self.bc.add_expression(member_call)
-                    member_ref = encode_form_ref(member_id)
+                    member_ref = self._hoist(member_call)
                     return create_inline_call('not', [member_ref], self.bc)
 
             left_bytes = self.translate_expr_with_ref(node.left)
@@ -1393,8 +1278,7 @@ class PythonTranslator:
                     comp_bytes = create_inline_call(op, [left_bytes, right_bytes], self.bc)
 
                 # Store each comparison separately
-                comp_id = self.bc.add_expression(comp_bytes)
-                comparisons.append(encode_form_ref(comp_id))
+                comparisons.append(self._hoist(comp_bytes))
                 left = right
 
             # (and comp1 comp2 ...)
@@ -1414,8 +1298,6 @@ class PythonTranslator:
         value_bytes = [self.translate_expr_with_ref(v) for v in node.values]
         return create_inline_call(op, value_bytes, self.bc)
 
-    # === Control Flow ===
-
     def translate_if_stmt(self, node: ast.If) -> bytes:
         """
         Translate if statement: if test: body else: alt -> (if test body alt).
@@ -1425,14 +1307,12 @@ class PythonTranslator:
         body_bytes = self.translate_block(node.body)
 
         # Store body as separate expression
-        body_id = self.bc.add_expression(body_bytes)
-        body_ref = encode_form_ref(body_id)
+        body_ref = self._hoist(body_bytes)
 
         if node.orelse:
             alt_bytes = self.translate_block(node.orelse)
             # Store alt as separate expression
-            alt_id = self.bc.add_expression(alt_bytes)
-            alt_ref = encode_form_ref(alt_id)
+            alt_ref = self._hoist(alt_bytes)
         else:
             alt_ref = encode_boolean(False)
 
@@ -1471,21 +1351,17 @@ class PythonTranslator:
             'eqp',
             [encode_symbol(exc_name, self.bc), sentinel_quoted],
             self.bc)
-        eq_id = self.bc.add_expression(eq_check)
-        eq_ref = encode_form_ref(eq_id)
+        eq_ref = self._hoist(eq_check)
 
         rethrow = create_inline_call(
             'raise', [encode_symbol(exc_name, self.bc)], self.bc)
-        rethrow_id = self.bc.add_expression(rethrow)
-        rethrow_ref = encode_form_ref(rethrow_id)
+        rethrow_ref = self._hoist(rethrow)
 
         handler = create_inline_call(
             'if', [eq_ref, encode_boolean(False), rethrow_ref], self.bc)
-        handler_id = self.bc.add_expression(handler)
-        handler_ref = encode_form_ref(handler_id)
+        handler_ref = self._hoist(handler)
 
-        body_id = self.bc.add_expression(body_bytes)
-        body_ref = encode_form_ref(body_id)
+        body_ref = self._hoist(body_bytes)
 
         return create_inline_call(
             'guard',
@@ -1518,8 +1394,7 @@ class PythonTranslator:
                 body_bytes, self.CONTINUE_SENTINEL)
 
             # Store body as separate expression
-            body_id = self.bc.add_expression(body_bytes)
-            body_ref = encode_form_ref(body_id)
+            body_ref = self._hoist(body_bytes)
 
             # Create lambda for loop body with body reference
             bind_bytes = create_bind_form([safe_param], body_ref, self.bc)
@@ -1581,9 +1456,8 @@ class PythonTranslator:
 
             # Call inner lambda with list-ref expressions
             # (inner_lambda (list-ref item 0) (list-ref item 1))
-            inner_call = create_inline_call_direct(inner_lambda_ref, list_ref_calls, self.bc)
-            inner_call_id = self.bc.add_expression(inner_call)
-            inner_call_ref = encode_form_ref(inner_call_id)
+            inner_call = create_inline_call(inner_lambda_ref, list_ref_calls, self.bc)
+            inner_call_ref = self._hoist(inner_call)
 
             # Create outer lambda: (lambda (item) inner_call_ref)
             outer_lambda_bytes = create_bind_form([item_param], inner_call_ref, self.bc)
@@ -1668,12 +1542,10 @@ class PythonTranslator:
         wrapper_lambda = encode_form_lambda(wrapper_id)
 
         # Call the wrapper lambda: ((lambda () (define loop ...) (loop)))
-        loop_call = create_inline_call_direct(wrapper_lambda, [], self.bc)
+        loop_call = create_inline_call(wrapper_lambda, [], self.bc)
         # Wrap the entire while construct so `break` exits cleanly.
         return self._wrap_with_sentinel_guard(
             loop_call, self.BREAK_SENTINEL)
-
-    # === Exceptions ===
 
     def translate_try(self, node: ast.Try) -> bytes:
         """
@@ -1726,11 +1598,9 @@ class PythonTranslator:
             handler_bytes = self._filter_loop_sentinels(exc_var, handler_bytes)
 
         # Store body and handler as separate expressions
-        body_id = self.bc.add_expression(body_bytes)
-        body_ref = encode_form_ref(body_id)
+        body_ref = self._hoist(body_bytes)
 
-        handler_id = self.bc.add_expression(handler_bytes)
-        handler_ref = encode_form_ref(handler_id)
+        handler_ref = self._hoist(handler_bytes)
 
         # (guard exc_var handler body) — guard's min/max argc is 3.
         return create_inline_call('guard', [
@@ -1752,26 +1622,21 @@ class PythonTranslator:
 
         is_break = create_inline_call(
             'eqp', [encode_symbol(exc_var, self.bc), break_quoted], self.bc)
-        is_break_id = self.bc.add_expression(is_break)
-        is_break_ref = encode_form_ref(is_break_id)
+        is_break_ref = self._hoist(is_break)
 
         is_cont = create_inline_call(
             'eqp', [encode_symbol(exc_var, self.bc), cont_quoted], self.bc)
-        is_cont_id = self.bc.add_expression(is_cont)
-        is_cont_ref = encode_form_ref(is_cont_id)
+        is_cont_ref = self._hoist(is_cont)
 
         is_sentinel = create_inline_call(
             'or', [is_break_ref, is_cont_ref], self.bc)
-        is_sentinel_id = self.bc.add_expression(is_sentinel)
-        is_sentinel_ref = encode_form_ref(is_sentinel_id)
+        is_sentinel_ref = self._hoist(is_sentinel)
 
         rethrow = create_inline_call(
             'raise', [encode_symbol(exc_var, self.bc)], self.bc)
-        rethrow_id = self.bc.add_expression(rethrow)
-        rethrow_ref = encode_form_ref(rethrow_id)
+        rethrow_ref = self._hoist(rethrow)
 
-        handler_id = self.bc.add_expression(handler_bytes)
-        handler_ref = encode_form_ref(handler_id)
+        handler_ref = self._hoist(handler_bytes)
 
         return create_inline_call(
             'if', [is_sentinel_ref, rethrow_ref, handler_ref], self.bc)
@@ -1817,8 +1682,6 @@ class PythonTranslator:
             'quote', [encode_symbol(exc_name, self.bc)], self.bc)
         return create_inline_call('raise', [exc_bytes], self.bc)
 
-    # === Subscripting ===
-
     def translate_subscript(self, node: ast.Subscript) -> bytes:
         """
         Translate subscripting:
@@ -1844,8 +1707,7 @@ class PythonTranslator:
             # Dict access: (cdr (assoc key dict))
             assoc_bytes = create_inline_call('assoc', [index_bytes, value_bytes], self.bc)
             # Store assoc call separately
-            assoc_id = self.bc.add_expression(assoc_bytes)
-            assoc_ref = encode_form_ref(assoc_id)
+            assoc_ref = self._hoist(assoc_bytes)
             # Get the value from the pair with cdr
             return create_inline_call('cdr', [assoc_ref], self.bc)
         else:
@@ -1894,8 +1756,7 @@ class PythonTranslator:
                 # lst[start:] -> (slice lst start (length lst))
                 # s[start:] -> (slice s start (length s))
                 length_call = create_inline_call('length', [value_bytes], self.bc)
-                length_id = self.bc.add_expression(length_call)
-                length_ref = encode_form_ref(length_id)
+                length_ref = self._hoist(length_call)
 
                 return create_inline_call('slice', [value_bytes, start_bytes, length_ref], self.bc)
             else:
@@ -1909,8 +1770,6 @@ class PythonTranslator:
             # This handles negative indices and works for lists, strings, and vectors
             return create_inline_call('slice', [value_bytes, start_bytes, end_bytes], self.bc)
 
-    # === Attribute Access ===
-
     def translate_attribute(self, node: ast.Attribute) -> bytes:
         """
         Translate attribute access: obj.attr
@@ -1919,1254 +1778,7 @@ class PythonTranslator:
         """
         raise NotImplementedError(f"Attribute access '{node.attr}' not supported in this context")
 
-    # === Dict Methods ===
-
-    def translate_dict_keys(self, dict_expr: ast.expr) -> bytes:
-        """
-        Translate d.keys() -> (map car d)
-        Extract all keys (first elements of pairs).
-        """
-        dict_bytes = self.translate_expr_with_ref(dict_expr)
-
-        # Create lambda (p) (car p) to extract keys
-        car_call = create_inline_call('car', [encode_symbol('p', self.bc)], self.bc)
-        lambda_bind = create_bind_form(['p'], car_call, self.bc)
-        lambda_id = self.bc.add_expression(lambda_bind)
-        lambda_bytes = encode_form_lambda(lambda_id)
-
-        # (map (lambda (p) (car p)) dict)
-        return create_inline_call('map', [lambda_bytes, dict_bytes], self.bc)
-
-    def translate_dict_values(self, dict_expr: ast.expr) -> bytes:
-        """
-        Translate d.values() -> (map cdr d)
-        Extract all values (second elements of pairs).
-        """
-        dict_bytes = self.translate_expr_with_ref(dict_expr)
-
-        # Create lambda (p) (cdr p) to extract values
-        cdr_call = create_inline_call('cdr', [encode_symbol('p', self.bc)], self.bc)
-        lambda_bind = create_bind_form(['p'], cdr_call, self.bc)
-        lambda_id = self.bc.add_expression(lambda_bind)
-        lambda_bytes = encode_form_lambda(lambda_id)
-
-        # (map (lambda (p) (cdr p)) dict)
-        return create_inline_call('map', [lambda_bytes, dict_bytes], self.bc)
-
-    def translate_dict_items(self, dict_expr: ast.expr) -> bytes:
-        """
-        Translate d.items() -> d
-        The dict is already a list of pairs, which is what items() returns.
-        """
-        return self.translate_expr_with_ref(dict_expr)
-
-    def translate_dict_get(self, dict_expr: ast.expr, args: List[ast.expr]) -> bytes:
-        """
-        Translate d.get(key) or d.get(key, default)
-        -> (let ((pair (assoc key d)))
-             (if pair (cdr pair) default))
-
-        If no default provided, use #f (False).
-        """
-        if len(args) < 1 or len(args) > 2:
-            raise ValueError("dict.get() takes 1 or 2 arguments")
-
-        dict_bytes = self.translate_expr_with_ref(dict_expr)
-        key_bytes = self.translate_expr_with_ref(args[0])
-
-        if len(args) == 2:
-            default_bytes = self.translate_expr_with_ref(args[1])
-        else:
-            default_bytes = encode_boolean(False)
-
-        # (assoc key dict)
-        assoc_bytes = create_inline_call('assoc', [key_bytes, dict_bytes], self.bc)
-        assoc_id = self.bc.add_expression(assoc_bytes)
-        assoc_ref = encode_form_ref(assoc_id)
-
-        # (cdr pair) for the true branch
-        cdr_bytes = create_inline_call('cdr', [assoc_ref], self.bc)
-        cdr_id = self.bc.add_expression(cdr_bytes)
-        cdr_ref = encode_form_ref(cdr_id)
-
-        # (if pair (cdr pair) default)
-        return create_inline_call('if', [assoc_ref, cdr_ref, default_bytes], self.bc)
-
-    def translate_dict_subscript_assign(self, target: ast.Subscript, value_expr: ast.expr) -> bytes:
-        """
-        Translate dict subscript assignment: d['key'] = val
-
-        Since dicts are immutable (association lists), we create a new dict:
-        (set! d (cons (cons 'key val) (filter (lambda (p) (not (equal (car p) 'key))) d)))
-
-        This removes any existing pair with the same key, then adds the new pair.
-        """
-        # Only support simple variable dict targets (not complex expressions)
-        if not isinstance(target.value, ast.Name):
-            raise NotImplementedError("Dict subscript assignment only supports simple variable targets")
-
-        dict_name = target.value.id
-        safe_dict_name = self.get_safe_name(dict_name)
-
-        # Translate key and value
-        key_bytes = self.translate_expr_with_ref(target.slice)
-        value_bytes = self.translate_expr_with_ref(value_expr)
-
-        # Create (cons 'key val)
-        new_pair_bytes = create_inline_call('cons', [key_bytes, value_bytes], self.bc)
-        new_pair_id = self.bc.add_expression(new_pair_bytes)
-        new_pair_ref = encode_form_ref(new_pair_id)
-
-        # Create filter lambda: (lambda (p) (not (equal (car p) 'key)))
-        # This filters out any existing pair with the same key
-
-        # (car p) - extract key from pair
-        car_p_bytes = create_inline_call('car', [encode_symbol('p', self.bc)], self.bc)
-        car_p_id = self.bc.add_expression(car_p_bytes)
-        car_p_ref = encode_form_ref(car_p_id)
-
-        # (equal (car p) 'key)
-        equal_bytes = create_inline_call('equalp', [car_p_ref, key_bytes], self.bc)
-        equal_id = self.bc.add_expression(equal_bytes)
-        equal_ref = encode_form_ref(equal_id)
-
-        # (not (equal ...))
-        not_bytes = create_inline_call('not', [equal_ref], self.bc)
-
-        # (lambda (p) (not (equal (car p) 'key)))
-        filter_lambda_bind = create_bind_form(['p'], not_bytes, self.bc)
-        filter_lambda_id = self.bc.add_expression(filter_lambda_bind)
-        filter_lambda_bytes = encode_form_lambda(filter_lambda_id)
-
-        # (filter lambda d)
-        dict_ref = encode_symbol(safe_dict_name, self.bc)
-        filter_bytes = create_inline_call('filter', [filter_lambda_bytes, dict_ref], self.bc)
-        filter_id = self.bc.add_expression(filter_bytes)
-        filter_ref = encode_form_ref(filter_id)
-
-        # (cons new_pair filtered_dict)
-        new_dict_bytes = create_inline_call('cons', [new_pair_ref, filter_ref], self.bc)
-        new_dict_id = self.bc.add_expression(new_dict_bytes)
-        new_dict_ref = encode_form_ref(new_dict_id)
-
-        # (set! d new_dict)
-        return create_inline_call('set', [dict_ref, new_dict_ref], self.bc)
-
-    # === List Methods ===
-
-    def translate_list_append(self, list_expr: ast.expr, args: List[ast.expr]) -> bytes:
-        """
-        Translate lst.append(x) -> (set! lst (append lst (list x)))
-
-        Note: Python's append mutates in-place, but VeloxVM lists are immutable.
-        We use set! to reassign the variable.
-        """
-        if len(args) != 1:
-            raise ValueError("list.append() takes exactly 1 argument")
-
-        # Only support simple variable list targets
-        if not isinstance(list_expr, ast.Name):
-            raise NotImplementedError("List append only supports simple variable targets")
-
-        list_name = list_expr.id
-        safe_list_name = self.get_safe_name(list_name)
-
-        value_bytes = self.translate_expr_with_ref(args[0])
-
-        # Create (list value)
-        list_wrapper = create_inline_call('list', [value_bytes], self.bc)
-        list_wrapper_id = self.bc.add_expression(list_wrapper)
-        list_wrapper_ref = encode_form_ref(list_wrapper_id)
-
-        # (append lst (list value))
-        list_ref = encode_symbol(safe_list_name, self.bc)
-        append_bytes = create_inline_call('append', [list_ref, list_wrapper_ref], self.bc)
-        append_id = self.bc.add_expression(append_bytes)
-        append_ref = encode_form_ref(append_id)
-
-        # (set! lst (append ...))
-        return create_inline_call('set', [list_ref, append_ref], self.bc)
-
-    def translate_list_extend(self, list_expr: ast.expr, args: List[ast.expr]) -> bytes:
-        """
-        Translate lst.extend(other) -> (set! lst (append lst other))
-        """
-        if len(args) != 1:
-            raise ValueError("list.extend() takes exactly 1 argument")
-
-        if not isinstance(list_expr, ast.Name):
-            raise NotImplementedError("List extend only supports simple variable targets")
-
-        list_name = list_expr.id
-        safe_list_name = self.get_safe_name(list_name)
-
-        other_bytes = self.translate_expr_with_ref(args[0])
-
-        # (append lst other)
-        list_ref = encode_symbol(safe_list_name, self.bc)
-        append_bytes = create_inline_call('append', [list_ref, other_bytes], self.bc)
-        append_id = self.bc.add_expression(append_bytes)
-        append_ref = encode_form_ref(append_id)
-
-        # (set! lst (append ...))
-        return create_inline_call('set', [list_ref, append_ref], self.bc)
-
-    def translate_list_pop(self, list_expr: ast.expr, args: List[ast.expr]) -> bytes:
-        """
-        Translate lst.pop() -> (pop lst)
-
-        Note: VeloxVM's pop returns the last element but doesn't modify the list.
-        For mutation, we'd need: (let ((val (pop lst))) (set! lst (reverse (cdr (reverse lst)))) val)
-        For now, just return the value without mutation.
-        """
-        if len(args) > 1:
-            raise ValueError("list.pop() takes at most 1 argument")
-
-        if len(args) == 1:
-            raise NotImplementedError("list.pop(index) not yet supported, use pop() without args")
-
-        list_bytes = self.translate_expr_with_ref(list_expr)
-
-        # Simple version: just return last element (no mutation)
-        return create_inline_call('pop', [list_bytes], self.bc)
-
-    def translate_list_remove(self, list_expr: ast.expr, args: List[ast.expr]) -> bytes:
-        """
-        Translate lst.remove(x) -> (set! lst (remove x lst))
-        """
-        if len(args) != 1:
-            raise ValueError("list.remove() takes exactly 1 argument")
-
-        if not isinstance(list_expr, ast.Name):
-            raise NotImplementedError("List remove only supports simple variable targets")
-
-        list_name = list_expr.id
-        safe_list_name = self.get_safe_name(list_name)
-
-        value_bytes = self.translate_expr_with_ref(args[0])
-
-        # (remove value lst)
-        list_ref = encode_symbol(safe_list_name, self.bc)
-        remove_bytes = create_inline_call('remove', [value_bytes, list_ref], self.bc)
-        remove_id = self.bc.add_expression(remove_bytes)
-        remove_ref = encode_form_ref(remove_id)
-
-        # (set! lst (remove ...))
-        return create_inline_call('set', [list_ref, remove_ref], self.bc)
-
-    def translate_list_reverse(self, list_expr: ast.expr) -> bytes:
-        """
-        Translate lst.reverse() -> (set! lst (reverse lst))
-        """
-        if not isinstance(list_expr, ast.Name):
-            raise NotImplementedError("List reverse only supports simple variable targets")
-
-        list_name = list_expr.id
-        safe_list_name = self.get_safe_name(list_name)
-
-        # (reverse lst)
-        list_ref = encode_symbol(safe_list_name, self.bc)
-        reverse_bytes = create_inline_call('reverse', [list_ref], self.bc)
-        reverse_id = self.bc.add_expression(reverse_bytes)
-        reverse_ref = encode_form_ref(reverse_id)
-
-        # (set! lst (reverse ...))
-        return create_inline_call('set', [list_ref, reverse_ref], self.bc)
-
-    def translate_list_count(self, list_expr: ast.expr, args: List[ast.expr]) -> bytes:
-        """
-        Translate lst.count(x) -> (count (lambda (e) (equal e x)) lst)
-        """
-        if len(args) != 1:
-            raise ValueError("list.count() takes exactly 1 argument")
-
-        list_bytes = self.translate_expr_with_ref(list_expr)
-        value_bytes = self.translate_expr_with_ref(args[0])
-
-        # Create lambda (e) (equal e value)
-        equal_call = create_inline_call('equalp', [encode_symbol('e', self.bc), value_bytes], self.bc)
-        lambda_bind = create_bind_form(['e'], equal_call, self.bc)
-        lambda_id = self.bc.add_expression(lambda_bind)
-        lambda_bytes = encode_form_lambda(lambda_id)
-
-        # (count lambda lst)
-        return create_inline_call('count', [lambda_bytes, list_bytes], self.bc)
-
-    def translate_list_index(self, list_expr: ast.expr, args: List[ast.expr]) -> bytes:
-        """
-        Translate lst.index(x) -> (list-index x lst)
-
-        Uses the new list_index VM primitive.
-        Returns the index of the first occurrence, or -1 if not found.
-        """
-        if len(args) != 1:
-            raise ValueError("list.index() takes exactly 1 argument")
-
-        elem_bytes = self.translate_expr_with_ref(args[0])
-        list_bytes = self.translate_expr_with_ref(list_expr)
-
-        return create_inline_call('list_index', [elem_bytes, list_bytes], self.bc)
-
-    def translate_list_insert(self, list_expr: ast.expr, args: List[ast.expr]) -> bytes:
-        """
-        Translate lst.insert(index, value).
-
-        A clean Scheme expression would be
-            (set! lst (append (take i lst) (cons x (drop i lst))))
-        but the VM does not currently expose take/drop, so the operation is
-        not yet implemented.
-        """
-        if len(args) != 2:
-            raise ValueError("list.insert() takes exactly 2 arguments (index, value)")
-
-        raise NotImplementedError(
-            "list.insert() requires splitting the list at the insertion "
-            "point (take/drop), which is not yet implemented."
-        )
-
-    # === String Methods ===
-
-    def translate_string_upper(self, str_expr: ast.expr) -> bytes:
-        """
-        Translate s.upper() -> (list-to-string (map char-upcase (string-to-list s)))
-        """
-        str_bytes = self.translate_expr_with_ref(str_expr)
-
-        # (string-to-list s)
-        to_list_bytes = create_inline_call('string_to_list', [str_bytes], self.bc)
-        to_list_id = self.bc.add_expression(to_list_bytes)
-        to_list_ref = encode_form_ref(to_list_id)
-
-        # Create lambda (c) (char-upcase c) - actually, map can take primitive directly
-        # (map char-upcase (string-to-list s))
-        char_upcase_symbol = encode_symbol('char_upcase', self.bc)
-        map_bytes = create_inline_call('map', [char_upcase_symbol, to_list_ref], self.bc)
-        map_id = self.bc.add_expression(map_bytes)
-        map_ref = encode_form_ref(map_id)
-
-        # (list-to-string (map ...))
-        return create_inline_call('list_to_string', [map_ref], self.bc)
-
-    def translate_string_lower(self, str_expr: ast.expr) -> bytes:
-        """
-        Translate s.lower() -> (list-to-string (map char-downcase (string-to-list s)))
-        """
-        str_bytes = self.translate_expr_with_ref(str_expr)
-
-        # (string-to-list s)
-        to_list_bytes = create_inline_call('string_to_list', [str_bytes], self.bc)
-        to_list_id = self.bc.add_expression(to_list_bytes)
-        to_list_ref = encode_form_ref(to_list_id)
-
-        # (map char-downcase (string-to-list s))
-        char_downcase_symbol = encode_symbol('char_downcase', self.bc)
-        map_bytes = create_inline_call('map', [char_downcase_symbol, to_list_ref], self.bc)
-        map_id = self.bc.add_expression(map_bytes)
-        map_ref = encode_form_ref(map_id)
-
-        # (list-to-string (map ...))
-        return create_inline_call('list_to_string', [map_ref], self.bc)
-
-    def translate_string_split(self, str_expr: ast.expr, args: List[ast.expr]) -> bytes:
-        """
-        Translate s.split(delim) -> (string-split s delim)
-
-        VeloxVM has native string-split!
-        """
-        if len(args) != 1:
-            raise ValueError("str.split() requires exactly 1 argument (delimiter)")
-
-        str_bytes = self.translate_expr_with_ref(str_expr)
-        delim_bytes = self.translate_expr_with_ref(args[0])
-
-        # (string-split s delim)
-        return create_inline_call('string_split', [str_bytes, delim_bytes], self.bc)
-
-    def translate_string_join(self, str_expr: ast.expr, args: List[ast.expr]) -> bytes:
-        """
-        Translate sep.join(lst) -> (string-join sep lst)
-
-        Uses the new string_join VM primitive.
-        """
-        if len(args) != 1:
-            raise ValueError("str.join() takes exactly 1 argument")
-
-        sep_bytes = self.translate_expr_with_ref(str_expr)
-        list_bytes = self.translate_expr_with_ref(args[0])
-
-        return create_inline_call('string_join', [sep_bytes, list_bytes], self.bc)
-
-    def translate_string_startswith(self, str_expr: ast.expr, args: List[ast.expr]) -> bytes:
-        """
-        Translate s.startswith(prefix) -> compare substring
-
-        (equal (substring s 0 (string-length prefix)) prefix)
-        """
-        if len(args) != 1:
-            raise ValueError("str.startswith() takes exactly 1 argument")
-
-        str_bytes = self.translate_expr_with_ref(str_expr)
-        prefix_bytes = self.translate_expr_with_ref(args[0])
-
-        # (string-length prefix)
-        prefix_len_bytes = create_inline_call('string_length', [prefix_bytes], self.bc)
-        prefix_len_id = self.bc.add_expression(prefix_len_bytes)
-        prefix_len_ref = encode_form_ref(prefix_len_id)
-
-        # (substring s 0 (string-length prefix))
-        substring_bytes = create_inline_call('substring', [
-            str_bytes,
-            encode_integer(0),
-            prefix_len_ref
-        ], self.bc)
-        substring_id = self.bc.add_expression(substring_bytes)
-        substring_ref = encode_form_ref(substring_id)
-
-        # (equal substring prefix)
-        return create_inline_call('equalp', [substring_ref, prefix_bytes], self.bc)
-
-    def translate_string_endswith(self, str_expr: ast.expr, args: List[ast.expr]) -> bytes:
-        """
-        Translate s.endswith(suffix) -> compare substring from end
-
-        (let ((slen (string-length s))
-              (sufflen (string-length suffix)))
-          (equal (substring s (- slen sufflen) slen) suffix))
-
-        Simplified: (equal (substring s (- (string-length s) (string-length suffix)) (string-length s)) suffix)
-        """
-        if len(args) != 1:
-            raise ValueError("str.endswith() takes exactly 1 argument")
-
-        str_bytes = self.translate_expr_with_ref(str_expr)
-        suffix_bytes = self.translate_expr_with_ref(args[0])
-
-        # (string-length s)
-        str_len_bytes = create_inline_call('string_length', [str_bytes], self.bc)
-        str_len_id = self.bc.add_expression(str_len_bytes)
-        str_len_ref = encode_form_ref(str_len_id)
-
-        # (string-length suffix)
-        suffix_len_bytes = create_inline_call('string_length', [suffix_bytes], self.bc)
-        suffix_len_id = self.bc.add_expression(suffix_len_bytes)
-        suffix_len_ref = encode_form_ref(suffix_len_id)
-
-        # (- (string-length s) (string-length suffix))
-        start_pos_bytes = create_inline_call('subtract', [str_len_ref, suffix_len_ref], self.bc)
-        start_pos_id = self.bc.add_expression(start_pos_bytes)
-        start_pos_ref = encode_form_ref(start_pos_id)
-
-        # (substring s start_pos str_len)
-        substring_bytes = create_inline_call('substring', [str_bytes, start_pos_ref, str_len_ref], self.bc)
-        substring_id = self.bc.add_expression(substring_bytes)
-        substring_ref = encode_form_ref(substring_id)
-
-        # (equal substring suffix)
-        return create_inline_call('equalp', [substring_ref, suffix_bytes], self.bc)
-
-    def translate_string_strip(self, str_expr: ast.expr) -> bytes:
-        """
-        Translate s.strip() -> remove whitespace from both ends.
-
-        Not yet implemented; doing this cleanly needs character-class-aware
-        end trimming, for which the VM does not expose the right primitive.
-        """
-        raise NotImplementedError(
-            "str.strip() requires trimming whitespace from both ends, "
-            "which is not yet implemented."
-        )
-
-    def translate_string_replace(self, str_expr: ast.expr, args: List[ast.expr]) -> bytes:
-        """
-        Translate s.replace(old, new).
-
-        The natural lowering is (string-join new (string-split s old)),
-        but str.join() is not yet working correctly, so this is
-        currently unimplemented.
-        """
-        if len(args) != 2:
-            raise ValueError("str.replace() takes exactly 2 arguments (old, new)")
-
-        raise NotImplementedError(
-            "str.replace() depends on str.join(), which is not yet working."
-        )
-
-    # === Built-in Functions ===
-
-    def translate_print(self, args: List[ast.expr]) -> bytes:
-        """
-        Translate print(a, b, c) -> (begin (print a b c) (write-char #\newline)).
-
-        Python's print adds a newline, but VeloxVM's print primitive doesn't,
-        so we need to add a newline character explicitly.
-
-        For print() with no arguments, just write a newline.
-        """
-        # Handle empty print() - just write newline
-        if len(args) == 0:
-            from .encoder import encode_character
-            newline_char = encode_character('\n')
-            return create_inline_call('write_char', [newline_char], self.bc)
-
-        arg_bytes = [self.translate_expr_with_ref(arg) for arg in args]
-        print_call = create_inline_call('print', arg_bytes, self.bc)
-
-        # Store print call as separate expression
-        print_id = self.bc.add_expression(print_call)
-        print_ref = encode_form_ref(print_id)
-
-        # Add newline: (write-char #\newline)
-        from .encoder import encode_character
-        newline_char = encode_character('\n')
-        newline_call = create_inline_call('write_char', [newline_char], self.bc)
-
-        # Store newline call as separate expression
-        newline_id = self.bc.add_expression(newline_call)
-        newline_ref = encode_form_ref(newline_id)
-
-        # Combine with begin: (begin (print ...) (write-char #\newline))
-        return create_inline_call('begin', [print_ref, newline_ref], self.bc)
-
-    def translate_len(self, args: List[ast.expr]) -> bytes:
-        """Translate len(x) -> (length x) or (string-length x)."""
-        if len(args) != 1:
-            raise ValueError("len() takes exactly 1 argument")
-
-        arg_bytes = self.translate_expr_with_ref(args[0])
-
-        # For simplicity, use 'length' (works for lists)
-        # TODO: Could inspect type to choose between length/string-length/vector-length
-        return create_inline_call('length', [arg_bytes], self.bc)
-
-    # Inline-form argc fits in 6 bits (max 63), so a literal
-    # `(list 0 1 ... n-1)` form caps out at ~62 elements. We also
-    # don't want to bloat the symbol/expr tables for every modest
-    # range. Anything above this threshold falls through to the
-    # runtime helper.
     _RANGE_LITERAL_LIMIT = 16
-
-    def translate_range(self, args: List[ast.expr]) -> bytes:
-        """Translate `range(stop)` / `range(start, stop)` /
-        `range(start, stop, step)`.
-
-        A small literal `range(N)` constant-folds to
-        `(list 0 1 ... N-1)`. Everything else goes through a
-        per-module `_pyvelox_range` helper emitted into the program
-        prologue on first use.
-        """
-        if not 1 <= len(args) <= 3:
-            raise ValueError(
-                f"range() takes 1 to 3 arguments ({len(args)} given)")
-
-        # Constant fast path: range(N) where N is a small integer
-        # literal. Avoids materializing huge inline lists.
-        if (len(args) == 1
-                and isinstance(args[0], ast.Constant)
-                and isinstance(args[0].value, int)
-                and not isinstance(args[0].value, bool)
-                and 0 <= args[0].value <= self._RANGE_LITERAL_LIMIT):
-            elements = [encode_integer(i) for i in range(args[0].value)]
-            return create_inline_call('list', elements, self.bc)
-
-        self._emit_range_helper()
-
-        if len(args) == 1:
-            start_b = encode_integer(0)
-            stop_b = self.translate_expr_with_ref(args[0])
-            step_b = encode_integer(1)
-        elif len(args) == 2:
-            start_b = self.translate_expr_with_ref(args[0])
-            stop_b = self.translate_expr_with_ref(args[1])
-            step_b = encode_integer(1)
-        else:
-            start_b = self.translate_expr_with_ref(args[0])
-            stop_b = self.translate_expr_with_ref(args[1])
-            step_b = self.translate_expr_with_ref(args[2])
-
-        return create_inline_call(
-            '_pyvelox_range', [start_b, stop_b, step_b], self.bc)
-
-    def _emit_range_helper(self) -> None:
-        """Emit a top-level `_pyvelox_range(start, stop, step)` helper
-        that returns `[start, start+step, ..., stop)` as a list. Idempotent
-        — only the first call adds bytecode to the prologue.
-
-        The implementation is two top-level defines:
-
-            (define _pyvelox_range_loop
-              (lambda (i stop step acc)
-                (if (or (and (> step 0) (>= i stop))
-                        (and (< step 0) (<= i stop)))
-                    (reverse acc)
-                    (_pyvelox_range_loop (+ i step) stop step
-                                         (cons i acc)))))
-
-            (define _pyvelox_range
-              (lambda (start stop step)
-                (_pyvelox_range_loop start stop step (list))))
-
-        stop and step are passed through the recursion so the inner
-        lambda doesn't have to capture them — keeping us off the
-        closure-materialisation path.
-        """
-        if '_pyvelox_range' in self._emitted_helpers:
-            return
-        self._emitted_helpers.add('_pyvelox_range')
-
-        sym_i = lambda: encode_symbol('i', self.bc)
-        sym_stop = lambda: encode_symbol('stop', self.bc)
-        sym_step = lambda: encode_symbol('step', self.bc)
-        sym_acc = lambda: encode_symbol('acc', self.bc)
-        sym_start = lambda: encode_symbol('start', self.bc)
-
-        # Termination predicate: counting up past stop, or counting
-        # down past stop. step=0 falls through and recurses forever;
-        # callers shouldn't pass it (Python raises ValueError there).
-        pos_done = create_inline_call(
-            'and',
-            [create_inline_call('greater_than',
-                                [sym_step(), encode_integer(0)], self.bc),
-             create_inline_call('greater_than_equal',
-                                [sym_i(), sym_stop()], self.bc)],
-            self.bc)
-        neg_done = create_inline_call(
-            'and',
-            [create_inline_call('less_than',
-                                [sym_step(), encode_integer(0)], self.bc),
-             create_inline_call('less_than_equal',
-                                [sym_i(), sym_stop()], self.bc)],
-            self.bc)
-        done_test = create_inline_call('or', [pos_done, neg_done], self.bc)
-
-        rev_acc = create_inline_call('reverse', [sym_acc()], self.bc)
-
-        next_i = create_inline_call('add', [sym_i(), sym_step()], self.bc)
-        next_acc = create_inline_call('cons', [sym_i(), sym_acc()], self.bc)
-        recurse = create_inline_call(
-            '_pyvelox_range_loop',
-            [next_i, sym_stop(), sym_step(), next_acc],
-            self.bc)
-
-        loop_body = create_inline_call(
-            'if', [done_test, rev_acc, recurse], self.bc)
-        loop_bind = create_bind_form(
-            ['i', 'stop', 'step', 'acc'], loop_body, self.bc,
-            is_function=True)
-        loop_lambda_id = self.bc.add_expression(loop_bind)
-        loop_lambda_ref = encode_form_lambda(loop_lambda_id)
-        define_loop = create_inline_call(
-            'define',
-            [encode_symbol('_pyvelox_range_loop', self.bc),
-             loop_lambda_ref],
-            self.bc)
-
-        outer_call = create_inline_call(
-            '_pyvelox_range_loop',
-            [sym_start(), sym_stop(), sym_step(),
-             create_inline_call('list', [], self.bc)],
-            self.bc)
-        outer_bind = create_bind_form(
-            ['start', 'stop', 'step'], outer_call, self.bc,
-            is_function=True)
-        outer_lambda_id = self.bc.add_expression(outer_bind)
-        outer_lambda_ref = encode_form_lambda(outer_lambda_id)
-        define_outer = create_inline_call(
-            'define',
-            [encode_symbol('_pyvelox_range', self.bc), outer_lambda_ref],
-            self.bc)
-
-        self._preamble.extend(define_loop)
-        self._preamble.extend(define_outer)
-
-    def translate_int(self, args: List[ast.expr]) -> bytes:
-        """Translate `int(x)`.
-
-        Python's `int(x)` accepts ints, strings, and bools; ours
-        previously emitted only `string_to_number`, which raises a
-        type error for anything else (including ints — `int(5)` was
-        broken). Literal arguments resolve at compile time; variables
-        get a runtime type-dispatch:
-
-            (if (numberp x) x
-              (if (stringp x) (string-to-number x)
-                (if x 1 0)))
-
-        The fallback branch coerces by truthiness, matching Python's
-        `int(True) == 1` / `int(False) == 0`. Calling `int()` on a
-        list or None falls into the truthiness branch instead of
-        raising, which is a documented divergence from CPython.
-        """
-        if len(args) != 1:
-            raise ValueError("int() takes exactly 1 argument")
-
-        arg = args[0]
-
-        if isinstance(arg, ast.Constant):
-            value = arg.value
-            # bool is an int subclass — check first.
-            if isinstance(value, bool):
-                return encode_integer(1 if value else 0)
-            if isinstance(value, int):
-                return encode_integer(value)
-            if isinstance(value, str):
-                return create_inline_call(
-                    'string_to_number',
-                    [self.translate_expr_with_ref(arg)],
-                    self.bc)
-            # Other constants (None, floats) fall through to runtime.
-
-        arg_bytes = self.translate_expr_with_ref(arg)
-
-        def _hoist(call_bytes: bytes) -> bytes:
-            return encode_form_ref(self.bc.add_expression(call_bytes))
-
-        # Innermost: (if x 1 0) — handles booleans (and any truthy
-        # value, gracefully degrading instead of crashing).
-        bool_branch_ref = _hoist(create_inline_call(
-            'if',
-            [arg_bytes, encode_integer(1), encode_integer(0)],
-            self.bc))
-
-        # (string-to-number x)
-        str_branch_ref = _hoist(create_inline_call(
-            'string_to_number', [arg_bytes], self.bc))
-
-        # (stringp x)
-        str_test_ref = _hoist(create_inline_call(
-            'stringp', [arg_bytes], self.bc))
-
-        # (if (stringp x) (string-to-number x) bool_branch)
-        inner_if_ref = _hoist(create_inline_call(
-            'if', [str_test_ref, str_branch_ref, bool_branch_ref], self.bc))
-
-        # (numberp x)
-        num_test_ref = _hoist(create_inline_call(
-            'numberp', [arg_bytes], self.bc))
-
-        # (if (numberp x) x inner_if)
-        return create_inline_call(
-            'if', [num_test_ref, arg_bytes, inner_if_ref], self.bc)
-
-    def translate_str(self, args: List[ast.expr]) -> bytes:
-        """Translate `str(x)`.
-
-        Python `str(x)` accepts any type; the VM has no single
-        `to_string` primitive, so we either pick the right conversion
-        at compile time (for literal arguments) or emit a small
-        runtime type-dispatch:
-
-            (if (stringp x) x
-              (if (booleanp x) (if x "True" "False")
-                (number-to-string x)))
-
-        The fallback branch errors at runtime for unsupported types
-        (e.g. lists), matching pre-existing behaviour. None is encoded
-        as `False` in PyVelox, so `str(None)` on a variable yields
-        "False" — see the `None`/`bool` row of doc/python.md's status
-        table.
-        """
-        if len(args) != 1:
-            raise ValueError("str() takes exactly 1 argument")
-
-        arg = args[0]
-
-        # Compile-time fast path: the source already tells us the type.
-        if isinstance(arg, ast.Constant):
-            value = arg.value
-            if isinstance(value, str):
-                return encode_string(value, self.bc)
-            # bool is a subclass of int; check it before the int branch.
-            if isinstance(value, bool):
-                return encode_string("True" if value else "False", self.bc)
-            if value is None:
-                return encode_string("None", self.bc)
-            if isinstance(value, int):
-                return create_inline_call(
-                    'number_to_string',
-                    [self.translate_expr_with_ref(arg)],
-                    self.bc)
-            # Other constant types fall through to the runtime path.
-
-        arg_bytes = self.translate_expr_with_ref(arg)
-
-        def _hoist(call_bytes: bytes) -> bytes:
-            return encode_form_ref(self.bc.add_expression(call_bytes))
-
-        # Inner branch for booleans: (if x "True" "False")
-        bool_branch_ref = _hoist(create_inline_call(
-            'if',
-            [arg_bytes,
-             encode_string("True", self.bc),
-             encode_string("False", self.bc)],
-            self.bc))
-
-        # Numeric/fallback branch: (number-to-string x)
-        num_branch_ref = _hoist(create_inline_call(
-            'number_to_string', [arg_bytes], self.bc))
-
-        # (booleanp x)
-        bool_test_ref = _hoist(create_inline_call(
-            'booleanp', [arg_bytes], self.bc))
-
-        # (if (booleanp x) bool_branch num_branch)
-        inner_if_ref = _hoist(create_inline_call(
-            'if', [bool_test_ref, bool_branch_ref, num_branch_ref], self.bc))
-
-        # (stringp x)
-        str_test_ref = _hoist(create_inline_call(
-            'stringp', [arg_bytes], self.bc))
-
-        # (if (stringp x) x inner_if)
-        return create_inline_call(
-            'if', [str_test_ref, arg_bytes, inner_if_ref], self.bc)
-
-    def translate_abs(self, args: List[ast.expr]) -> bytes:
-        """Translate abs(x) -> (if (< x 0) (- 0 x) x)."""
-        if len(args) != 1:
-            raise ValueError("abs() takes exactly 1 argument")
-
-        arg_bytes = self.translate_expr_with_ref(args[0])
-
-        # Create comparison: (< x 0)
-        zero_bytes = encode_integer(0)
-        cmp_bytes = create_inline_call('less_than', [arg_bytes, zero_bytes], self.bc)
-        cmp_id = self.bc.add_expression(cmp_bytes)
-        cmp_ref = encode_form_ref(cmp_id)
-
-        # Create negation: (- 0 x)
-        neg_bytes = create_inline_call('subtract', [zero_bytes, arg_bytes], self.bc)
-        neg_id = self.bc.add_expression(neg_bytes)
-        neg_ref = encode_form_ref(neg_id)
-
-        # (if (< x 0) (- 0 x) x)
-        return create_inline_call('if', [cmp_ref, neg_ref, arg_bytes], self.bc)
-
-    def _translate_fold_min_max(self, iterable: ast.expr, cmp_op: str) -> bytes:
-        """Compile min(iterable)/max(iterable) as
-        (reduce (lambda (a b) (if (cmp a b) a b)) iterable).
-        cmp_op is 'less_than' for min, 'greater_than' for max."""
-        list_bytes = self.translate_expr_with_ref(iterable)
-
-        a_sym = encode_symbol('a', self.bc)
-        b_sym = encode_symbol('b', self.bc)
-
-        cmp_call = create_inline_call(cmp_op, [a_sym, b_sym], self.bc)
-        cmp_id = self.bc.add_expression(cmp_call)
-        cmp_ref = encode_form_ref(cmp_id)
-
-        if_form = create_inline_call('if', [cmp_ref, a_sym, b_sym], self.bc)
-        lambda_bind = create_bind_form(['a', 'b'], if_form, self.bc)
-        lambda_id = self.bc.add_expression(lambda_bind)
-        lambda_bytes = encode_form_lambda(lambda_id)
-
-        return create_inline_call('reduce', [lambda_bytes, list_bytes], self.bc)
-
-    def translate_min(self, args: List[ast.expr]) -> bytes:
-        """
-        Translate min(a, b, ...) to nested if comparisons.
-        min(a, b) -> (if (< a b) a b)
-        min(a, b, c) -> (if (< a b) (if (< a c) a c) (if (< b c) b c))
-        min(iterable) -> (reduce (lambda (a b) (if (< a b) a b)) iterable)
-        """
-        if len(args) == 0:
-            raise ValueError("min() requires at least 1 argument")
-
-        if len(args) == 1:
-            # Python min(iterable): fold with a two-arg min lambda.
-            return self._translate_fold_min_max(args[0], 'less_than')
-
-        # For 2+ arguments, recursively build min comparisons
-        arg_bytes = [self.translate_expr_with_ref(arg) for arg in args]
-
-        def build_min(items):
-            if len(items) == 1:
-                return items[0]
-            elif len(items) == 2:
-                # (if (< a b) a b)
-                cmp = create_inline_call('less_than', [items[0], items[1]], self.bc)
-                cmp_id = self.bc.add_expression(cmp)
-                cmp_ref = encode_form_ref(cmp_id)
-                return create_inline_call('if', [cmp_ref, items[0], items[1]], self.bc)
-            else:
-                # min(a, rest) = (if (< a min(rest)) a min(rest))
-                first = items[0]
-                rest_min = build_min(items[1:])
-                rest_id = self.bc.add_expression(rest_min)
-                rest_ref = encode_form_ref(rest_id)
-
-                cmp = create_inline_call('less_than', [first, rest_ref], self.bc)
-                cmp_id = self.bc.add_expression(cmp)
-                cmp_ref = encode_form_ref(cmp_id)
-                return create_inline_call('if', [cmp_ref, first, rest_ref], self.bc)
-
-        return build_min(arg_bytes)
-
-    def translate_max(self, args: List[ast.expr]) -> bytes:
-        """
-        Translate max(a, b, ...) to nested if comparisons.
-        max(a, b) -> (if (> a b) a b)
-        max(iterable) -> (reduce (lambda (a b) (if (> a b) a b)) iterable)
-        """
-        if len(args) == 0:
-            raise ValueError("max() requires at least 1 argument")
-
-        if len(args) == 1:
-            # Python max(iterable): fold with a two-arg max lambda.
-            return self._translate_fold_min_max(args[0], 'greater_than')
-
-        # For 2+ arguments, recursively build max comparisons
-        arg_bytes = [self.translate_expr_with_ref(arg) for arg in args]
-
-        def build_max(items):
-            if len(items) == 1:
-                return items[0]
-            elif len(items) == 2:
-                # (if (> a b) a b)
-                cmp = create_inline_call('greater_than', [items[0], items[1]], self.bc)
-                cmp_id = self.bc.add_expression(cmp)
-                cmp_ref = encode_form_ref(cmp_id)
-                return create_inline_call('if', [cmp_ref, items[0], items[1]], self.bc)
-            else:
-                # max(a, rest) = (if (> a max(rest)) a max(rest))
-                first = items[0]
-                rest_max = build_max(items[1:])
-                rest_id = self.bc.add_expression(rest_max)
-                rest_ref = encode_form_ref(rest_id)
-
-                cmp = create_inline_call('greater_than', [first, rest_ref], self.bc)
-                cmp_id = self.bc.add_expression(cmp)
-                cmp_ref = encode_form_ref(cmp_id)
-                return create_inline_call('if', [cmp_ref, first, rest_ref], self.bc)
-
-        return build_max(arg_bytes)
-
-    def translate_sum(self, args: List[ast.expr]) -> bytes:
-        """
-        Translate sum(iterable) -> (reduce + iterable 0).
-        Uses VeloxVM's reduce function.
-        """
-        if len(args) != 1:
-            raise ValueError("sum() takes exactly 1 argument")
-
-        iterable_bytes = self.translate_expr_with_ref(args[0])
-        zero_bytes = encode_integer(0)
-
-        # (reduce add iterable 0)
-        return create_inline_call('reduce', [
-            encode_symbol('add', self.bc),
-            iterable_bytes,
-            zero_bytes
-        ], self.bc)
-
-    def translate_sorted(self, args: List[ast.expr]) -> bytes:
-        """
-        Translate sorted(iterable) to a sort operation.
-        For simplicity, we'll use a manual insertion sort implementation.
-        """
-        if len(args) != 1:
-            raise ValueError("sorted() takes exactly 1 argument")
-
-        raise NotImplementedError(
-            "sorted() is not yet implemented in pyvelox. Returning the input "
-            "unchanged would produce silently wrong results, so sorting must "
-            "be done manually until a VM-level sort primitive is added."
-        )
-
-    def translate_reversed(self, args: List[ast.expr]) -> bytes:
-        """Translate reversed(iterable) -> (reverse iterable)."""
-        if len(args) != 1:
-            raise ValueError("reversed() takes exactly 1 argument")
-
-        arg_bytes = self.translate_expr_with_ref(args[0])
-        return create_inline_call('reverse', [arg_bytes], self.bc)
-
-    # === Functional-programming built-ins ===
-
-    def translate_map(self, args: List[ast.expr]) -> bytes:
-        """
-        Translate map(func, iterable) -> (map func iterable).
-
-        Python's map returns an iterator, but we return a list directly
-        since VeloxVM doesn't have lazy evaluation.
-
-        Example:
-            map(lambda x: x*2, [1, 2, 3]) -> (map (lambda (x) (* x 2)) (list 1 2 3))
-        """
-        if len(args) != 2:
-            raise ValueError("map() takes exactly 2 arguments (function, iterable)")
-
-        func_bytes = self.translate_expr_with_ref(args[0])
-        iterable_bytes = self.translate_expr_with_ref(args[1])
-
-        return create_inline_call('map', [func_bytes, iterable_bytes], self.bc)
-
-    def translate_filter(self, args: List[ast.expr]) -> bytes:
-        """
-        Translate filter(func, iterable) -> (filter func iterable).
-
-        Python's filter returns an iterator, but we return a list directly.
-
-        Example:
-            filter(lambda x: x > 0, [-1, 0, 1, 2]) -> (filter (lambda (x) (> x 0)) lst)
-        """
-        if len(args) != 2:
-            raise ValueError("filter() takes exactly 2 arguments (function, iterable)")
-
-        func_bytes = self.translate_expr_with_ref(args[0])
-        iterable_bytes = self.translate_expr_with_ref(args[1])
-
-        return create_inline_call('filter', [func_bytes, iterable_bytes], self.bc)
-
-    def translate_reduce(self, args: List[ast.expr]) -> bytes:
-        """
-        Translate reduce(func, iterable, initial) -> (reduce func iterable initial).
-
-        Note: We require an initial value (Python 3 functools.reduce best practice).
-
-        Example:
-            reduce(lambda a, b: a + b, [1, 2, 3, 4], 0)
-            -> (reduce (lambda (a b) (+ a b)) (list 1 2 3 4) 0)
-        """
-        if len(args) != 3:
-            raise ValueError("reduce() requires exactly 3 arguments (function, iterable, initial)")
-
-        func_bytes = self.translate_expr_with_ref(args[0])
-        iterable_bytes = self.translate_expr_with_ref(args[1])
-        initial_bytes = self.translate_expr_with_ref(args[2])
-
-        return create_inline_call('reduce', [func_bytes, iterable_bytes, initial_bytes], self.bc)
-
-    def translate_all(self, args: List[ast.expr]) -> bytes:
-        """
-        Translate all(iterable) -> (reduce (lambda (a b) (and a b)) iterable #t).
-
-        Returns True if all elements are truthy, False otherwise.
-
-        Example:
-            all([True, True, False]) -> (reduce (lambda (a b) (and a b)) (list #t #t #f) #t)
-        """
-        if len(args) != 1:
-            raise ValueError("all() takes exactly 1 argument")
-
-        iterable_bytes = self.translate_expr_with_ref(args[0])
-        true_bytes = encode_boolean(True)
-
-        # Create lambda (a b) (and a b)
-        and_call = create_inline_call('and', [
-            encode_symbol('a', self.bc),
-            encode_symbol('b', self.bc)
-        ], self.bc)
-        lambda_bind = create_bind_form(['a', 'b'], and_call, self.bc)
-        lambda_id = self.bc.add_expression(lambda_bind)
-        lambda_bytes = encode_form_lambda(lambda_id)
-
-        # (reduce lambda iterable #t)
-        return create_inline_call('reduce', [
-            lambda_bytes,
-            iterable_bytes,
-            true_bytes
-        ], self.bc)
-
-    def translate_any(self, args: List[ast.expr]) -> bytes:
-        """
-        Translate any(iterable) -> (reduce (lambda (a b) (or a b)) iterable #f).
-
-        Returns True if any element is truthy, False otherwise.
-
-        Example:
-            any([False, False, True]) -> (reduce (lambda (a b) (or a b)) (list #f #f #t) #f)
-        """
-        if len(args) != 1:
-            raise ValueError("any() takes exactly 1 argument")
-
-        iterable_bytes = self.translate_expr_with_ref(args[0])
-        false_bytes = encode_boolean(False)
-
-        # Create lambda (a b) (or a b)
-        or_call = create_inline_call('or', [
-            encode_symbol('a', self.bc),
-            encode_symbol('b', self.bc)
-        ], self.bc)
-        lambda_bind = create_bind_form(['a', 'b'], or_call, self.bc)
-        lambda_id = self.bc.add_expression(lambda_bind)
-        lambda_bytes = encode_form_lambda(lambda_id)
-
-        # (reduce lambda iterable #f)
-        return create_inline_call('reduce', [
-            lambda_bytes,
-            iterable_bytes,
-            false_bytes
-        ], self.bc)
-
-    def translate_list_constructor(self, args: List[ast.expr]) -> bytes:
-        """
-        Translate list(iterable) - convert iterable to list.
-
-        In VeloxVM, map/filter already return lists, so this is mostly
-        a no-op, but we support it for Python compatibility.
-
-        For a single iterable argument, just return it.
-        For multiple arguments or no arguments, create a list.
-
-        Example:
-            list([1, 2, 3]) -> [1, 2, 3]  (identity)
-            list() -> []
-        """
-        if len(args) == 0:
-            # Empty list
-            return create_inline_call('list', [], self.bc)
-        elif len(args) == 1:
-            # Single argument - just return it (it's already a list in VeloxVM)
-            return self.translate_expr_with_ref(args[0])
-        else:
-            # Multiple arguments - create list from them
-            elem_bytecode = [self.translate_expr_with_ref(e) for e in args]
-            return create_inline_call('list', elem_bytecode, self.bc)
-
-    def translate_enumerate(self, args: List[ast.expr]) -> bytes:
-        """
-        Translate enumerate(iterable) -> (list-enumerate iterable)
-
-        Uses the new list_enumerate VM primitive.
-        Returns a list of (index, element) pairs.
-        """
-        if len(args) != 1:
-            raise ValueError("enumerate() takes exactly 1 argument")
-
-        list_bytes = self.translate_expr_with_ref(args[0])
-
-        return create_inline_call('list_enumerate', [list_bytes], self.bc)
-
-    def translate_zip(self, args: List[ast.expr]) -> bytes:
-        """
-        Translate zip(list1, list2) -> (list-zip list1 list2)
-
-        Uses the new list_zip VM primitive.
-        Returns a list of (elem1, elem2) pairs.
-        """
-        if len(args) != 2:
-            raise ValueError("zip() requires exactly 2 arguments")
-
-        list1_bytes = self.translate_expr_with_ref(args[0])
-        list2_bytes = self.translate_expr_with_ref(args[1])
-
-        return create_inline_call('list_zip', [list1_bytes, list2_bytes], self.bc)
-
-    def translate_list_comp(self, node: ast.ListComp) -> bytes:
-        """
-        Translate list comprehension to map/filter combination.
-
-        Patterns:
-        - [expr for x in iterable] -> (map (lambda (x) expr) iterable)
-        - [expr for x in iterable if cond] -> (map (lambda (x) expr)
-                                                    (filter (lambda (x) cond) iterable))
-        - [expr for x in iter1 for y in iter2] -> nested maps
-
-        Example:
-            [x * 2 for x in lst] -> (map (lambda (x) (* x 2)) lst)
-            [x for x in lst if x > 0] -> (map (lambda (x) x)
-                                              (filter (lambda (x) (> x 0)) lst))
-        """
-        if len(node.generators) == 0:
-            raise ValueError("List comprehension must have at least one generator")
-
-        # For simplicity, we'll handle the most common case first:
-        # Single generator with optional filters
-        if len(node.generators) == 1:
-            gen = node.generators[0]
-
-            # Get the iterator
-            iter_bytes = self.translate_expr_with_ref(gen.iter)
-
-            # Get the target variable(s) - for now only support simple names
-            if not isinstance(gen.target, ast.Name):
-                raise NotImplementedError("List comprehension only supports simple variable targets")
-
-            var_name = gen.target.id
-            safe_var = self.get_safe_name(var_name)
-
-            # Apply filters if any
-            result_iter = iter_bytes
-            for filter_expr in gen.ifs:
-                # Create filter lambda: (lambda (var) filter_expr)
-                filter_body = self.translate_expr(filter_expr)
-                filter_bind = create_bind_form([safe_var], filter_body, self.bc)
-                filter_lambda_id = self.bc.add_expression(filter_bind)
-                filter_lambda_bytes = encode_form_lambda(filter_lambda_id)
-
-                # Apply filter: (filter lambda iter)
-                filtered = create_inline_call('filter', [filter_lambda_bytes, result_iter], self.bc)
-                # Store result as expression
-                filtered_id = self.bc.add_expression(filtered)
-                result_iter = encode_form_ref(filtered_id)
-
-            # Create map lambda: (lambda (var) elt)
-            elt_body = self.translate_expr(node.elt)
-            map_bind = create_bind_form([safe_var], elt_body, self.bc)
-            map_lambda_id = self.bc.add_expression(map_bind)
-            map_lambda_bytes = encode_form_lambda(map_lambda_id)
-
-            # Apply map: (map lambda filtered_iter)
-            return create_inline_call('map', [map_lambda_bytes, result_iter], self.bc)
-
-        else:
-            # Multiple generators: [expr for x in iter1 for y in iter2]
-            # This is more complex - we need nested maps or a single map with cartesian product
-            # For now, implement using nested reduce to build cartesian product
-
-            # Reverse generators so we build from innermost outward
-            gens = list(reversed(node.generators))
-
-            # Build the cartesian product using nested reduce
-            # Start with empty list
-            result = encode_boolean(False)  # Will be replaced
-
-            # Build from innermost generator outward
-            for i, gen in enumerate(gens):
-                if not isinstance(gen.target, ast.Name):
-                    raise NotImplementedError("List comprehension only supports simple variable targets")
-
-                var_name = gen.target.id
-                safe_var = self.get_safe_name(var_name)
-                iter_bytes = self.translate_expr_with_ref(gen.iter)
-
-                if i == 0:
-                    # Innermost generator: map to create singleton lists
-                    # (map (lambda (var) (list (list var))) iter)
-                    # But we need to apply filters first
-                    filtered_iter = iter_bytes
-                    for filter_expr in gen.ifs:
-                        filter_body = self.translate_expr(filter_expr)
-                        filter_bind = create_bind_form([safe_var], filter_body, self.bc)
-                        filter_lambda_id = self.bc.add_expression(filter_bind)
-                        filter_lambda_bytes = encode_form_lambda(filter_lambda_id)
-
-                        filtered = create_inline_call('filter', [filter_lambda_bytes, filtered_iter], self.bc)
-                        filtered_id = self.bc.add_expression(filtered)
-                        filtered_iter = encode_form_ref(filtered_id)
-
-                    # Create list of singleton tuples
-                    singleton_body = create_inline_call('list', [encode_symbol(safe_var, self.bc)], self.bc)
-                    singleton_bind = create_bind_form([safe_var], singleton_body, self.bc)
-                    singleton_lambda_id = self.bc.add_expression(singleton_bind)
-                    singleton_lambda = encode_form_lambda(singleton_lambda_id)
-
-                    result = create_inline_call('map', [singleton_lambda, filtered_iter], self.bc)
-                    result_id = self.bc.add_expression(result)
-                    result = encode_form_ref(result_id)
-                else:
-                    # Outer generators: cartesian product
-                    # This is getting complex - for now raise an error
-                    raise NotImplementedError("Multiple generators in list comprehension not yet fully implemented")
-
-            # Finally, map the element expression over the cartesian product
-            # Extract all variables and create the final lambda
-            all_vars = [self.get_safe_name(g.target.id) for g in reversed(gens)]
-
-            # This is complex - for now just raise an error
-            raise NotImplementedError("Multiple generators in list comprehension not yet fully implemented")
-
-    # === Utilities ===
 
     def translate_function_body(self,
                                 stmts: List[ast.stmt],
@@ -3206,11 +1818,8 @@ class PythonTranslator:
         # need to live in heap boxes. The wraps must execute first so that
         # subsequent reads/writes (already routed through box-ref/box-set!
         # by translate_name and translate_assign) see a box.
-        wrap_refs = []
-        for name in sorted(box_inits):
-            wrap_bytes = self._make_box_init_bytes(name)
-            wrap_id = self.bc.add_expression(wrap_bytes)
-            wrap_refs.append(encode_form_ref(wrap_id))
+        wrap_refs = [self._hoist(self._make_box_init_bytes(name))
+                     for name in sorted(box_inits)]
 
         # Translate the function body statements
         # All returns (including final ones) now use exception-based unwinding
@@ -3226,17 +1835,10 @@ class PythonTranslator:
         if len(stmt_bytes_list) == 1 and not wrap_refs:
             inner_body_bytes = stmt_bytes_list[0]
         else:
-            for stmt_bytes in stmt_bytes_list:
-                stmt_id = self.bc.add_expression(stmt_bytes)
-                all_stmt_refs.append(encode_form_ref(stmt_id))
+            all_stmt_refs.extend(self._hoist(s) for s in stmt_bytes_list)
             inner_body_bytes = create_inline_call('begin', all_stmt_refs, self.bc)
 
-        # No need for guard wrapper - the VM's return primitive now works correctly!
-        # It distinguishes between bind_function frames (actual functions) and regular
-        # bind frames (control flow), so early returns properly exit the function.
-
         # LET-EXPANSION: ((lambda (vars...) body) #f #f ...)
-        # The Racket compiler proves this pattern works, so we just need to encode it correctly
         if local_vars:
             local_var_list = sorted(local_vars)  # Sort for deterministic output
 
@@ -3250,7 +1852,7 @@ class PythonTranslator:
             false_args = [encode_boolean(False) for _ in local_var_list]
 
             # Create the call: ((lambda (x y ...) body) #f #f ...)
-            let_call_bytes = create_inline_call_direct(let_lambda_bytes, false_args, self.bc)
+            let_call_bytes = create_inline_call(let_lambda_bytes, false_args, self.bc)
 
             # Return the let-expansion call directly, do NOT store as expression
             # Storing it and returning a form ref creates nested inline forms which is malformed bytecode
@@ -3268,36 +1870,3 @@ class PythonTranslator:
         else:
             stmt_bytes = [self.translate_stmt(s) for s in stmts]
             return create_inline_call('begin', stmt_bytes, self.bc)
-
-
-def translate_python_to_bytecode(source_code: str) -> Bytecode:
-    """
-    Translate Python source code to VeloxVM bytecode.
-
-    Args:
-        source_code: Python source code string
-
-    Returns:
-        Compiled bytecode
-    """
-    # Parse Python source to AST
-    tree = ast.parse(source_code)
-
-    # Create bytecode container
-    bc = Bytecode()
-
-    # Pre-allocate expression 0 (entry point)
-    bc.add_expression(b'')
-
-    # Pre-split the source so PyveloxCompileError can quote the offending
-    # line. splitlines() drops the trailing newline, which is what we want.
-    source_lines = source_code.splitlines()
-
-    # Translate module
-    translator = PythonTranslator(bc, source_lines=source_lines)
-    accumulated_bytes = translator.translate_module(tree)
-
-    # Replace expression 0 with accumulated bytecode
-    bc.replace_expression(0, accumulated_bytes)
-
-    return bc

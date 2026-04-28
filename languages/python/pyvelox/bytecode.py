@@ -125,16 +125,7 @@ class Bytecode:
 
         # Compilation state
         self.loop_counter = 0  # For generating unique loop names
-        self.temp_counter = 0  # For generating temporary variable names
         self.var_counter = 0   # For generating unique variable names
-
-    def add_string(self, s: str) -> int:
-        """Add a string to the string table."""
-        return self.symbol_table.add_string(s)
-
-    def add_symbol(self, sym: str) -> int:
-        """Add an application-scope symbol to the symbol table."""
-        return self.symbol_table.add_symbol(sym)
 
     def add_expression(self, bytecode: bytes) -> int:
         """
@@ -185,12 +176,6 @@ class Bytecode:
         """Generate a unique loop variable name."""
         name = f"_loop_{self.loop_counter}"
         self.loop_counter += 1
-        return name
-
-    def get_unique_temp_name(self) -> str:
-        """Generate a unique temporary variable name."""
-        name = f"_temp_{self.temp_counter}"
-        self.temp_counter += 1
         return name
 
     def get_unique_var_name(self, prefix: str = "_var") -> str:

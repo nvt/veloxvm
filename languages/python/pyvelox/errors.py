@@ -48,19 +48,24 @@ class PyveloxCompileError(Exception):
         self.source_lines = source_lines
         super().__init__(self.format())
 
-    def format(self, source_path=None):
-        """Render the error as `[path:]line:col: message` plus a snippet
-        of the offending line when source_lines is available."""
-        prefix_parts = []
-        if source_path is not None:
-            prefix_parts.append(str(source_path))
-        if self.lineno is not None:
-            prefix_parts.append(str(self.lineno))
-            if self.col_offset is not None:
-                prefix_parts.append(str(self.col_offset + 1))
-        prefix = ":".join(prefix_parts) + ": " if prefix_parts else ""
+    def format(self, source_path=None) -> str:
+        """Render the error as `[path:]line:col: message`, with a
+        snippet of the offending line and a caret under the column
+        when source lines are available.
 
-        out = f"{prefix}{self.raw_message}"
+        Each prefix component is included only if the underlying
+        attribute is set: a sourceless error from a string-compile
+        loses just the path; a column-less error loses just the col.
+        """
+        parts = filter(None, [
+            str(source_path) if source_path is not None else None,
+            str(self.lineno) if self.lineno is not None else None,
+            (str(self.col_offset + 1)
+             if self.lineno is not None and self.col_offset is not None
+             else None),
+        ])
+        prefix = ":".join(parts)
+        out = f"{prefix}: {self.raw_message}" if prefix else self.raw_message
 
         if (self.source_lines and self.lineno is not None
                 and 1 <= self.lineno <= len(self.source_lines)):
