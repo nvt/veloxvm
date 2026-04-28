@@ -1107,14 +1107,11 @@ class PythonTranslator:
             self._loop_depth = saved_loop_depth
 
     def translate_return(self, node: ast.Return) -> bytes:
-        """
-        Translate return statement using the VM's return primitive (now fixed!).
+        """Translate `return value` to `(return value)`.
 
-        The VM's return primitive has been fixed to distinguish between bind_function
-        frames (actual functions) and regular bind frames (control flow like while loops).
-        It now properly unwinds the stack back to the nearest bind_function frame.
-
-        return value  ->  (return value)
+        The VM's `return` primitive distinguishes `bind_function` frames
+        (actual functions) from regular `bind` frames (while loops,
+        let-expansion), so it unwinds to the nearest enclosing function.
         """
         if node.value:
             value_bytes = self.translate_expr_with_ref(node.value)
@@ -2581,20 +2578,18 @@ class PythonTranslator:
     def translate_int(self, args: List[ast.expr]) -> bytes:
         """Translate `int(x)`.
 
-        Python's `int(x)` accepts ints, strings, and bools; ours
-        previously emitted only `string_to_number`, which raises a
-        type error for anything else (including ints — `int(5)` was
-        broken). Literal arguments resolve at compile time; variables
-        get a runtime type-dispatch:
+        Python's `int(x)` accepts ints, strings, and bools. Literal
+        arguments resolve at compile time; variables get a runtime
+        type-dispatch:
 
             (if (numberp x) x
               (if (stringp x) (string-to-number x)
                 (if x 1 0)))
 
-        The fallback branch coerces by truthiness, matching Python's
+        The fallback branch coerces by truthiness, matching
         `int(True) == 1` / `int(False) == 0`. Calling `int()` on a
         list or None falls into the truthiness branch instead of
-        raising, which is a documented divergence from CPython.
+        raising — a documented divergence from CPython.
         """
         if len(args) != 1:
             raise ValueError("int() takes exactly 1 argument")
@@ -3231,12 +3226,7 @@ class PythonTranslator:
                 all_stmt_refs.append(encode_form_ref(stmt_id))
             inner_body_bytes = create_inline_call('begin', all_stmt_refs, self.bc)
 
-        # No need for guard wrapper - the VM's return primitive now works correctly!
-        # It distinguishes between bind_function frames (actual functions) and regular
-        # bind frames (control flow), so early returns properly exit the function.
-
         # LET-EXPANSION: ((lambda (vars...) body) #f #f ...)
-        # The Racket compiler proves this pattern works, so we just need to encode it correctly
         if local_vars:
             local_var_list = sorted(local_vars)  # Sort for deterministic output
 
