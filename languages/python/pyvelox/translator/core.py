@@ -1258,31 +1258,50 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
 
             return create_inline_call(op, [left_bytes, right_bytes], self.bc)
         else:
-            # Chained comparison
+            # Chained comparison: a OP1 b OP2 c ...  ->  (and (OP1 a b) (OP2 b c) ...).
+            # An intermediate operand (the b above) appears in two
+            # comparisons. translate_expr_with_ref hands back a form-ref
+            # that re-evaluates the underlying expression each time it
+            # is read, so a side-effecting intermediate would fire
+            # twice. Bind such operands to let-temps so each evaluates
+            # exactly once. Endpoints (used in only one comparison) and
+            # single-token operands (re-reading the token has no side
+            # effects) stay inline.
+            operands = [node.left, *node.comparators]
+            wrap_params: List[str] = []
+            wrap_args: List[bytes] = []
+            tokens: List[bytes] = []
+            for i, operand in enumerate(operands):
+                used_twice = 0 < i < len(operands) - 1
+                if used_twice and not self.encodes_as_single_token(operand):
+                    temp = self.bc.get_unique_var_name("_t")
+                    wrap_params.append(temp)
+                    wrap_args.append(self.translate_expr_with_ref(operand))
+                    tokens.append(encode_symbol(temp, self.bc))
+                else:
+                    tokens.append(self.translate_expr_with_ref(operand))
+
             comparisons = []
-            left = node.left
-
-            for op_node, right in zip(node.ops, node.comparators):
+            for i, op_node in enumerate(node.ops):
+                left_t, right_t = tokens[i], tokens[i + 1]
                 op_type = type(op_node)
-                left_bytes = self.translate_expr_with_ref(left)
-                right_bytes = self.translate_expr_with_ref(right)
-
                 if op_type is ast.Eq:
-                    comp_bytes = self._emit_eq(left_bytes, right_bytes, negate=False)
+                    comp_bytes = self._emit_eq(left_t, right_t, negate=False)
                 elif op_type is ast.NotEq:
-                    comp_bytes = self._emit_eq(left_bytes, right_bytes, negate=True)
+                    comp_bytes = self._emit_eq(left_t, right_t, negate=True)
                 else:
                     op = op_map.get(op_type)
                     if not op:
                         raise NotImplementedError(f"Comparison operator not supported: {op_type.__name__}")
-                    comp_bytes = create_inline_call(op, [left_bytes, right_bytes], self.bc)
-
-                # Store each comparison separately
+                    comp_bytes = create_inline_call(op, [left_t, right_t], self.bc)
                 comparisons.append(self._hoist(comp_bytes))
-                left = right
 
-            # (and comp1 comp2 ...)
-            return create_inline_call('and', comparisons, self.bc)
+            and_chain = create_inline_call('and', comparisons, self.bc)
+            if not wrap_params:
+                return and_chain
+            bind_bytes = create_bind_form(wrap_params, and_chain, self.bc)
+            lambda_ref = encode_form_lambda(self.bc.add_expression(bind_bytes))
+            return create_inline_call(lambda_ref, wrap_args, self.bc)
 
     def translate_boolop(self, node: ast.BoolOp) -> bytes:
         """Translate boolean operation: a and b -> (and a b). Complex operands stored separately."""

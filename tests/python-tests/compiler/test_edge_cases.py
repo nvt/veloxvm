@@ -735,6 +735,24 @@ class TestEvaluateOnce(unittest.TestCase):
         syms = self._symbols('def f():\n    return 7\nx = str(f())\n')
         self.assertTrue(any(s.startswith('_t_') for s in syms))
 
+    def test_chained_comparison_intermediate_evaluates_once(self):
+        # `a < g() < b` — g()'s result is the RHS of the first
+        # comparison and the LHS of the second. Without the let-bind
+        # it would evaluate twice.
+        syms = self._symbols(
+            'def g():\n    return 5\nx = 1 < g() < 10\n')
+        self.assertTrue(any(s.startswith('_t_') for s in syms))
+
+    def test_chained_comparison_only_complex_intermediates_bound(self):
+        # Endpoint calls don't appear twice in the chain, so they
+        # don't need binding. All-name chains don't either.
+        syms = self._symbols(
+            'def f():\n    return 1\ndef h():\n    return 10\n'
+            'x = f() < 5 < h()\n')
+        self.assertFalse(any(s.startswith('_t_') for s in syms))
+        syms = self._symbols('a = 1\nb = 2\nc = 3\nx = a < b < c\n')
+        self.assertFalse(any(s.startswith('_t_') for s in syms))
+
 
 class TestIntConversion(unittest.TestCase):
     """`int(x)` previously emitted only string_to_number, which raises
