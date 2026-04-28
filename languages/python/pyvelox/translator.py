@@ -545,8 +545,7 @@ class PythonTranslator:
             # Create (cons key value)
             pair_bytes = create_inline_call('cons', [key_bytes, val_bytes], self.bc)
             # Store each cons pair separately
-            pair_id = self.bc.add_expression(pair_bytes)
-            pairs.append(encode_form_ref(pair_id))
+            pairs.append(self._hoist(pair_bytes))
 
         # Wrap in (list pair1 pair2 ...)
         return create_inline_call('list', pairs, self.bc)
@@ -671,8 +670,7 @@ class PythonTranslator:
         result_bytes = create_inline_call(op, [var_bytes, value_bytes], self.bc)
 
         # Store the operation separately and reference it
-        result_id = self.bc.add_expression(result_bytes)
-        result_ref = encode_form_ref(result_id)
+        result_ref = self._hoist(result_bytes)
 
         # (set! var result) or (box-set! var result) when boxed.
         write_op = 'box_set' if self._is_boxed(safe_name) else 'set'
@@ -755,6 +753,14 @@ class PythonTranslator:
             return create_inline_call(
                 'box_ref', [encode_symbol(safe_name, self.bc)], self.bc)
         return encode_symbol(safe_name, self.bc)
+
+    def _hoist(self, call_bytes: bytes) -> bytes:
+        """Stash `call_bytes` in the expression table and return the
+        form-ref that references it. Used wherever a complex inline
+        form has to appear in a context that only accepts a single
+        token (an `if` branch, a nested-form argument, etc.).
+        """
+        return encode_form_ref(self.bc.add_expression(call_bytes))
 
     def _make_box_init_bytes(self, safe_name: str) -> bytes:
         """
@@ -1249,10 +1255,10 @@ class PythonTranslator:
         if isinstance(node.op, ast.RShift):
             # Right shift: negate the shift amount
             right_expr_bytes = self.translate_expr_with_ref(node.right)
-            right_bytes = create_inline_call('subtract', [encode_integer(0), right_expr_bytes], self.bc)
-            # Store the negation separately
-            negate_id = self.bc.add_expression(right_bytes)
-            right_bytes = encode_form_ref(negate_id)
+            right_bytes = self._hoist(
+                create_inline_call('subtract',
+                                   [encode_integer(0), right_expr_bytes],
+                                   self.bc))
         else:
             right_bytes = self.translate_expr_with_ref(node.right)
 
@@ -1289,8 +1295,7 @@ class PythonTranslator:
         eq_call = create_inline_call('equalp', [left_bytes, right_bytes], self.bc)
         if not negate:
             return eq_call
-        eq_id = self.bc.add_expression(eq_call)
-        return create_inline_call('not', [encode_form_ref(eq_id)], self.bc)
+        return create_inline_call('not', [self._hoist(eq_call)], self.bc)
 
     def translate_compare(self, node: ast.Compare) -> bytes:
         """
@@ -1325,15 +1330,13 @@ class PythonTranslator:
                 if is_dict_literal:
                     # key in dict-literal -> (if (assoc key dict) #t #f)
                     assoc_call = create_inline_call('assoc', [left_bytes, right_bytes], self.bc)
-                    assoc_id = self.bc.add_expression(assoc_call)
-                    assoc_ref = encode_form_ref(assoc_id)
+                    assoc_ref = self._hoist(assoc_call)
                     return create_inline_call('if', [assoc_ref, encode_boolean(True), encode_boolean(False)], self.bc)
                 else:
                     # x in container -> (if (member x container) #t #f)
                     # Note: For dict variables, use d.get(key) is not None instead
                     member_call = create_inline_call('member', [left_bytes, right_bytes], self.bc)
-                    member_id = self.bc.add_expression(member_call)
-                    member_ref = encode_form_ref(member_id)
+                    member_ref = self._hoist(member_call)
                     return create_inline_call('if', [member_ref, encode_boolean(True), encode_boolean(False)], self.bc)
 
             elif op_type == ast.NotIn:
@@ -1346,14 +1349,12 @@ class PythonTranslator:
                 if is_dict_literal:
                     # key not in dict-literal -> (not (assoc key dict))
                     assoc_call = create_inline_call('assoc', [left_bytes, right_bytes], self.bc)
-                    assoc_id = self.bc.add_expression(assoc_call)
-                    assoc_ref = encode_form_ref(assoc_id)
+                    assoc_ref = self._hoist(assoc_call)
                     return create_inline_call('not', [assoc_ref], self.bc)
                 else:
                     # x not in container -> (not (member x container))
                     member_call = create_inline_call('member', [left_bytes, right_bytes], self.bc)
-                    member_id = self.bc.add_expression(member_call)
-                    member_ref = encode_form_ref(member_id)
+                    member_ref = self._hoist(member_call)
                     return create_inline_call('not', [member_ref], self.bc)
 
             left_bytes = self.translate_expr_with_ref(node.left)
@@ -1390,8 +1391,7 @@ class PythonTranslator:
                     comp_bytes = create_inline_call(op, [left_bytes, right_bytes], self.bc)
 
                 # Store each comparison separately
-                comp_id = self.bc.add_expression(comp_bytes)
-                comparisons.append(encode_form_ref(comp_id))
+                comparisons.append(self._hoist(comp_bytes))
                 left = right
 
             # (and comp1 comp2 ...)
@@ -1422,14 +1422,12 @@ class PythonTranslator:
         body_bytes = self.translate_block(node.body)
 
         # Store body as separate expression
-        body_id = self.bc.add_expression(body_bytes)
-        body_ref = encode_form_ref(body_id)
+        body_ref = self._hoist(body_bytes)
 
         if node.orelse:
             alt_bytes = self.translate_block(node.orelse)
             # Store alt as separate expression
-            alt_id = self.bc.add_expression(alt_bytes)
-            alt_ref = encode_form_ref(alt_id)
+            alt_ref = self._hoist(alt_bytes)
         else:
             alt_ref = encode_boolean(False)
 
@@ -1468,21 +1466,17 @@ class PythonTranslator:
             'eqp',
             [encode_symbol(exc_name, self.bc), sentinel_quoted],
             self.bc)
-        eq_id = self.bc.add_expression(eq_check)
-        eq_ref = encode_form_ref(eq_id)
+        eq_ref = self._hoist(eq_check)
 
         rethrow = create_inline_call(
             'raise', [encode_symbol(exc_name, self.bc)], self.bc)
-        rethrow_id = self.bc.add_expression(rethrow)
-        rethrow_ref = encode_form_ref(rethrow_id)
+        rethrow_ref = self._hoist(rethrow)
 
         handler = create_inline_call(
             'if', [eq_ref, encode_boolean(False), rethrow_ref], self.bc)
-        handler_id = self.bc.add_expression(handler)
-        handler_ref = encode_form_ref(handler_id)
+        handler_ref = self._hoist(handler)
 
-        body_id = self.bc.add_expression(body_bytes)
-        body_ref = encode_form_ref(body_id)
+        body_ref = self._hoist(body_bytes)
 
         return create_inline_call(
             'guard',
@@ -1515,8 +1509,7 @@ class PythonTranslator:
                 body_bytes, self.CONTINUE_SENTINEL)
 
             # Store body as separate expression
-            body_id = self.bc.add_expression(body_bytes)
-            body_ref = encode_form_ref(body_id)
+            body_ref = self._hoist(body_bytes)
 
             # Create lambda for loop body with body reference
             bind_bytes = create_bind_form([safe_param], body_ref, self.bc)
@@ -1579,8 +1572,7 @@ class PythonTranslator:
             # Call inner lambda with list-ref expressions
             # (inner_lambda (list-ref item 0) (list-ref item 1))
             inner_call = create_inline_call_direct(inner_lambda_ref, list_ref_calls, self.bc)
-            inner_call_id = self.bc.add_expression(inner_call)
-            inner_call_ref = encode_form_ref(inner_call_id)
+            inner_call_ref = self._hoist(inner_call)
 
             # Create outer lambda: (lambda (item) inner_call_ref)
             outer_lambda_bytes = create_bind_form([item_param], inner_call_ref, self.bc)
@@ -1723,11 +1715,9 @@ class PythonTranslator:
             handler_bytes = self._filter_loop_sentinels(exc_var, handler_bytes)
 
         # Store body and handler as separate expressions
-        body_id = self.bc.add_expression(body_bytes)
-        body_ref = encode_form_ref(body_id)
+        body_ref = self._hoist(body_bytes)
 
-        handler_id = self.bc.add_expression(handler_bytes)
-        handler_ref = encode_form_ref(handler_id)
+        handler_ref = self._hoist(handler_bytes)
 
         # (guard exc_var handler body) — guard's min/max argc is 3.
         return create_inline_call('guard', [
@@ -1749,26 +1739,21 @@ class PythonTranslator:
 
         is_break = create_inline_call(
             'eqp', [encode_symbol(exc_var, self.bc), break_quoted], self.bc)
-        is_break_id = self.bc.add_expression(is_break)
-        is_break_ref = encode_form_ref(is_break_id)
+        is_break_ref = self._hoist(is_break)
 
         is_cont = create_inline_call(
             'eqp', [encode_symbol(exc_var, self.bc), cont_quoted], self.bc)
-        is_cont_id = self.bc.add_expression(is_cont)
-        is_cont_ref = encode_form_ref(is_cont_id)
+        is_cont_ref = self._hoist(is_cont)
 
         is_sentinel = create_inline_call(
             'or', [is_break_ref, is_cont_ref], self.bc)
-        is_sentinel_id = self.bc.add_expression(is_sentinel)
-        is_sentinel_ref = encode_form_ref(is_sentinel_id)
+        is_sentinel_ref = self._hoist(is_sentinel)
 
         rethrow = create_inline_call(
             'raise', [encode_symbol(exc_var, self.bc)], self.bc)
-        rethrow_id = self.bc.add_expression(rethrow)
-        rethrow_ref = encode_form_ref(rethrow_id)
+        rethrow_ref = self._hoist(rethrow)
 
-        handler_id = self.bc.add_expression(handler_bytes)
-        handler_ref = encode_form_ref(handler_id)
+        handler_ref = self._hoist(handler_bytes)
 
         return create_inline_call(
             'if', [is_sentinel_ref, rethrow_ref, handler_ref], self.bc)
@@ -1841,8 +1826,7 @@ class PythonTranslator:
             # Dict access: (cdr (assoc key dict))
             assoc_bytes = create_inline_call('assoc', [index_bytes, value_bytes], self.bc)
             # Store assoc call separately
-            assoc_id = self.bc.add_expression(assoc_bytes)
-            assoc_ref = encode_form_ref(assoc_id)
+            assoc_ref = self._hoist(assoc_bytes)
             # Get the value from the pair with cdr
             return create_inline_call('cdr', [assoc_ref], self.bc)
         else:
@@ -1891,8 +1875,7 @@ class PythonTranslator:
                 # lst[start:] -> (slice lst start (length lst))
                 # s[start:] -> (slice s start (length s))
                 length_call = create_inline_call('length', [value_bytes], self.bc)
-                length_id = self.bc.add_expression(length_call)
-                length_ref = encode_form_ref(length_id)
+                length_ref = self._hoist(length_call)
 
                 return create_inline_call('slice', [value_bytes, start_bytes, length_ref], self.bc)
             else:
@@ -1978,13 +1961,11 @@ class PythonTranslator:
 
         # (assoc key dict)
         assoc_bytes = create_inline_call('assoc', [key_bytes, dict_bytes], self.bc)
-        assoc_id = self.bc.add_expression(assoc_bytes)
-        assoc_ref = encode_form_ref(assoc_id)
+        assoc_ref = self._hoist(assoc_bytes)
 
         # (cdr pair) for the true branch
         cdr_bytes = create_inline_call('cdr', [assoc_ref], self.bc)
-        cdr_id = self.bc.add_expression(cdr_bytes)
-        cdr_ref = encode_form_ref(cdr_id)
+        cdr_ref = self._hoist(cdr_bytes)
 
         # (if pair (cdr pair) default)
         return create_inline_call('if', [assoc_ref, cdr_ref, default_bytes], self.bc)
@@ -2011,21 +1992,18 @@ class PythonTranslator:
 
         # Create (cons 'key val)
         new_pair_bytes = create_inline_call('cons', [key_bytes, value_bytes], self.bc)
-        new_pair_id = self.bc.add_expression(new_pair_bytes)
-        new_pair_ref = encode_form_ref(new_pair_id)
+        new_pair_ref = self._hoist(new_pair_bytes)
 
         # Create filter lambda: (lambda (p) (not (equal (car p) 'key)))
         # This filters out any existing pair with the same key
 
         # (car p) - extract key from pair
         car_p_bytes = create_inline_call('car', [encode_symbol('p', self.bc)], self.bc)
-        car_p_id = self.bc.add_expression(car_p_bytes)
-        car_p_ref = encode_form_ref(car_p_id)
+        car_p_ref = self._hoist(car_p_bytes)
 
         # (equal (car p) 'key)
         equal_bytes = create_inline_call('equalp', [car_p_ref, key_bytes], self.bc)
-        equal_id = self.bc.add_expression(equal_bytes)
-        equal_ref = encode_form_ref(equal_id)
+        equal_ref = self._hoist(equal_bytes)
 
         # (not (equal ...))
         not_bytes = create_inline_call('not', [equal_ref], self.bc)
@@ -2038,13 +2016,11 @@ class PythonTranslator:
         # (filter lambda d)
         dict_ref = encode_symbol(safe_dict_name, self.bc)
         filter_bytes = create_inline_call('filter', [filter_lambda_bytes, dict_ref], self.bc)
-        filter_id = self.bc.add_expression(filter_bytes)
-        filter_ref = encode_form_ref(filter_id)
+        filter_ref = self._hoist(filter_bytes)
 
         # (cons new_pair filtered_dict)
         new_dict_bytes = create_inline_call('cons', [new_pair_ref, filter_ref], self.bc)
-        new_dict_id = self.bc.add_expression(new_dict_bytes)
-        new_dict_ref = encode_form_ref(new_dict_id)
+        new_dict_ref = self._hoist(new_dict_bytes)
 
         # (set! d new_dict)
         return create_inline_call('set', [dict_ref, new_dict_ref], self.bc)
@@ -2072,14 +2048,12 @@ class PythonTranslator:
 
         # Create (list value)
         list_wrapper = create_inline_call('list', [value_bytes], self.bc)
-        list_wrapper_id = self.bc.add_expression(list_wrapper)
-        list_wrapper_ref = encode_form_ref(list_wrapper_id)
+        list_wrapper_ref = self._hoist(list_wrapper)
 
         # (append lst (list value))
         list_ref = encode_symbol(safe_list_name, self.bc)
         append_bytes = create_inline_call('append', [list_ref, list_wrapper_ref], self.bc)
-        append_id = self.bc.add_expression(append_bytes)
-        append_ref = encode_form_ref(append_id)
+        append_ref = self._hoist(append_bytes)
 
         # (set! lst (append ...))
         return create_inline_call('set', [list_ref, append_ref], self.bc)
@@ -2102,8 +2076,7 @@ class PythonTranslator:
         # (append lst other)
         list_ref = encode_symbol(safe_list_name, self.bc)
         append_bytes = create_inline_call('append', [list_ref, other_bytes], self.bc)
-        append_id = self.bc.add_expression(append_bytes)
-        append_ref = encode_form_ref(append_id)
+        append_ref = self._hoist(append_bytes)
 
         # (set! lst (append ...))
         return create_inline_call('set', [list_ref, append_ref], self.bc)
@@ -2145,8 +2118,7 @@ class PythonTranslator:
         # (remove value lst)
         list_ref = encode_symbol(safe_list_name, self.bc)
         remove_bytes = create_inline_call('remove', [value_bytes, list_ref], self.bc)
-        remove_id = self.bc.add_expression(remove_bytes)
-        remove_ref = encode_form_ref(remove_id)
+        remove_ref = self._hoist(remove_bytes)
 
         # (set! lst (remove ...))
         return create_inline_call('set', [list_ref, remove_ref], self.bc)
@@ -2164,8 +2136,7 @@ class PythonTranslator:
         # (reverse lst)
         list_ref = encode_symbol(safe_list_name, self.bc)
         reverse_bytes = create_inline_call('reverse', [list_ref], self.bc)
-        reverse_id = self.bc.add_expression(reverse_bytes)
-        reverse_ref = encode_form_ref(reverse_id)
+        reverse_ref = self._hoist(reverse_bytes)
 
         # (set! lst (reverse ...))
         return create_inline_call('set', [list_ref, reverse_ref], self.bc)
@@ -2231,15 +2202,13 @@ class PythonTranslator:
 
         # (string-to-list s)
         to_list_bytes = create_inline_call('string_to_list', [str_bytes], self.bc)
-        to_list_id = self.bc.add_expression(to_list_bytes)
-        to_list_ref = encode_form_ref(to_list_id)
+        to_list_ref = self._hoist(to_list_bytes)
 
         # Create lambda (c) (char-upcase c) - actually, map can take primitive directly
         # (map char-upcase (string-to-list s))
         char_upcase_symbol = encode_symbol('char_upcase', self.bc)
         map_bytes = create_inline_call('map', [char_upcase_symbol, to_list_ref], self.bc)
-        map_id = self.bc.add_expression(map_bytes)
-        map_ref = encode_form_ref(map_id)
+        map_ref = self._hoist(map_bytes)
 
         # (list-to-string (map ...))
         return create_inline_call('list_to_string', [map_ref], self.bc)
@@ -2252,14 +2221,12 @@ class PythonTranslator:
 
         # (string-to-list s)
         to_list_bytes = create_inline_call('string_to_list', [str_bytes], self.bc)
-        to_list_id = self.bc.add_expression(to_list_bytes)
-        to_list_ref = encode_form_ref(to_list_id)
+        to_list_ref = self._hoist(to_list_bytes)
 
         # (map char-downcase (string-to-list s))
         char_downcase_symbol = encode_symbol('char_downcase', self.bc)
         map_bytes = create_inline_call('map', [char_downcase_symbol, to_list_ref], self.bc)
-        map_id = self.bc.add_expression(map_bytes)
-        map_ref = encode_form_ref(map_id)
+        map_ref = self._hoist(map_bytes)
 
         # (list-to-string (map ...))
         return create_inline_call('list_to_string', [map_ref], self.bc)
@@ -2307,8 +2274,7 @@ class PythonTranslator:
 
         # (string-length prefix)
         prefix_len_bytes = create_inline_call('string_length', [prefix_bytes], self.bc)
-        prefix_len_id = self.bc.add_expression(prefix_len_bytes)
-        prefix_len_ref = encode_form_ref(prefix_len_id)
+        prefix_len_ref = self._hoist(prefix_len_bytes)
 
         # (substring s 0 (string-length prefix))
         substring_bytes = create_inline_call('substring', [
@@ -2316,8 +2282,7 @@ class PythonTranslator:
             encode_integer(0),
             prefix_len_ref
         ], self.bc)
-        substring_id = self.bc.add_expression(substring_bytes)
-        substring_ref = encode_form_ref(substring_id)
+        substring_ref = self._hoist(substring_bytes)
 
         # (equal substring prefix)
         return create_inline_call('equalp', [substring_ref, prefix_bytes], self.bc)
@@ -2340,23 +2305,19 @@ class PythonTranslator:
 
         # (string-length s)
         str_len_bytes = create_inline_call('string_length', [str_bytes], self.bc)
-        str_len_id = self.bc.add_expression(str_len_bytes)
-        str_len_ref = encode_form_ref(str_len_id)
+        str_len_ref = self._hoist(str_len_bytes)
 
         # (string-length suffix)
         suffix_len_bytes = create_inline_call('string_length', [suffix_bytes], self.bc)
-        suffix_len_id = self.bc.add_expression(suffix_len_bytes)
-        suffix_len_ref = encode_form_ref(suffix_len_id)
+        suffix_len_ref = self._hoist(suffix_len_bytes)
 
         # (- (string-length s) (string-length suffix))
         start_pos_bytes = create_inline_call('subtract', [str_len_ref, suffix_len_ref], self.bc)
-        start_pos_id = self.bc.add_expression(start_pos_bytes)
-        start_pos_ref = encode_form_ref(start_pos_id)
+        start_pos_ref = self._hoist(start_pos_bytes)
 
         # (substring s start_pos str_len)
         substring_bytes = create_inline_call('substring', [str_bytes, start_pos_ref, str_len_ref], self.bc)
-        substring_id = self.bc.add_expression(substring_bytes)
-        substring_ref = encode_form_ref(substring_id)
+        substring_ref = self._hoist(substring_bytes)
 
         # (equal substring suffix)
         return create_inline_call('equalp', [substring_ref, suffix_bytes], self.bc)
@@ -2409,8 +2370,7 @@ class PythonTranslator:
         print_call = create_inline_call('print', arg_bytes, self.bc)
 
         # Store print call as separate expression
-        print_id = self.bc.add_expression(print_call)
-        print_ref = encode_form_ref(print_id)
+        print_ref = self._hoist(print_call)
 
         # Add newline: (write-char #\newline)
         from .encoder import encode_character
@@ -2418,8 +2378,7 @@ class PythonTranslator:
         newline_call = create_inline_call('write_char', [newline_char], self.bc)
 
         # Store newline call as separate expression
-        newline_id = self.bc.add_expression(newline_call)
-        newline_ref = encode_form_ref(newline_id)
+        newline_ref = self._hoist(newline_call)
 
         # Combine with begin: (begin (print ...) (write-char #\newline))
         return create_inline_call('begin', [print_ref, newline_ref], self.bc)
@@ -2612,30 +2571,27 @@ class PythonTranslator:
 
         arg_bytes = self.translate_expr_with_ref(arg)
 
-        def _hoist(call_bytes: bytes) -> bytes:
-            return encode_form_ref(self.bc.add_expression(call_bytes))
-
         # Innermost: (if x 1 0) — handles booleans (and any truthy
         # value, gracefully degrading instead of crashing).
-        bool_branch_ref = _hoist(create_inline_call(
+        bool_branch_ref = self._hoist(create_inline_call(
             'if',
             [arg_bytes, encode_integer(1), encode_integer(0)],
             self.bc))
 
         # (string-to-number x)
-        str_branch_ref = _hoist(create_inline_call(
+        str_branch_ref = self._hoist(create_inline_call(
             'string_to_number', [arg_bytes], self.bc))
 
         # (stringp x)
-        str_test_ref = _hoist(create_inline_call(
+        str_test_ref = self._hoist(create_inline_call(
             'stringp', [arg_bytes], self.bc))
 
         # (if (stringp x) (string-to-number x) bool_branch)
-        inner_if_ref = _hoist(create_inline_call(
+        inner_if_ref = self._hoist(create_inline_call(
             'if', [str_test_ref, str_branch_ref, bool_branch_ref], self.bc))
 
         # (numberp x)
-        num_test_ref = _hoist(create_inline_call(
+        num_test_ref = self._hoist(create_inline_call(
             'numberp', [arg_bytes], self.bc))
 
         # (if (numberp x) x inner_if)
@@ -2684,11 +2640,8 @@ class PythonTranslator:
 
         arg_bytes = self.translate_expr_with_ref(arg)
 
-        def _hoist(call_bytes: bytes) -> bytes:
-            return encode_form_ref(self.bc.add_expression(call_bytes))
-
         # Inner branch for booleans: (if x "True" "False")
-        bool_branch_ref = _hoist(create_inline_call(
+        bool_branch_ref = self._hoist(create_inline_call(
             'if',
             [arg_bytes,
              encode_string("True", self.bc),
@@ -2696,19 +2649,19 @@ class PythonTranslator:
             self.bc))
 
         # Numeric/fallback branch: (number-to-string x)
-        num_branch_ref = _hoist(create_inline_call(
+        num_branch_ref = self._hoist(create_inline_call(
             'number_to_string', [arg_bytes], self.bc))
 
         # (booleanp x)
-        bool_test_ref = _hoist(create_inline_call(
+        bool_test_ref = self._hoist(create_inline_call(
             'booleanp', [arg_bytes], self.bc))
 
         # (if (booleanp x) bool_branch num_branch)
-        inner_if_ref = _hoist(create_inline_call(
+        inner_if_ref = self._hoist(create_inline_call(
             'if', [bool_test_ref, bool_branch_ref, num_branch_ref], self.bc))
 
         # (stringp x)
-        str_test_ref = _hoist(create_inline_call(
+        str_test_ref = self._hoist(create_inline_call(
             'stringp', [arg_bytes], self.bc))
 
         # (if (stringp x) x inner_if)
@@ -2725,13 +2678,11 @@ class PythonTranslator:
         # Create comparison: (< x 0)
         zero_bytes = encode_integer(0)
         cmp_bytes = create_inline_call('less_than', [arg_bytes, zero_bytes], self.bc)
-        cmp_id = self.bc.add_expression(cmp_bytes)
-        cmp_ref = encode_form_ref(cmp_id)
+        cmp_ref = self._hoist(cmp_bytes)
 
         # Create negation: (- 0 x)
         neg_bytes = create_inline_call('subtract', [zero_bytes, arg_bytes], self.bc)
-        neg_id = self.bc.add_expression(neg_bytes)
-        neg_ref = encode_form_ref(neg_id)
+        neg_ref = self._hoist(neg_bytes)
 
         # (if (< x 0) (- 0 x) x)
         return create_inline_call('if', [cmp_ref, neg_ref, arg_bytes], self.bc)
@@ -2746,8 +2697,7 @@ class PythonTranslator:
         b_sym = encode_symbol('b', self.bc)
 
         cmp_call = create_inline_call(cmp_op, [a_sym, b_sym], self.bc)
-        cmp_id = self.bc.add_expression(cmp_call)
-        cmp_ref = encode_form_ref(cmp_id)
+        cmp_ref = self._hoist(cmp_call)
 
         if_form = create_inline_call('if', [cmp_ref, a_sym, b_sym], self.bc)
         lambda_bind = create_bind_form(['a', 'b'], if_form, self.bc)
@@ -2779,19 +2729,16 @@ class PythonTranslator:
             elif len(items) == 2:
                 # (if (< a b) a b)
                 cmp = create_inline_call('less_than', [items[0], items[1]], self.bc)
-                cmp_id = self.bc.add_expression(cmp)
-                cmp_ref = encode_form_ref(cmp_id)
+                cmp_ref = self._hoist(cmp)
                 return create_inline_call('if', [cmp_ref, items[0], items[1]], self.bc)
             else:
                 # min(a, rest) = (if (< a min(rest)) a min(rest))
                 first = items[0]
                 rest_min = build_min(items[1:])
-                rest_id = self.bc.add_expression(rest_min)
-                rest_ref = encode_form_ref(rest_id)
+                rest_ref = self._hoist(rest_min)
 
                 cmp = create_inline_call('less_than', [first, rest_ref], self.bc)
-                cmp_id = self.bc.add_expression(cmp)
-                cmp_ref = encode_form_ref(cmp_id)
+                cmp_ref = self._hoist(cmp)
                 return create_inline_call('if', [cmp_ref, first, rest_ref], self.bc)
 
         return build_min(arg_bytes)
@@ -2818,19 +2765,16 @@ class PythonTranslator:
             elif len(items) == 2:
                 # (if (> a b) a b)
                 cmp = create_inline_call('greater_than', [items[0], items[1]], self.bc)
-                cmp_id = self.bc.add_expression(cmp)
-                cmp_ref = encode_form_ref(cmp_id)
+                cmp_ref = self._hoist(cmp)
                 return create_inline_call('if', [cmp_ref, items[0], items[1]], self.bc)
             else:
                 # max(a, rest) = (if (> a max(rest)) a max(rest))
                 first = items[0]
                 rest_max = build_max(items[1:])
-                rest_id = self.bc.add_expression(rest_max)
-                rest_ref = encode_form_ref(rest_id)
+                rest_ref = self._hoist(rest_max)
 
                 cmp = create_inline_call('greater_than', [first, rest_ref], self.bc)
-                cmp_id = self.bc.add_expression(cmp)
-                cmp_ref = encode_form_ref(cmp_id)
+                cmp_ref = self._hoist(cmp)
                 return create_inline_call('if', [cmp_ref, first, rest_ref], self.bc)
 
         return build_max(arg_bytes)
@@ -3091,9 +3035,7 @@ class PythonTranslator:
 
                 # Apply filter: (filter lambda iter)
                 filtered = create_inline_call('filter', [filter_lambda_bytes, result_iter], self.bc)
-                # Store result as expression
-                filtered_id = self.bc.add_expression(filtered)
-                result_iter = encode_form_ref(filtered_id)
+                result_iter = self._hoist(filtered)
 
             # Create map lambda: (lambda (var) elt)
             elt_body = self.translate_expr(node.elt)
@@ -3137,8 +3079,7 @@ class PythonTranslator:
                         filter_lambda_bytes = encode_form_lambda(filter_lambda_id)
 
                         filtered = create_inline_call('filter', [filter_lambda_bytes, filtered_iter], self.bc)
-                        filtered_id = self.bc.add_expression(filtered)
-                        filtered_iter = encode_form_ref(filtered_id)
+                        filtered_iter = self._hoist(filtered)
 
                     # Create list of singleton tuples
                     singleton_body = create_inline_call('list', [encode_symbol(safe_var, self.bc)], self.bc)
@@ -3146,9 +3087,8 @@ class PythonTranslator:
                     singleton_lambda_id = self.bc.add_expression(singleton_bind)
                     singleton_lambda = encode_form_lambda(singleton_lambda_id)
 
-                    result = create_inline_call('map', [singleton_lambda, filtered_iter], self.bc)
-                    result_id = self.bc.add_expression(result)
-                    result = encode_form_ref(result_id)
+                    result = self._hoist(create_inline_call(
+                        'map', [singleton_lambda, filtered_iter], self.bc))
                 else:
                     # Outer generators: cartesian product
                     # This is getting complex - for now raise an error
@@ -3201,11 +3141,8 @@ class PythonTranslator:
         # need to live in heap boxes. The wraps must execute first so that
         # subsequent reads/writes (already routed through box-ref/box-set!
         # by translate_name and translate_assign) see a box.
-        wrap_refs = []
-        for name in sorted(box_inits):
-            wrap_bytes = self._make_box_init_bytes(name)
-            wrap_id = self.bc.add_expression(wrap_bytes)
-            wrap_refs.append(encode_form_ref(wrap_id))
+        wrap_refs = [self._hoist(self._make_box_init_bytes(name))
+                     for name in sorted(box_inits)]
 
         # Translate the function body statements
         # All returns (including final ones) now use exception-based unwinding
@@ -3221,9 +3158,7 @@ class PythonTranslator:
         if len(stmt_bytes_list) == 1 and not wrap_refs:
             inner_body_bytes = stmt_bytes_list[0]
         else:
-            for stmt_bytes in stmt_bytes_list:
-                stmt_id = self.bc.add_expression(stmt_bytes)
-                all_stmt_refs.append(encode_form_ref(stmt_id))
+            all_stmt_refs.extend(self._hoist(s) for s in stmt_bytes_list)
             inner_body_bytes = create_inline_call('begin', all_stmt_refs, self.bc)
 
         # LET-EXPANSION: ((lambda (vars...) body) #f #f ...)
