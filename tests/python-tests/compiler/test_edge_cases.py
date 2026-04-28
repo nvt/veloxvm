@@ -705,6 +705,37 @@ class TestFStrings(unittest.TestCase):
         self.assertIn("conversion", ctx.exception.raw_message)
 
 
+class TestEvaluateOnce(unittest.TestCase):
+    """int(), str(), and abs() emit a runtime type-dispatch that
+    references their argument from multiple branches. For
+    side-effecting argument expressions (calls, comprehensions, ...)
+    the argument must evaluate exactly once — so the translator
+    wraps non-trivial args in a let-binding. Single-token args
+    (Name, Constant, Lambda) skip the wrap."""
+
+    def _symbols(self, source):
+        bc = compile_string(source)
+        return bc.symbol_table.symbols
+
+    def test_abs_of_call_evaluates_once(self):
+        syms = self._symbols('def f():\n    return -5\nx = abs(f())\n')
+        self.assertTrue(any(s.startswith('_t_') for s in syms),
+                        f"expected let-bound temp in {syms!r}")
+
+    def test_abs_of_name_does_not_wrap(self):
+        syms = self._symbols('y = -3\nx = abs(y)\n')
+        self.assertFalse(any(s.startswith('_t_') for s in syms),
+                         f"unexpected let-bound temp in {syms!r}")
+
+    def test_int_of_call_evaluates_once(self):
+        syms = self._symbols('def f():\n    return 7\nx = int(f())\n')
+        self.assertTrue(any(s.startswith('_t_') for s in syms))
+
+    def test_str_of_call_evaluates_once(self):
+        syms = self._symbols('def f():\n    return 7\nx = str(f())\n')
+        self.assertTrue(any(s.startswith('_t_') for s in syms))
+
+
 class TestIntConversion(unittest.TestCase):
     """`int(x)` previously emitted only string_to_number, which raises
     a type error for ints/bools. Literals now resolve at compile time;

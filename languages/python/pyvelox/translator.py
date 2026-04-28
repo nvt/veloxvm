@@ -762,6 +762,33 @@ class PythonTranslator:
         """
         return encode_form_ref(self.bc.add_expression(call_bytes))
 
+    def _evaluate_once(self, arg_node: ast.expr,
+                       build: Callable[[bytes], bytes]) -> bytes:
+        """Evaluate `arg_node` exactly once, then run the bytecode
+        produced by `build(arg_token)`.
+
+        For single-token args (Constant, Name, Lambda) the value
+        token has no side effects on re-read, so we hand it straight
+        to `build`. For everything else — function calls, arithmetic,
+        comprehensions, etc. — we wrap in `((lambda (_t) <build(_t)>)
+        <arg>)` so the argument's side effects fire once and `_t` is
+        a plain symbol thereafter.
+
+        Used by handlers that emit a runtime type-dispatch
+        (`int`, `str`, `abs`, ...) where the dispatch references the
+        argument from multiple branches.
+        """
+        if self.encodes_as_single_token(arg_node):
+            return build(self.translate_expr(arg_node))
+
+        arg_bytes = self.translate_expr_with_ref(arg_node)
+        temp_name = self.bc.get_unique_var_name("_t")
+        temp_token = encode_symbol(temp_name, self.bc)
+        body_bytes = build(temp_token)
+        bind_bytes = create_bind_form([temp_name], body_bytes, self.bc)
+        lambda_ref = encode_form_lambda(self.bc.add_expression(bind_bytes))
+        return create_inline_call(lambda_ref, [arg_bytes], self.bc)
+
     def _make_box_init_bytes(self, safe_name: str) -> bytes:
         """
         Emit (set! name (box name)) -- the function-entry wrap that replaces
@@ -2548,34 +2575,32 @@ class PythonTranslator:
                     self.bc)
             # Other constants (None, floats) fall through to runtime.
 
-        arg_bytes = self.translate_expr_with_ref(arg)
+        def build(arg_token: bytes) -> bytes:
+            # (if x 1 0) — booleans and any truthy value, degrades
+            # gracefully for unsupported types.
+            bool_branch = self._hoist(create_inline_call(
+                'if', [arg_token, encode_integer(1), encode_integer(0)],
+                self.bc))
+            # (string-to-number x)
+            str_branch = self._hoist(create_inline_call(
+                'string_to_number', [arg_token], self.bc))
+            # (stringp x)
+            str_test = self._hoist(create_inline_call(
+                'stringp', [arg_token], self.bc))
+            # (if (stringp x) (string-to-number x) bool_branch)
+            inner_if = self._hoist(create_inline_call(
+                'if', [str_test, str_branch, bool_branch], self.bc))
+            # (numberp x)
+            num_test = self._hoist(create_inline_call(
+                'numberp', [arg_token], self.bc))
+            # (if (numberp x) x inner_if)
+            return create_inline_call(
+                'if', [num_test, arg_token, inner_if], self.bc)
 
-        # Innermost: (if x 1 0) — handles booleans (and any truthy
-        # value, gracefully degrading instead of crashing).
-        bool_branch_ref = self._hoist(create_inline_call(
-            'if',
-            [arg_bytes, encode_integer(1), encode_integer(0)],
-            self.bc))
-
-        # (string-to-number x)
-        str_branch_ref = self._hoist(create_inline_call(
-            'string_to_number', [arg_bytes], self.bc))
-
-        # (stringp x)
-        str_test_ref = self._hoist(create_inline_call(
-            'stringp', [arg_bytes], self.bc))
-
-        # (if (stringp x) (string-to-number x) bool_branch)
-        inner_if_ref = self._hoist(create_inline_call(
-            'if', [str_test_ref, str_branch_ref, bool_branch_ref], self.bc))
-
-        # (numberp x)
-        num_test_ref = self._hoist(create_inline_call(
-            'numberp', [arg_bytes], self.bc))
-
-        # (if (numberp x) x inner_if)
-        return create_inline_call(
-            'if', [num_test_ref, arg_bytes, inner_if_ref], self.bc)
+        # Evaluate `arg` exactly once before the dispatch reads it
+        # five times — otherwise side effects in the argument would
+        # fire repeatedly.
+        return self._evaluate_once(arg, build)
 
     def translate_str(self, args: List[ast.expr]) -> bytes:
         """Translate `str(x)`.
@@ -2617,54 +2642,56 @@ class PythonTranslator:
                     self.bc)
             # Other constant types fall through to the runtime path.
 
-        arg_bytes = self.translate_expr_with_ref(arg)
+        def build(arg_token: bytes) -> bytes:
+            # (if x "True" "False") — booleans
+            bool_branch = self._hoist(create_inline_call(
+                'if',
+                [arg_token,
+                 encode_string("True", self.bc),
+                 encode_string("False", self.bc)],
+                self.bc))
+            # (number-to-string x)
+            num_branch = self._hoist(create_inline_call(
+                'number_to_string', [arg_token], self.bc))
+            # (booleanp x)
+            bool_test = self._hoist(create_inline_call(
+                'booleanp', [arg_token], self.bc))
+            # (if (booleanp x) bool_branch num_branch)
+            inner_if = self._hoist(create_inline_call(
+                'if', [bool_test, bool_branch, num_branch], self.bc))
+            # (stringp x)
+            str_test = self._hoist(create_inline_call(
+                'stringp', [arg_token], self.bc))
+            # (if (stringp x) x inner_if)
+            return create_inline_call(
+                'if', [str_test, arg_token, inner_if], self.bc)
 
-        # Inner branch for booleans: (if x "True" "False")
-        bool_branch_ref = self._hoist(create_inline_call(
-            'if',
-            [arg_bytes,
-             encode_string("True", self.bc),
-             encode_string("False", self.bc)],
-            self.bc))
-
-        # Numeric/fallback branch: (number-to-string x)
-        num_branch_ref = self._hoist(create_inline_call(
-            'number_to_string', [arg_bytes], self.bc))
-
-        # (booleanp x)
-        bool_test_ref = self._hoist(create_inline_call(
-            'booleanp', [arg_bytes], self.bc))
-
-        # (if (booleanp x) bool_branch num_branch)
-        inner_if_ref = self._hoist(create_inline_call(
-            'if', [bool_test_ref, bool_branch_ref, num_branch_ref], self.bc))
-
-        # (stringp x)
-        str_test_ref = self._hoist(create_inline_call(
-            'stringp', [arg_bytes], self.bc))
-
-        # (if (stringp x) x inner_if)
-        return create_inline_call(
-            'if', [str_test_ref, arg_bytes, inner_if_ref], self.bc)
+        # Evaluate `arg` exactly once — the dispatch reads it from
+        # multiple branches and we don't want side effects to fire
+        # more than once.
+        return self._evaluate_once(arg, build)
 
     def translate_abs(self, args: List[ast.expr]) -> bytes:
-        """Translate abs(x) -> (if (< x 0) (- 0 x) x)."""
+        """Translate `abs(x)` to `(if (< x 0) (- 0 x) x)`.
+
+        Evaluates `x` exactly once: the comparison, the negation, and
+        the else branch all read it, so a side-effecting argument
+        could otherwise fire three times.
+        """
         if len(args) != 1:
             raise ValueError("abs() takes exactly 1 argument")
 
-        arg_bytes = self.translate_expr_with_ref(args[0])
-
-        # Create comparison: (< x 0)
         zero_bytes = encode_integer(0)
-        cmp_bytes = create_inline_call('less_than', [arg_bytes, zero_bytes], self.bc)
-        cmp_ref = self._hoist(cmp_bytes)
 
-        # Create negation: (- 0 x)
-        neg_bytes = create_inline_call('subtract', [zero_bytes, arg_bytes], self.bc)
-        neg_ref = self._hoist(neg_bytes)
+        def build(arg_token: bytes) -> bytes:
+            cmp_ref = self._hoist(create_inline_call(
+                'less_than', [arg_token, zero_bytes], self.bc))
+            neg_ref = self._hoist(create_inline_call(
+                'subtract', [zero_bytes, arg_token], self.bc))
+            return create_inline_call(
+                'if', [cmp_ref, neg_ref, arg_token], self.bc)
 
-        # (if (< x 0) (- 0 x) x)
-        return create_inline_call('if', [cmp_ref, neg_ref, arg_bytes], self.bc)
+        return self._evaluate_once(args[0], build)
 
     def _translate_fold_min_max(self, iterable: ast.expr, cmp_op: str) -> bytes:
         """Compile min(iterable)/max(iterable) as
