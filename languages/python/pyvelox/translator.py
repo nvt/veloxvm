@@ -208,17 +208,17 @@ class PythonTranslator:
 
         return name
 
-    def is_simple_expr(self, expr: ast.expr) -> bool:
-        """
-        Check if an expression is simple enough to inline.
+    def encodes_as_single_token(self, expr: ast.expr) -> bool:
+        """True if `expr` lowers to a single bytecode token (an atom
+        or a lambda form-ref) rather than an inline call.
 
-        Simple expressions:
-        - Literals (int, bool, str, None)
-        - Variable references
-        - Lambda expressions (they're already lambda forms, not expressions to evaluate)
+        Such expressions can be embedded directly as arguments to
+        other inline forms; everything else has to be hoisted into
+        the expression table and referenced by form-ref to avoid
+        nested inline forms (which the byte loader can't parse).
 
-        Complex expressions (should be stored separately):
-        - Binary operations, function calls, lists, etc.
+        Currently the qualifying shapes are `Constant` (atom),
+        `Name` (atom: symbol), and `Lambda` (lambda form-ref).
         """
         return isinstance(expr, (ast.Constant, ast.Name, ast.Lambda))
 
@@ -230,8 +230,8 @@ class PythonTranslator:
         - Inlined bytecode for simple expressions
         - Form reference for complex expressions
         """
-        if self.is_simple_expr(expr):
-            # Simple expression - inline it
+        if self.encodes_as_single_token(expr):
+            # Single-token expression — safe to embed inline.
             return self.translate_expr(expr)
         else:
             # Complex expression - store separately and return form ref
@@ -1169,9 +1169,9 @@ class PythonTranslator:
             # it into a form-ref so the runtime sees a single token. Inlining
             # a nested call here would corrupt byte parsing -- the byte
             # loader advances past only the inline header, leaving the inner
-            # body to be misread as the outer call's arguments. is_simple_expr
-            # exempts ast.Lambda (a single lambda-form token), so a literal
-            # ((lambda ...) ...) still inlines.
+            # body to be misread as the outer call's arguments.
+            # encodes_as_single_token exempts ast.Lambda (a single lambda-
+            # form token), so a literal ((lambda ...) ...) still inlines.
             func_bytes = self.translate_expr_with_ref(node.func)
         arg_bytes = [self.translate_expr_with_ref(arg) for arg in node.args]
 
