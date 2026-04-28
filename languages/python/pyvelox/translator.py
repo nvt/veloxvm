@@ -3143,36 +3143,3 @@ class PythonTranslator:
         else:
             stmt_bytes = [self.translate_stmt(s) for s in stmts]
             return create_inline_call('begin', stmt_bytes, self.bc)
-
-
-def translate_python_to_bytecode(source_code: str) -> Bytecode:
-    """
-    Translate Python source code to VeloxVM bytecode.
-
-    Args:
-        source_code: Python source code string
-
-    Returns:
-        Compiled bytecode
-    """
-    # Parse Python source to AST
-    tree = ast.parse(source_code)
-
-    # Create bytecode container
-    bc = Bytecode()
-
-    # Pre-allocate expression 0 (entry point)
-    bc.add_expression(b'')
-
-    # Pre-split the source so PyveloxCompileError can quote the offending
-    # line. splitlines() drops the trailing newline, which is what we want.
-    source_lines = source_code.splitlines()
-
-    # Translate module
-    translator = PythonTranslator(bc, source_lines=source_lines)
-    accumulated_bytes = translator.translate_module(tree)
-
-    # Replace expression 0 with accumulated bytecode
-    bc.replace_expression(0, accumulated_bytes)
-
-    return bc

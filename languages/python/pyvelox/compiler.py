@@ -33,30 +33,35 @@ This module provides the main compilation interface for converting
 Python source code to VeloxVM bytecode.
 """
 
+import ast
 import sys
 from pathlib import Path
 from typing import Union, Optional
 from .bytecode import Bytecode
 from .errors import PyveloxCompileError
-from .translator import translate_python_to_bytecode
+from .translator import PythonTranslator
 from .writer import write_bytecode_file, dump_bytecode
 
 
 def compile_string(source_code: str) -> Bytecode:
+    """Compile Python source code to a VeloxVM `Bytecode` container.
+
+    Raises `SyntaxError` for invalid Python and `PyveloxCompileError`
+    for constructs the frontend doesn't support.
     """
-    Compile Python source code string to bytecode.
+    tree = ast.parse(source_code)
 
-    Args:
-        source_code: Python source code
+    bc = Bytecode()
+    # Expression 0 is the program entry point; pre-allocate it so any
+    # form-refs created during translation don't collide with its id.
+    bc.add_expression(b'')
 
-    Returns:
-        Compiled bytecode container
-
-    Raises:
-        SyntaxError: If Python code has syntax errors
-        PyveloxCompileError: If code uses unsupported features
-    """
-    return translate_python_to_bytecode(source_code)
+    # Pre-split the source so PyveloxCompileError can quote the
+    # offending line. splitlines() drops the trailing newline, which
+    # is what we want for slice indexing by line number.
+    translator = PythonTranslator(bc, source_lines=source_code.splitlines())
+    bc.replace_expression(0, translator.translate_module(tree))
+    return bc
 
 
 def compile_file(source_path: Union[str, Path],
