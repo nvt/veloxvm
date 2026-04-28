@@ -118,10 +118,18 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
         self._emitted_helpers: Set[str] = set()
         # Defaults table populated by a pre-pass over the AST. Maps a
         # function's safe name to a list whose i-th entry is either
-        # None (the i-th positional argument is required) or the
-        # already-encoded bytes of its literal default value. Used by
-        # translate_call to pad missing arguments at the call site.
-        self._function_defaults: Dict[str, List[Optional[bytes]]] = {}
+        # None (the i-th positional argument is required) or the AST
+        # node for its literal default value. translate_call pads
+        # missing trailing arguments at the call site by encoding the
+        # node lazily — see `_get_function_defaults`. Storing AST
+        # nodes instead of pre-encoded bytes keeps the pre-pass from
+        # writing into bc's string table; that's the main pass's
+        # responsibility.
+        self._default_nodes: Dict[str, List[Optional[ast.expr]]] = {}
+        # Caches the encoded form of each default the first time a
+        # call site references it; keeps subsequent call sites from
+        # re-emitting the same constant.
+        self._default_bytes: Dict[str, List[Optional[bytes]]] = {}
 
     def is_vm_primitive(self, name: str) -> bool:
         """Check if a name conflicts with a VM primitive."""
@@ -270,25 +278,29 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
                 "Default arguments on `lambda` are not supported. Use "
                 "a `def` for the same signature.")
 
-        # Encode each default. Defaults align right: the last
-        # len(args.defaults) positional args are the ones with defaults.
+        # Validate each default and record the AST node. Encoding
+        # happens lazily at the first call site that needs to pad
+        # this default in (see `_get_function_defaults`), keeping
+        # the pre-pass from mutating bc's string/symbol tables.
+        # Defaults align right: the last len(args.defaults) positional
+        # args are the ones with defaults.
         n_args = len(args.args)
         n_defaults = len(args.defaults)
-        encoded: List[Optional[bytes]] = []
+        nodes: List[Optional[ast.expr]] = []
         for i in range(n_args):
             if i < n_args - n_defaults:
-                encoded.append(None)
+                nodes.append(None)
                 continue
             default_node = args.defaults[i - (n_args - n_defaults)]
-            encoded.append(self._encode_literal_default(default_node))
+            self._validate_literal_default(default_node)
+            nodes.append(default_node)
 
-        self._function_defaults[self.get_safe_name(node.name)] = encoded
+        self._default_nodes[self.get_safe_name(node.name)] = nodes
 
-    def _encode_literal_default(self, default_node: ast.expr) -> bytes:
-        """Default values must be literal constants so they can be
-        emitted at every call site without re-evaluating side effects.
-        Mutable defaults (`x=[]`) would be a footgun even if we
-        supported them, so we don't try."""
+    def _validate_literal_default(self, default_node: ast.expr) -> None:
+        """Default values must be literal constants — anything else
+        would either re-evaluate side effects at every call site or
+        introduce mutable-default footguns."""
         if not isinstance(default_node, ast.Constant):
             raise NotImplementedError(
                 f"Default argument values must be literal constants "
@@ -301,7 +313,21 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
             raise NotImplementedError(
                 f"Default argument values must be int, bool, str, or "
                 f"None (got {type(value).__name__})")
-        return self.translate_constant(default_node)
+
+    def _get_function_defaults(self, safe_name: str
+                               ) -> Optional[List[Optional[bytes]]]:
+        """Return the encoded default-bytes list for `safe_name`, or
+        None if the function has no recorded defaults. Encoded form
+        is cached after first emission so subsequent call sites reuse
+        the same bytes (and avoid re-adding string-table entries)."""
+        if safe_name not in self._default_nodes:
+            return None
+        cached = self._default_bytes.get(safe_name)
+        if cached is None:
+            cached = [self.translate_constant(node) if node is not None else None
+                      for node in self._default_nodes[safe_name]]
+            self._default_bytes[safe_name] = cached
+        return cached
 
     @_located_dispatch
     def translate_stmt(self, stmt: ast.stmt) -> bytes:
@@ -1066,7 +1092,7 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
         # The pre-pass restricts defaults to literals, so reusing the
         # same bytes at every call site is safe.
         if callee_name is not None:
-            defaults = self._function_defaults.get(self.get_safe_name(callee_name))
+            defaults = self._get_function_defaults(self.get_safe_name(callee_name))
             if defaults is not None:
                 n_provided = len(arg_bytes)
                 n_total = len(defaults)
