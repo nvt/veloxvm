@@ -105,15 +105,25 @@
 #endif
 
 /* Maximum size of a single table item when loading bytecode.
-   This limits the stack buffer size in vm-loader.c.
-   Embedded systems have limited stack space - keep this small. */
+   Backs a stack-allocated buffer in vm-loader.c read_table(), so on
+   embedded targets this stays small to avoid blowing the thread
+   stack. Native is hosted, so the loader can take any item that fits
+   in a uint16_t length prefix. */
 #ifndef VM_TABLE_MAX_ITEM_SIZE
+#if CONTIKI_TARGET_NATIVE
+#define VM_TABLE_MAX_ITEM_SIZE 65535
+#else
 #define VM_TABLE_MAX_ITEM_SIZE 255
+#endif
 #endif
 
 /* Maximum number of I/O ports that can be in use simultaneously. */
 #ifndef VM_PORT_AMOUNT
+#if CONTIKI_TARGET_NATIVE
+#define VM_PORT_AMOUNT 100
+#else
 #define VM_PORT_AMOUNT 20
+#endif
 #endif
 
 /* The time in milliseconds to make a thread sleep when polling a condition. */
@@ -122,17 +132,27 @@
 #endif
 
 /*
- * Default VM memory sizes.
+ * Default VM memory sizes, in bytes.
  *
- * The Zoul platform keeps the tight legacy footprint (~12 kB total)
- * because it only has 32 kB of RAM. Other Contiki-NG targets (with
- * typically 256 kB RAM and up) get roomier defaults so non-trivial
- * Scheme programs do not hit the GC or frame stack before doing useful
- * work. All three knobs remain individually overridable.
+ * Three tiers:
+ *   - Zoul: tight legacy footprint (~12 kB total) for the original
+ *     32 kB-RAM target.
+ *   - Native: hosted Linux/macOS process; generous so the GC and
+ *     frame pool do not become the bottleneck for non-trivial test
+ *     programs. Smaller than the POSIX port so the GC's allocation
+ *     hash table (sized by VM_HEAP_SIZE / sizeof(vm_list_item_t))
+ *     does not balloon.
+ *   - Other targets: a middle tier sized for modern IoT MCUs with
+ *     ~256 kB RAM (nRF52840, cc1352, etc.) — the historic
+ *     non-Zoul defaults.
+ *
+ * Each knob remains individually overridable.
  */
 #ifndef VM_HEAP_SIZE
 #if CONTIKI_TARGET_ZOUL
 #define VM_HEAP_SIZE 5000
+#elif CONTIKI_TARGET_NATIVE
+#define VM_HEAP_SIZE 1048576
 #else
 #define VM_HEAP_SIZE 32768
 #endif
@@ -141,6 +161,8 @@
 #ifndef VM_OBJECT_POOL_SIZE
 #if CONTIKI_TARGET_ZOUL
 #define VM_OBJECT_POOL_SIZE 3000
+#elif CONTIKI_TARGET_NATIVE
+#define VM_OBJECT_POOL_SIZE 1048576
 #else
 #define VM_OBJECT_POOL_SIZE 16384
 #endif
@@ -149,6 +171,8 @@
 #ifndef VM_FRAME_POOL_SIZE
 #if CONTIKI_TARGET_ZOUL
 #define VM_FRAME_POOL_SIZE 4000
+#elif CONTIKI_TARGET_NATIVE
+#define VM_FRAME_POOL_SIZE 65536
 #else
 #define VM_FRAME_POOL_SIZE 8192
 #endif
@@ -196,12 +220,29 @@
 #define VM_SCHEDULE_TIMEOUT 2
 #endif
 
+/* Maximum recursion depth (number of vm_expr_t* slots) per thread.
+   Each slot is one pointer, so the per-thread cost is small. */
 #ifndef VM_CONTEXT_STACK_SIZE
+#if CONTIKI_TARGET_ZOUL
 #define VM_CONTEXT_STACK_SIZE 30
+#elif CONTIKI_TARGET_NATIVE
+#define VM_CONTEXT_STACK_SIZE 64
+#else
+#define VM_CONTEXT_STACK_SIZE 48
+#endif
 #endif
 
 #ifndef VM_OBJECT_STACK_SIZE
+#if CONTIKI_TARGET_ZOUL
 #define VM_OBJECT_STACK_SIZE 10
+#else
+/* Each vm_expr_t carries an argv[] of this size. Compiled apps from
+   pyvelox can lower a literal like `range(10)` to a (list 0 1 ... 9)
+   form whose width exceeds 10, tripping a "too many arguments" stack
+   overflow at the call site. 16 matches the POSIX port. Zoul keeps
+   the tighter ceiling because of its 32 kB RAM budget. */
+#define VM_OBJECT_STACK_SIZE 16
+#endif
 #endif
 
 #ifndef VM_ERROR_MESSAGES
