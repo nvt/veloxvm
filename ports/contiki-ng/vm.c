@@ -31,6 +31,7 @@
 #include <stdio.h>
 
 #include "contiki.h"
+#include "serial-shell.h"
 
 #include "vm.h"
 #include "vm-file.h"
@@ -44,6 +45,8 @@ extern vm_lib_t vm_lib_rpl;
 extern vm_lib_t vm_lib_crypto;
 extern vm_lib_t vm_lib_sensors;
 
+void vm_shell_init(void);
+
 PROCESS(vm_process, VM_NAME);
 AUTOSTART_PROCESSES(&vm_process);
 
@@ -51,10 +54,6 @@ extern const char vm_program_name[];
 
 PROCESS_THREAD(vm_process, ev, data)
 {
-  static rtimer_clock_t start, end;
-  static unsigned long start_sec, end_sec;
-  static int iterations = 1;
-  static unsigned int sched_counter;
   vm_result_t result;
 
   PROCESS_BEGIN();
@@ -71,53 +70,28 @@ PROCESS_THREAD(vm_process, ev, data)
   vm_lib_register(&vm_lib_sensors);
 
   process_start(&vm_perfmon_process, NULL);
+  serial_shell_init();
+  vm_shell_init();
 
-  while(iterations-- > 0) {
-    sched_counter = 0;
-
-    /* Load a program with privileged status (super user.) */
+  if(vm_program_name[0] != '\0') {
     if(vm_load_program(vm_program_name) == 0) {
-      VM_DEBUG(VM_DEBUG_LOW, "Failed to load %s", vm_program_name);
-      PROCESS_EXIT();
-    }
-
-    PROCESS_PAUSE();
-
-    start_sec = clock_seconds();
-    start = RTIMER_NOW();
-
-    while(1) {
-      result = vm_run();
-      sched_counter++;
-
-      if(result == VM_RESULT_FINISHED) {
-        if(VM_ALWAYS_ON) {
-          PROCESS_YIELD();
-        } else {
-          break;
-        }
-      } else if(result == VM_RESULT_SLEEPING) {
-        PROCESS_YIELD();
-      } else {
-        PROCESS_PAUSE();
-      }
-    }
-
-    end = RTIMER_NOW();
-    end_sec = clock_seconds();
-
-    if(iterations == 0) {
-      VM_DEBUG(VM_DEBUG_LOW, "Execution time: %ld ticks. The clock runs at %ld Hz.",
-             (long)end - start, (long)RTIMER_SECOND);
-      if(end_sec > start_sec + 1) {
-        VM_DEBUG(VM_DEBUG_LOW, "Total execution time: %lu seconds.",
-               end_sec - start_sec);
-      }
-      VM_DEBUG(VM_DEBUG_LOW, "The scheduler was invoked %u times.", sched_counter);
+      VM_DEBUG(VM_DEBUG_LOW, "Failed to autoload %s", vm_program_name);
     }
   }
 
-  vm_exit();
+  while(1) {
+    if(vm_get_programs() == NULL) {
+      PROCESS_YIELD();
+      continue;
+    }
+
+    result = vm_run();
+    if(result == VM_RESULT_SLEEPING) {
+      PROCESS_YIELD();
+    } else {
+      PROCESS_PAUSE();
+    }
+  }
 
   PROCESS_END();
 }
