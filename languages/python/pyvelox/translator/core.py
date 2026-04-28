@@ -741,6 +741,29 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
         """
         return encode_form_ref(self.bc.add_expression(call_bytes))
 
+    def _emit_lambda(self, params: List[str], body: bytes, *,
+                     is_function: bool = False,
+                     captures: Optional[List[str]] = None) -> bytes:
+        """Build a `(bind[_function] params... body)` form, store it
+        in the expression table, and return its lambda form-ref.
+
+        `is_function=True` marks the lambda as a Python function
+        boundary (used by the `return` primitive to know what to
+        unwind to); plain lambdas used for control flow stay False.
+
+        `captures`, if given, is a list of safe names whose IDs are
+        recorded against the lambda's expression for the runtime
+        closure machinery.
+        """
+        bind_bytes = create_bind_form(
+            params, body, self.bc, is_function=is_function)
+        expr_id = self.bc.add_expression(bind_bytes)
+        if captures:
+            capture_ids = [self.bc.symbol_table.add_symbol(name)
+                           for name in captures]
+            self.bc.record_captures(expr_id, capture_ids)
+        return encode_form_lambda(expr_id)
+
     def _evaluate_once(self, arg_node: ast.expr,
                        build: Callable[[bytes], bytes]) -> bytes:
         """Evaluate `arg_node` exactly once, then run the bytecode
@@ -763,9 +786,7 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
         arg_bytes = self.translate_expr_with_ref(arg_node)
         temp_name = self.bc.get_unique_var_name("_t")
         temp_token = encode_symbol(temp_name, self.bc)
-        body_bytes = build(temp_token)
-        bind_bytes = create_bind_form([temp_name], body_bytes, self.bc)
-        lambda_ref = encode_form_lambda(self.bc.add_expression(bind_bytes))
+        lambda_ref = self._emit_lambda([temp_name], build(temp_token))
         return create_inline_call(lambda_ref, [arg_bytes], self.bc)
 
     def _make_box_init_bytes(self, safe_name: str) -> bytes:
@@ -915,25 +936,11 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
             body_bytes = self.translate_function_body(
                 node.body, local_vars, box_inits=boxed_names)
 
-            # Don't store body as form ref - inline it directly in bind form
-            # This matches what Racket does: (bind args body) where body is compiled directly
-            # The body itself may contain form refs to individual statements or let-expansion
-            body_for_bind = body_bytes
-
-            # Create bind form: (bind_function param1 param2 ... body)
-            # Use is_function=True to mark actual function boundaries for the return primitive
-            bind_bytes = create_bind_form(safe_params, body_for_bind, self.bc, is_function=True)
-
-            # Store bind in expression table
-            expr_id = self.bc.add_expression(bind_bytes)
-
-            # Record captured-symbol IDs for the runtime closure machinery.
-            if captures:
-                capture_ids = [self.bc.symbol_table.add_symbol(name) for name in captures]
-                self.bc.record_captures(expr_id, capture_ids)
-
-            # Create lambda reference
-            lambda_bytes = encode_form_lambda(expr_id)
+            # `is_function=True` marks the lambda as a Python function
+            # boundary so the `return` primitive knows what to unwind to.
+            lambda_bytes = self._emit_lambda(
+                safe_params, body_bytes,
+                is_function=True, captures=captures)
 
             # Top-level defs become global bindings via 'define'. Defs nested
             # inside another function bind into the enclosing function's
@@ -941,7 +948,6 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
             # so we emit 'set!' instead. set!'s mid-arg evaluation gives the
             # scheduler a chance to materialize a closure when the lambda
             # has free-variable captures.
-            #
             op = 'set' if is_nested else 'define'
             return create_inline_call(op, [func_name_symbol, lambda_bytes], self.bc)
         finally:
@@ -989,18 +995,10 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
                 wraps = [self._make_box_init_bytes(name) for name in sorted(boxed_names)]
                 body_bytes = create_inline_call('begin', wraps + [body_bytes], self.bc)
 
-            # Create bind_function form (lambdas are real functions, like def)
-            bind_bytes = create_bind_form(safe_params, body_bytes, self.bc, is_function=True)
-
-            # Store in expression table
-            expr_id = self.bc.add_expression(bind_bytes)
-
-            if captures:
-                capture_ids = [self.bc.symbol_table.add_symbol(name) for name in captures]
-                self.bc.record_captures(expr_id, capture_ids)
-
-            # Return lambda reference
-            return encode_form_lambda(expr_id)
+            # Lambdas are real functions, so is_function=True.
+            return self._emit_lambda(
+                safe_params, body_bytes,
+                is_function=True, captures=captures)
         finally:
             self.scope_stack.pop()
             self.boxed_stack.pop()
@@ -1299,8 +1297,7 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
             and_chain = create_inline_call('and', comparisons, self.bc)
             if not wrap_params:
                 return and_chain
-            bind_bytes = create_bind_form(wrap_params, and_chain, self.bc)
-            lambda_ref = encode_form_lambda(self.bc.add_expression(bind_bytes))
+            lambda_ref = self._emit_lambda(wrap_params, and_chain)
             return create_inline_call(lambda_ref, wrap_args, self.bc)
 
     def translate_boolop(self, node: ast.BoolOp) -> bytes:
@@ -1416,9 +1413,7 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
             body_ref = self._hoist(body_bytes)
 
             # Create lambda for loop body with body reference
-            bind_bytes = create_bind_form([safe_param], body_ref, self.bc)
-            lambda_id = self.bc.add_expression(bind_bytes)
-            lambda_bytes = encode_form_lambda(lambda_id)
+            lambda_bytes = self._emit_lambda([safe_param], body_ref)
 
             # Translate iterable
             iterable_bytes = self.translate_expr_with_ref(node.iter)
@@ -1459,9 +1454,7 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
 
             # Create inner lambda that takes unpacked variables as parameters
             # (lambda (x y) body)
-            inner_lambda_bytes = create_bind_form(target_names, body_bytes, self.bc)
-            inner_lambda_id = self.bc.add_expression(inner_lambda_bytes)
-            inner_lambda_ref = encode_form_lambda(inner_lambda_id)
+            inner_lambda_ref = self._emit_lambda(target_names, body_bytes)
 
             # Create list-ref calls for each position
             # (list-ref item 0), (list-ref item 1), ...
@@ -1479,9 +1472,7 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
             inner_call_ref = self._hoist(inner_call)
 
             # Create outer lambda: (lambda (item) inner_call_ref)
-            outer_lambda_bytes = create_bind_form([item_param], inner_call_ref, self.bc)
-            outer_lambda_id = self.bc.add_expression(outer_lambda_bytes)
-            outer_lambda_ref = encode_form_lambda(outer_lambda_id)
+            outer_lambda_ref = self._emit_lambda([item_param], inner_call_ref)
 
             # Translate iterable
             iterable_bytes = self.translate_expr_with_ref(node.iter)
@@ -1540,9 +1531,7 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
 
         # Create lambda with NO parameters: (lambda () if-bytes)
         # INLINE the body, don't use form ref - this preserves variable capture
-        lambda_bind = create_bind_form([], if_bytes, self.bc)
-        lambda_id = self.bc.add_expression(lambda_bind)
-        lambda_bytes = encode_form_lambda(lambda_id)
+        lambda_bytes = self._emit_lambda([], if_bytes)
 
         # Define the loop function: (define loop (lambda () ...))
         define_bytes = create_inline_call('define', [encode_symbol(loop_name, self.bc), lambda_bytes], self.bc)
@@ -1556,9 +1545,7 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
         wrapper_body_begin = create_inline_call('begin', [define_bytes, call_bytes], self.bc)
 
         # Create wrapper bind with the begin form as body
-        wrapper_bind = create_bind_form([], wrapper_body_begin, self.bc)
-        wrapper_id = self.bc.add_expression(wrapper_bind)
-        wrapper_lambda = encode_form_lambda(wrapper_id)
+        wrapper_lambda = self._emit_lambda([], wrapper_body_begin)
 
         # Call the wrapper lambda: ((lambda () (define loop ...) (loop)))
         loop_call = create_inline_call(wrapper_lambda, [], self.bc)
@@ -1863,9 +1850,7 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
 
             # Create bind form for the let-lambda: (bind x y ... body)
             # Use inner_body_bytes directly WITHOUT storing as form ref first
-            let_bind = create_bind_form(local_var_list, inner_body_bytes, self.bc)
-            let_lambda_id = self.bc.add_expression(let_bind)
-            let_lambda_bytes = encode_form_lambda(let_lambda_id)
+            let_lambda_bytes = self._emit_lambda(local_var_list, inner_body_bytes)
 
             # Create arguments: #f for each local variable
             false_args = [encode_boolean(False) for _ in local_var_list]

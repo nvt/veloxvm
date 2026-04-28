@@ -40,8 +40,7 @@ import ast
 from typing import Callable, Dict, List, Optional, Set
 from ..encoder import (
     encode_integer, encode_boolean, encode_string, encode_symbol,
-    encode_character, encode_form_ref, encode_form_lambda,
-    create_inline_call, create_bind_form,
+    encode_character, encode_form_ref, create_inline_call,
 )
 
 
@@ -215,11 +214,8 @@ class _BuiltinHandlers:
 
         loop_body = create_inline_call(
             'if', [done_test, rev_acc, recurse], self.bc)
-        loop_bind = create_bind_form(
-            ['i', 'stop', 'step', 'acc'], loop_body, self.bc,
-            is_function=True)
-        loop_lambda_id = self.bc.add_expression(loop_bind)
-        loop_lambda_ref = encode_form_lambda(loop_lambda_id)
+        loop_lambda_ref = self._emit_lambda(
+            ['i', 'stop', 'step', 'acc'], loop_body, is_function=True)
         define_loop = create_inline_call(
             'define',
             [encode_symbol('_pyvelox_range_loop', self.bc),
@@ -231,11 +227,8 @@ class _BuiltinHandlers:
             [sym_start(), sym_stop(), sym_step(),
              create_inline_call('list', [], self.bc)],
             self.bc)
-        outer_bind = create_bind_form(
-            ['start', 'stop', 'step'], outer_call, self.bc,
-            is_function=True)
-        outer_lambda_id = self.bc.add_expression(outer_bind)
-        outer_lambda_ref = encode_form_lambda(outer_lambda_id)
+        outer_lambda_ref = self._emit_lambda(
+            ['start', 'stop', 'step'], outer_call, is_function=True)
         define_outer = create_inline_call(
             'define',
             [encode_symbol('_pyvelox_range', self.bc), outer_lambda_ref],
@@ -410,9 +403,7 @@ class _BuiltinHandlers:
         cmp_ref = self._hoist(cmp_call)
 
         if_form = create_inline_call('if', [cmp_ref, a_sym, b_sym], self.bc)
-        lambda_bind = create_bind_form(['a', 'b'], if_form, self.bc)
-        lambda_id = self.bc.add_expression(lambda_bind)
-        lambda_bytes = encode_form_lambda(lambda_id)
+        lambda_bytes = self._emit_lambda(['a', 'b'], if_form)
 
         return create_inline_call('reduce', [lambda_bytes, list_bytes], self.bc)
 
@@ -569,9 +560,7 @@ class _BuiltinHandlers:
             encode_symbol('a', self.bc),
             encode_symbol('b', self.bc)
         ], self.bc)
-        lambda_bind = create_bind_form(['a', 'b'], and_call, self.bc)
-        lambda_id = self.bc.add_expression(lambda_bind)
-        lambda_bytes = encode_form_lambda(lambda_id)
+        lambda_bytes = self._emit_lambda(['a', 'b'], and_call)
 
         # (reduce lambda iterable #t)
         return create_inline_call('reduce', [
@@ -600,9 +589,7 @@ class _BuiltinHandlers:
             encode_symbol('a', self.bc),
             encode_symbol('b', self.bc)
         ], self.bc)
-        lambda_bind = create_bind_form(['a', 'b'], or_call, self.bc)
-        lambda_id = self.bc.add_expression(lambda_bind)
-        lambda_bytes = encode_form_lambda(lambda_id)
+        lambda_bytes = self._emit_lambda(['a', 'b'], or_call)
 
         # (reduce lambda iterable #f)
         return create_inline_call('reduce', [
@@ -703,9 +690,7 @@ class _BuiltinHandlers:
             for filter_expr in gen.ifs:
                 # Create filter lambda: (lambda (var) filter_expr)
                 filter_body = self.translate_expr(filter_expr)
-                filter_bind = create_bind_form([safe_var], filter_body, self.bc)
-                filter_lambda_id = self.bc.add_expression(filter_bind)
-                filter_lambda_bytes = encode_form_lambda(filter_lambda_id)
+                filter_lambda_bytes = self._emit_lambda([safe_var], filter_body)
 
                 # Apply filter: (filter lambda iter)
                 filtered = create_inline_call('filter', [filter_lambda_bytes, result_iter], self.bc)
@@ -713,9 +698,7 @@ class _BuiltinHandlers:
 
             # Create map lambda: (lambda (var) elt)
             elt_body = self.translate_expr(node.elt)
-            map_bind = create_bind_form([safe_var], elt_body, self.bc)
-            map_lambda_id = self.bc.add_expression(map_bind)
-            map_lambda_bytes = encode_form_lambda(map_lambda_id)
+            map_lambda_bytes = self._emit_lambda([safe_var], elt_body)
 
             # Apply map: (map lambda filtered_iter)
             return create_inline_call('map', [map_lambda_bytes, result_iter], self.bc)
@@ -748,18 +731,14 @@ class _BuiltinHandlers:
                     filtered_iter = iter_bytes
                     for filter_expr in gen.ifs:
                         filter_body = self.translate_expr(filter_expr)
-                        filter_bind = create_bind_form([safe_var], filter_body, self.bc)
-                        filter_lambda_id = self.bc.add_expression(filter_bind)
-                        filter_lambda_bytes = encode_form_lambda(filter_lambda_id)
+                        filter_lambda_bytes = self._emit_lambda([safe_var], filter_body)
 
                         filtered = create_inline_call('filter', [filter_lambda_bytes, filtered_iter], self.bc)
                         filtered_iter = self._hoist(filtered)
 
                     # Create list of singleton tuples
                     singleton_body = create_inline_call('list', [encode_symbol(safe_var, self.bc)], self.bc)
-                    singleton_bind = create_bind_form([safe_var], singleton_body, self.bc)
-                    singleton_lambda_id = self.bc.add_expression(singleton_bind)
-                    singleton_lambda = encode_form_lambda(singleton_lambda_id)
+                    singleton_lambda = self._emit_lambda([safe_var], singleton_body)
 
                     result = self._hoist(create_inline_call(
                         'map', [singleton_lambda, filtered_iter], self.bc))

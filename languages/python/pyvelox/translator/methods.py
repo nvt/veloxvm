@@ -39,8 +39,7 @@ import ast
 from typing import Callable, Dict, List, Optional, Set
 from ..encoder import (
     encode_integer, encode_boolean, encode_string, encode_symbol,
-    encode_form_ref, encode_form_lambda,
-    create_inline_call, create_bind_form,
+    encode_form_ref, create_inline_call,
 )
 
 
@@ -82,9 +81,7 @@ class _MethodHandlers:
 
         # Create lambda (p) (car p) to extract keys
         car_call = create_inline_call('car', [encode_symbol('p', self.bc)], self.bc)
-        lambda_bind = create_bind_form(['p'], car_call, self.bc)
-        lambda_id = self.bc.add_expression(lambda_bind)
-        lambda_bytes = encode_form_lambda(lambda_id)
+        lambda_bytes = self._emit_lambda(['p'], car_call)
 
         # (map (lambda (p) (car p)) dict)
         return create_inline_call('map', [lambda_bytes, dict_bytes], self.bc)
@@ -98,9 +95,7 @@ class _MethodHandlers:
 
         # Create lambda (p) (cdr p) to extract values
         cdr_call = create_inline_call('cdr', [encode_symbol('p', self.bc)], self.bc)
-        lambda_bind = create_bind_form(['p'], cdr_call, self.bc)
-        lambda_id = self.bc.add_expression(lambda_bind)
-        lambda_bytes = encode_form_lambda(lambda_id)
+        lambda_bytes = self._emit_lambda(['p'], cdr_call)
 
         # (map (lambda (p) (cdr p)) dict)
         return create_inline_call('map', [lambda_bytes, dict_bytes], self.bc)
@@ -181,9 +176,7 @@ class _MethodHandlers:
         not_bytes = create_inline_call('not', [equal_ref], self.bc)
 
         # (lambda (p) (not (equal (car p) 'key)))
-        filter_lambda_bind = create_bind_form(['p'], not_bytes, self.bc)
-        filter_lambda_id = self.bc.add_expression(filter_lambda_bind)
-        filter_lambda_bytes = encode_form_lambda(filter_lambda_id)
+        filter_lambda_bytes = self._emit_lambda(['p'], not_bytes)
 
         # (filter lambda d)
         dict_ref = encode_symbol(safe_dict_name, self.bc)
@@ -323,9 +316,7 @@ class _MethodHandlers:
 
         # Create lambda (e) (equal e value)
         equal_call = create_inline_call('equalp', [encode_symbol('e', self.bc), value_bytes], self.bc)
-        lambda_bind = create_bind_form(['e'], equal_call, self.bc)
-        lambda_id = self.bc.add_expression(lambda_bind)
-        lambda_bytes = encode_form_lambda(lambda_id)
+        lambda_bytes = self._emit_lambda(['e'], equal_call)
 
         # (count lambda lst)
         return create_inline_call('count', [lambda_bytes, list_bytes], self.bc)
