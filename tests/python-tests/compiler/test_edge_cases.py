@@ -16,6 +16,7 @@ from pyvelox.translator import PythonTranslator
 from pyvelox.bytecode import Bytecode
 from pyvelox.compiler import compile_string
 from pyvelox.encoder import encode_integer
+from pyvelox.errors import PyveloxCompileError
 
 
 class TestBoundaryValues(unittest.TestCase):
@@ -270,6 +271,552 @@ class TestListOperations(unittest.TestCase):
         bc = compile_string(source)
         # Should create expressions for operations
         self.assertTrue(len(bc.expressions) > 0)
+
+
+class TestEqualityCompilation(unittest.TestCase):
+    """`==` and `!=` must route through the type-aware `equalp`
+    primitive, not the numeric-only `equal`. The numeric path silently
+    returns false for strings, booleans, and lists."""
+
+    def _compile_and_collect_bytes(self, source):
+        """Compile a Python program and return (concatenated bytecode,
+        encoded equalp symbol, encoded equal symbol). Searching the
+        concatenation lets us detect the chosen primitive regardless of
+        which sub-expression contains it."""
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(source)
+        all_bytes = b''.join(bc.expressions)
+        return (all_bytes,
+                encode_symbol('equalp', bc),
+                encode_symbol('equal', bc))
+
+    def test_string_equality_uses_equalp(self):
+        all_bytes, equalp_sym, equal_sym = self._compile_and_collect_bytes(
+            'x = "a" == "b"\n')
+        self.assertIn(equalp_sym, all_bytes)
+        self.assertNotIn(equal_sym, all_bytes)
+
+    def test_inequality_uses_not_and_equalp(self):
+        all_bytes, equalp_sym, equal_sym = self._compile_and_collect_bytes(
+            'x = "a" != "b"\n')
+        self.assertIn(equalp_sym, all_bytes)
+        self.assertNotIn(equal_sym, all_bytes)
+
+    def test_chained_equality_uses_equalp(self):
+        all_bytes, equalp_sym, equal_sym = self._compile_and_collect_bytes(
+            'x = 1 == 1 == 2\n')
+        self.assertIn(equalp_sym, all_bytes)
+        self.assertNotIn(equal_sym, all_bytes)
+
+    def test_other_relops_unchanged(self):
+        # `<` should still emit less_than, not equalp.
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string('x = 1 < 2\n')
+        all_bytes = b''.join(bc.expressions)
+        self.assertIn(encode_symbol('less_than', bc), all_bytes)
+        self.assertNotIn(encode_symbol('equalp', bc), all_bytes)
+
+
+class TestLoopControl(unittest.TestCase):
+    """break and continue desugar to (raise '__pyvelox_break__) and
+    (raise '__pyvelox_continue__) and are caught by guards installed
+    around the loop body and the loop itself. break/continue outside
+    a loop is a compile error."""
+
+    def test_break_inside_loop_compiles(self):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(
+            "for x in [1, 2, 3]:\n"
+            "    if x == 2:\n"
+            "        break\n"
+        )
+        all_bytes = b''.join(bc.expressions)
+        # The loop body raises the break sentinel and the surrounding
+        # guard catches it.
+        self.assertIn(encode_symbol('__pyvelox_break__', bc), all_bytes)
+        self.assertIn(encode_symbol('guard', bc), all_bytes)
+
+    def test_continue_inside_loop_compiles(self):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(
+            "for x in [1, 2, 3]:\n"
+            "    if x == 2:\n"
+            "        continue\n"
+        )
+        all_bytes = b''.join(bc.expressions)
+        self.assertIn(encode_symbol('__pyvelox_continue__', bc), all_bytes)
+
+    def test_break_outside_loop_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string("x = 1\nbreak\n")
+        self.assertEqual(ctx.exception.lineno, 2)
+        self.assertIn("break", ctx.exception.raw_message)
+
+    def test_continue_outside_loop_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string("continue\n")
+        self.assertEqual(ctx.exception.lineno, 1)
+        self.assertIn("continue", ctx.exception.raw_message)
+
+    def test_break_inside_function_inside_loop_is_compile_error(self):
+        # The function body is a fresh scope; break/continue don't
+        # cross function boundaries.
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError):
+            compile_string(
+                "for x in [1]:\n"
+                "    def f():\n"
+                "        break\n"
+                "    f()\n"
+            )
+
+
+class TestTryExceptCompilation(unittest.TestCase):
+    """The VM's `guard` form takes exactly three arguments
+    (exc-symbol, handler, body). The translator previously emitted
+    four; the result was a runtime "Argument count" error on every
+    try/except. `raise X` also has to quote its symbol argument or
+    the VM tries to look X up as a variable."""
+
+    def test_try_except_uses_three_arg_guard(self):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(
+            "caught = False\n"
+            "try:\n"
+            "    raise ValueError\n"
+            "except:\n"
+            "    caught = True\n"
+        )
+        all_bytes = b''.join(bc.expressions)
+        self.assertIn(encode_symbol('guard', bc), all_bytes)
+        # `quote` is needed to keep the exception type from being
+        # looked up as a variable.
+        self.assertIn(encode_symbol('quote', bc), all_bytes)
+
+
+class TestCallDispatchRegistry(unittest.TestCase):
+    """`translate_call` dispatches builtins and methods through two
+    class-level registries. The tests below pin the registry shape so
+    accidental drift (e.g. a renamed handler that the registry still
+    points at) shows up loudly, and confirm dispatch still works
+    end-to-end through the registry lookup."""
+
+    def test_builtin_handlers_resolve_to_real_methods(self):
+        # Every entry in _BUILTIN_HANDLERS must name an existing
+        # method on the translator class. A typo here would currently
+        # crash at the first call site, but only if the program
+        # exercises that builtin.
+        for name, attr in PythonTranslator._BUILTIN_HANDLERS.items():
+            self.assertTrue(hasattr(PythonTranslator, attr),
+                            f"builtin {name!r} -> {attr!r} not found "
+                            "on PythonTranslator")
+
+    def test_method_handlers_are_callable(self):
+        for name, handler in PythonTranslator._METHOD_HANDLERS.items():
+            self.assertTrue(callable(handler),
+                            f"method {name!r} handler is not callable")
+
+    def test_builtin_registry_covers_documented_set(self):
+        # If you remove or add a builtin, doc/python.md's built-ins
+        # table needs to follow. Pin the names here so the change
+        # is conscious. (Update both together when the set legitimately
+        # changes.)
+        expected = {
+            'print', 'len', 'range', 'int', 'str', 'abs', 'min',
+            'max', 'sum', 'sorted', 'reversed', 'map', 'filter',
+            'reduce', 'all', 'any', 'list', 'enumerate', 'zip',
+        }
+        self.assertEqual(set(PythonTranslator._BUILTIN_HANDLERS), expected)
+
+    def test_method_registry_covers_documented_set(self):
+        expected = {
+            # Dict
+            'keys', 'values', 'items', 'get',
+            # List
+            'append', 'extend', 'pop', 'remove', 'reverse',
+            'count', 'index', 'insert',
+            # String
+            'upper', 'lower', 'split', 'join', 'startswith',
+            'endswith', 'strip', 'replace',
+        }
+        self.assertEqual(set(PythonTranslator._METHOD_HANDLERS), expected)
+
+    def test_builtin_dispatch_compiles(self):
+        from pyvelox.compiler import compile_string
+        # Touch a representative slice of the registry; if the
+        # dispatch were broken this would raise PyveloxCompileError or
+        # produce empty bytecode.
+        bc = compile_string(
+            'print(len([1, 2, 3]))\n'
+            'x = abs(-5)\n'
+            'y = max(1, 2, 3)\n'
+        )
+        self.assertGreater(len(bc.expressions), 0)
+
+    def test_method_dispatch_compiles(self):
+        from pyvelox.compiler import compile_string
+        bc = compile_string(
+            's = "Hi"\n'
+            'u = s.upper()\n'
+            'print(u)\n'
+            'd = {"a": 1}\n'
+            'k = d.keys()\n'
+        )
+        self.assertGreater(len(bc.expressions), 0)
+
+    def test_user_function_call_uses_generic_path(self):
+        # Names not in _BUILTIN_HANDLERS must fall through to the
+        # generic call path so user-defined functions still resolve
+        # through the symbol table.
+        from pyvelox.compiler import compile_string
+        bc = compile_string(
+            'def square(x):\n'
+            '    return x * x\n'
+            'r = square(5)\n'
+        )
+        self.assertGreater(len(bc.expressions), 0)
+
+
+class TestDefaultArguments(unittest.TestCase):
+    """Functions with literal positional defaults work via call-site
+    padding. Unsupported signature features (vararg, kwarg, kwonly,
+    posonly, lambda defaults, non-literal defaults) raise compile
+    errors with a source location instead of silently miscompiling."""
+
+    def _compile(self, source):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(source)
+        return bc, b''.join(bc.expressions), encode_symbol
+
+    def test_default_call_with_arg_provided(self):
+        bc, _, _ = self._compile(
+            'def f(x, y=10):\n'
+            '    return x + y\n'
+            'r = f(1, 2)\n'
+        )
+        # Compiles without error; default is registered.
+        from pyvelox.compiler import compile_string  # ensure import
+        self.assertIn('f', '|'.join(bc.symbol_table.symbols))
+
+    def test_default_call_with_arg_omitted_compiles(self):
+        # Just check this compiles — the runtime padding is exercised
+        # by the end-to-end demo programs.
+        from pyvelox.compiler import compile_string
+        bc = compile_string(
+            'def f(x, y=10):\n'
+            '    return x + y\n'
+            'r = f(1)\n'
+        )
+        self.assertGreater(len(bc.expressions), 0)
+
+    def test_too_many_args_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'def f(x, y=10): return x + y\n'
+                'r = f(1, 2, 3)\n'
+            )
+        self.assertEqual(ctx.exception.lineno, 2)
+        self.assertIn("at most 2", ctx.exception.raw_message)
+
+    def test_missing_required_arg_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'def f(x, y, z=5): return x + y + z\n'
+                'r = f(1)\n'
+            )
+        self.assertEqual(ctx.exception.lineno, 2)
+        self.assertIn("missing required", ctx.exception.raw_message)
+
+    def test_varargs_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('def f(*args):\n    return 0\n')
+        self.assertIn("*args", ctx.exception.raw_message)
+
+    def test_kwargs_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('def f(**kw):\n    return 0\n')
+        self.assertIn("**kwargs", ctx.exception.raw_message)
+
+    def test_keyword_only_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('def f(x, *, y):\n    return x + y\n')
+        self.assertIn("Keyword-only", ctx.exception.raw_message)
+
+    def test_lambda_default_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('g = lambda x, y=10: x + y\n')
+        self.assertIn("lambda", ctx.exception.raw_message)
+
+    def test_non_literal_default_is_compile_error(self):
+        # Mutable default `[]` is the canonical Python footgun; we
+        # refuse non-literal defaults to keep call-site padding sound.
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('def f(x=[1, 2]):\n    return x\n')
+        self.assertIn("literal", ctx.exception.raw_message)
+
+    def test_forward_reference_resolves_default(self):
+        # A function defined later in the module should have its
+        # defaults visible at earlier call sites.
+        from pyvelox.compiler import compile_string
+        bc = compile_string(
+            'def main():\n'
+            '    return helper(3)\n'
+            'def helper(x, bonus=100):\n'
+            '    return x + bonus\n'
+        )
+        self.assertGreater(len(bc.expressions), 0)
+
+
+class TestRange(unittest.TestCase):
+    """range() supports 1, 2, or 3 arguments. Small literal range(N)
+    constant-folds to (list 0 1 ... N-1); everything else routes
+    through a `_pyvelox_range` helper emitted once into the program
+    prologue."""
+
+    def _compile(self, source):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(source)
+        return bc, b''.join(bc.expressions), encode_symbol
+
+    def test_small_constant_range_constant_folds(self):
+        bc, all_bytes, encode_symbol = self._compile('x = range(5)\n')
+        # Helper symbol should not appear for the fast path.
+        self.assertNotIn(
+            encode_symbol('_pyvelox_range', bc), all_bytes)
+
+    def test_variable_range_uses_helper(self):
+        bc, all_bytes, encode_symbol = self._compile(
+            'n = 4\nx = range(n)\n')
+        self.assertIn(encode_symbol('_pyvelox_range', bc), all_bytes)
+        self.assertIn(encode_symbol('_pyvelox_range_loop', bc), all_bytes)
+
+    def test_two_arg_range_uses_helper(self):
+        bc, all_bytes, encode_symbol = self._compile(
+            'x = range(2, 7)\n')
+        self.assertIn(encode_symbol('_pyvelox_range', bc), all_bytes)
+
+    def test_three_arg_range_uses_helper(self):
+        bc, all_bytes, encode_symbol = self._compile(
+            'x = range(0, 10, 2)\n')
+        self.assertIn(encode_symbol('_pyvelox_range', bc), all_bytes)
+
+    def test_large_constant_range_uses_helper(self):
+        # Above the inline-form argc cap a literal list isn't even
+        # representable; the runtime helper takes over.
+        bc, all_bytes, encode_symbol = self._compile(
+            'x = range(100)\n')
+        self.assertIn(encode_symbol('_pyvelox_range', bc), all_bytes)
+
+    def test_helper_emitted_only_once(self):
+        from pyvelox.compiler import compile_string
+        bc = compile_string(
+            'a = range(10, 20)\n'
+            'b = range(0, 50)\n'
+            'c = range(5, 100, 5)\n'
+        )
+        # The helper definition lives in the program prologue, prepended
+        # to expression 0. Two `define` calls (loop + range), regardless
+        # of how many call sites exist.
+        prologue = bytes(bc.expressions[0])
+        # `define` core symbol id (we don't need to compute it; just
+        # check that _pyvelox_range_loop appears exactly once as an
+        # app symbol in the program).
+        from pyvelox.encoder import encode_symbol
+        loop_sym = encode_symbol('_pyvelox_range_loop', bc)
+        # Each *use* of the symbol writes the same bytes; we just want
+        # to confirm exactly one `define _pyvelox_range_loop` lives in
+        # the prologue. Count occurrences of the define-the-loop pair:
+        # symbol id followed by a lambda form-ref.
+        self.assertEqual(prologue.count(loop_sym), 1)
+
+    def test_no_args_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError):
+            compile_string('x = range()\n')
+
+    def test_too_many_args_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError):
+            compile_string('x = range(1, 2, 3, 4)\n')
+
+
+class TestFStrings(unittest.TestCase):
+    """f-strings (`ast.JoinedStr` / `ast.FormattedValue`) lower to a
+    chain of `string_append` calls, with each interpolated value
+    routed through our `str()` conversion. Format specs and conversion
+    flags are rejected at compile time."""
+
+    def _compile_collect(self, source):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(source)
+        return bc, b''.join(bc.expressions), encode_symbol
+
+    def test_plain_fstring_is_just_a_string(self):
+        # No interpolation — should not emit string_append.
+        bc, all_bytes, encode_symbol = self._compile_collect(
+            'x = f"hello"\n')
+        self.assertNotIn(encode_symbol('string_append', bc), all_bytes)
+
+    def test_fstring_with_interpolation_uses_string_append(self):
+        bc, all_bytes, encode_symbol = self._compile_collect(
+            'name = "world"\n'
+            'x = f"hello {name}"\n'
+        )
+        self.assertIn(encode_symbol('string_append', bc), all_bytes)
+
+    def test_fstring_with_literal_int_constant_folds(self):
+        # int literal inside the hole goes through str()'s fast path,
+        # so the runtime type-dispatch shouldn't appear.
+        bc, all_bytes, encode_symbol = self._compile_collect(
+            'x = f"answer={42}"\n')
+        # No runtime stringp/booleanp/numberp dispatch needed.
+        self.assertNotIn(encode_symbol('numberp', bc), all_bytes)
+        self.assertNotIn(encode_symbol('booleanp', bc), all_bytes)
+
+    def test_format_spec_rejected_with_location(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('x = 1\nprint(f"{x:.2f}")\n')
+        self.assertEqual(ctx.exception.lineno, 2)
+        self.assertIn("format spec", ctx.exception.raw_message)
+
+    def test_conversion_rejected_with_location(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('x = "a"\nprint(f"{x!r}")\n')
+        self.assertEqual(ctx.exception.lineno, 2)
+        self.assertIn("conversion", ctx.exception.raw_message)
+
+
+class TestIntConversion(unittest.TestCase):
+    """`int(x)` previously emitted only string_to_number, which raises
+    a type error for ints/bools. Literals now resolve at compile time;
+    variables go through a runtime numberp/stringp dispatch."""
+
+    def _compile_collect(self, source):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(source)
+        return bc, b''.join(bc.expressions), encode_symbol
+
+    def test_literal_int_is_inlined(self):
+        bc, all_bytes, encode_symbol = self._compile_collect('x = int(5)\n')
+        # No runtime dispatch and no string_to_number for a plain int.
+        self.assertNotIn(encode_symbol('string_to_number', bc), all_bytes)
+        self.assertNotIn(encode_symbol('numberp', bc), all_bytes)
+        self.assertNotIn(encode_symbol('stringp', bc), all_bytes)
+
+    def test_literal_bool_becomes_integer(self):
+        bc, all_bytes, encode_symbol = self._compile_collect('x = int(True)\n')
+        self.assertNotIn(encode_symbol('string_to_number', bc), all_bytes)
+        self.assertNotIn(encode_symbol('numberp', bc), all_bytes)
+
+    def test_literal_string_uses_string_to_number(self):
+        bc, all_bytes, encode_symbol = self._compile_collect('x = int("42")\n')
+        self.assertIn(encode_symbol('string_to_number', bc), all_bytes)
+        # Pure compile-time fast path — no runtime dispatch.
+        self.assertNotIn(encode_symbol('numberp', bc), all_bytes)
+
+    def test_variable_uses_runtime_dispatch(self):
+        bc, all_bytes, encode_symbol = self._compile_collect(
+            'y = 1\nx = int(y)\n')
+        self.assertIn(encode_symbol('numberp', bc), all_bytes)
+        self.assertIn(encode_symbol('stringp', bc), all_bytes)
+        self.assertIn(encode_symbol('string_to_number', bc), all_bytes)
+
+
+class TestStrConversion(unittest.TestCase):
+    """`str(x)` must work for non-numeric types: literals route to the
+    correct fast path at compile time; variables and other expressions
+    fall through to a runtime type-dispatch."""
+
+    def _compile_collect(self, source):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(source)
+        return bc, b''.join(bc.expressions), encode_symbol
+
+    def test_literal_string_is_identity(self):
+        # str("hi") should NOT emit number_to_string, stringp, or booleanp.
+        bc, all_bytes, encode_symbol = self._compile_collect('x = str("hi")\n')
+        self.assertNotIn(encode_symbol('number_to_string', bc), all_bytes)
+        self.assertNotIn(encode_symbol('booleanp', bc), all_bytes)
+        self.assertNotIn(encode_symbol('stringp', bc), all_bytes)
+
+    def test_literal_int_uses_number_to_string(self):
+        bc, all_bytes, encode_symbol = self._compile_collect('x = str(5)\n')
+        self.assertIn(encode_symbol('number_to_string', bc), all_bytes)
+        # No runtime dispatch needed for a literal int.
+        self.assertNotIn(encode_symbol('booleanp', bc), all_bytes)
+
+    def test_literal_bool_is_inlined(self):
+        bc, all_bytes, encode_symbol = self._compile_collect('x = str(True)\n')
+        # Pure compile-time: no number_to_string, no type predicates.
+        self.assertNotIn(encode_symbol('number_to_string', bc), all_bytes)
+        self.assertNotIn(encode_symbol('booleanp', bc), all_bytes)
+
+    def test_variable_uses_runtime_dispatch(self):
+        bc, all_bytes, encode_symbol = self._compile_collect(
+            'y = 1\nx = str(y)\n')
+        # Runtime dispatch should emit stringp, booleanp, and
+        # number_to_string for the fallback.
+        self.assertIn(encode_symbol('stringp', bc), all_bytes)
+        self.assertIn(encode_symbol('booleanp', bc), all_bytes)
+        self.assertIn(encode_symbol('number_to_string', bc), all_bytes)
+
+
+class TestCompileErrorLocation(unittest.TestCase):
+    """Errors raised below translate_stmt/translate_expr should carry the
+    offending node's source location, and the formatter should render it
+    as `[path:]line:col: message` plus a snippet of the line."""
+
+    def test_unsupported_expression_carries_location(self):
+        source = "x = 1\ny = {n for n in [1, 2]}\n"
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(source)
+        err = ctx.exception
+        self.assertEqual(err.lineno, 2)
+        # `{n for n in [1, 2]}` starts at column 4 (0-indexed) on line 2.
+        self.assertEqual(err.col_offset, 4)
+        self.assertIn("SetComp", err.raw_message)
+
+    def test_unsupported_statement_carries_location(self):
+        # `break` outside a loop is rejected at translate_stmt; the
+        # location should point at the `break` line, not the enclosing
+        # def or module.
+        source = "def f():\n    break\n"
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(source)
+        err = ctx.exception
+        self.assertEqual(err.lineno, 2)
+        self.assertIn("break", err.raw_message)
+
+    def test_format_includes_path_line_col_and_snippet(self):
+        source = "y = {n for n in [1, 2]}\n"
+        try:
+            compile_string(source)
+        except PyveloxCompileError as e:
+            rendered = e.format(source_path="prog.py")
+        self.assertIn("prog.py:1:5:", rendered)
+        self.assertIn("y = {n for n in [1, 2]}", rendered)
+        self.assertIn("^", rendered)
 
 
 if __name__ == '__main__':

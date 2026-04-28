@@ -1,3 +1,31 @@
+# Copyright (c) 2026, RISE Research Institutes of Sweden AB
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+# 3. Neither the name of the copyright holder nor the names of its
+#    contributors may be used to endorse or promote products derived
+#    from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+# FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE
+# COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+# INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+# HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+# STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+# OF THE POSSIBILITY OF SUCH DAMAGE.
+
 """
 PyVelox Compiler Main Entry Point
 
@@ -9,6 +37,7 @@ import sys
 from pathlib import Path
 from typing import Union, Optional
 from .bytecode import Bytecode
+from .errors import PyveloxCompileError
 from .translator import translate_python_to_bytecode
 from .writer import write_bytecode_file, dump_bytecode
 
@@ -25,16 +54,9 @@ def compile_string(source_code: str) -> Bytecode:
 
     Raises:
         SyntaxError: If Python code has syntax errors
-        NotImplementedError: If code uses unsupported features
+        PyveloxCompileError: If code uses unsupported features
     """
-    try:
-        return translate_python_to_bytecode(source_code)
-    except SyntaxError as e:
-        print(f"Python syntax error: {e}", file=sys.stderr)
-        raise
-    except Exception as e:
-        print(f"Compilation error: {e}", file=sys.stderr)
-        raise
+    return translate_python_to_bytecode(source_code)
 
 
 def compile_file(source_path: Union[str, Path],
@@ -56,7 +78,7 @@ def compile_file(source_path: Union[str, Path],
     Raises:
         FileNotFoundError: If source file doesn't exist
         SyntaxError: If Python code has syntax errors
-        NotImplementedError: If code uses unsupported features
+        PyveloxCompileError: If code uses unsupported features
     """
     source_path = Path(source_path)
 
@@ -81,8 +103,15 @@ def compile_file(source_path: Union[str, Path],
     # Compile to bytecode
     try:
         bc = compile_string(source_code)
-    except Exception:
-        # Error already printed by compile_string
+    except PyveloxCompileError as e:
+        # Re-render the error with the file path so users get a clickable
+        # location like `prog.py:14:5: <message>` instead of just the
+        # message body.
+        print(e.format(source_path=source_path), file=sys.stderr)
+        raise
+    except SyntaxError as e:
+        print(f"{source_path}:{e.lineno}: syntax error: {e.msg}",
+              file=sys.stderr)
         raise
 
     # Write bytecode file
@@ -148,6 +177,9 @@ Examples:
             dump=args.dump
         )
         return 0
+    except (PyveloxCompileError, SyntaxError):
+        # compile_file has already printed a located error; just exit non-zero.
+        return 1
     except Exception as e:
         print(f"Fatal error: {e}", file=sys.stderr)
         return 1

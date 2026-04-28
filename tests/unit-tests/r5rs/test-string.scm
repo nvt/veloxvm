@@ -91,4 +91,20 @@
 ;; String comparison with string predicates
 (assert-true (equal? (string #\H #\e #\j) "Hej") "Constructed string equals literal")
 
+;; Regression: string ops on top-level string variables.
+;; String literals bound to a top-level name are stored "by ID" -- their
+;; str/length aren't materialized until vm_string_resolve runs. Several
+;; string ops used to skip that resolve and silently saw an empty string.
+(define top-s1 "hello")
+(define top-s2 "world")
+(assert-equal 5 (string-length top-s1) "string-length on top-level var")
+(assert-equal #\e (string-ref top-s1 1) "string-ref on top-level var")
+(assert-equal '(#\h #\e #\l #\l #\o) (string->list top-s1) "string->list on top-level var")
+(assert-equal "hello world" (string-append top-s1 " " top-s2) "string-append on top-level vars")
+(assert-equal "ell" (substring top-s1 1 4) "substring on top-level var")
+(assert-true (< (string-compare top-s1 top-s2) 0) "string-compare on top-level vars")
+(assert-equal "hello world" (string-join " " (list top-s1 top-s2)) "string-join on top-level vars")
+(define top-num "42")
+(assert-equal 42 (string->number top-num) "string->number on top-level var")
+
 (test-summary)

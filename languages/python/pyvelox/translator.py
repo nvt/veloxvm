@@ -1,3 +1,31 @@
+# Copyright (c) 2026, RISE Research Institutes of Sweden AB
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+# 3. Neither the name of the copyright holder nor the names of its
+#    contributors may be used to endorse or promote products derived
+#    from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+# FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE
+# COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+# INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+# HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+# STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+# OF THE POSSIBILITY OF SUCH DAMAGE.
+
 """
 Python AST to VeloxVM Bytecode Translator
 
@@ -7,15 +35,39 @@ different Python constructs.
 """
 
 import ast
+import functools
 import sys
-from typing import List, Optional, Set, Dict
+from typing import Callable, Dict, List, Optional, Set
 from .bytecode import Bytecode
 from .encoder import (
     encode_integer, encode_boolean, encode_string, encode_symbol,
     encode_inline_form, encode_form_ref, encode_form_lambda,
     create_inline_call, create_inline_call_direct, create_bind_form
 )
+from .errors import PyveloxCompileError
 from .primitives import get_primitive_id
+
+
+def _located_dispatch(method):
+    """Decorate a translator method that takes an AST node so that any
+    exception raised below it gets re-raised as a PyveloxCompileError
+    with the node's source location attached. Inner frames see the
+    most-specific node; outer frames leave an already-located error
+    alone, so the deepest in-flight node wins."""
+    @functools.wraps(method)
+    def wrapper(self, node, *args, **kwargs):
+        try:
+            return method(self, node, *args, **kwargs)
+        except PyveloxCompileError:
+            raise
+        except Exception as exc:
+            raise PyveloxCompileError(
+                str(exc),
+                lineno=getattr(node, 'lineno', None),
+                col_offset=getattr(node, 'col_offset', None),
+                source_lines=self._source_lines,
+            ) from exc
+    return wrapper
 
 
 class PythonTranslator:
@@ -32,7 +84,74 @@ class PythonTranslator:
     - Built-in functions (print, len, etc.)
     """
 
-    def __init__(self, bc: Bytecode):
+    # Sentinel symbols raised by `break`/`continue` and caught by the
+    # surrounding loop. They are module-level (not per-loop) because
+    # each loop installs its own break/continue guard, so the nearest
+    # enclosing one always catches first. User except handlers
+    # re-raise these so loop control isn't accidentally swallowed by
+    # `except:` inside a loop body.
+    BREAK_SENTINEL = '__pyvelox_break__'
+    CONTINUE_SENTINEL = '__pyvelox_continue__'
+
+    # Built-in name -> handler-method-name. translate_call dispatches
+    # `name(args)` calls through this table when `name` is an
+    # ast.Name. Each handler takes (self, args: List[ast.expr]) and
+    # returns bytes. Adding a new built-in is a one-line addition
+    # plus a `translate_<name>` method below.
+    _BUILTIN_HANDLERS: Dict[str, str] = {
+        'print':     'translate_print',
+        'len':       'translate_len',
+        'range':     'translate_range',
+        'int':       'translate_int',
+        'str':       'translate_str',
+        'abs':       'translate_abs',
+        'min':       'translate_min',
+        'max':       'translate_max',
+        'sum':       'translate_sum',
+        'sorted':    'translate_sorted',
+        'reversed':  'translate_reversed',
+        'map':       'translate_map',
+        'filter':    'translate_filter',
+        'reduce':    'translate_reduce',
+        'all':       'translate_all',
+        'any':       'translate_any',
+        'list':      'translate_list_constructor',
+        'enumerate': 'translate_enumerate',
+        'zip':       'translate_zip',
+    }
+
+    # Method name -> dispatch lambda. The lambda receives
+    # (translator, receiver_expr, args) and adapts to whichever
+    # underlying handler signature the method needs (some take
+    # `args`, some don't). Adding a new method dispatch is a
+    # one-line addition.
+    _METHOD_HANDLERS: Dict[str, Callable] = {
+        # Dict methods
+        'keys':       lambda t, o, a: t.translate_dict_keys(o),
+        'values':     lambda t, o, a: t.translate_dict_values(o),
+        'items':      lambda t, o, a: t.translate_dict_items(o),
+        'get':        lambda t, o, a: t.translate_dict_get(o, a),
+        # List methods
+        'append':     lambda t, o, a: t.translate_list_append(o, a),
+        'extend':     lambda t, o, a: t.translate_list_extend(o, a),
+        'pop':        lambda t, o, a: t.translate_list_pop(o, a),
+        'remove':     lambda t, o, a: t.translate_list_remove(o, a),
+        'reverse':    lambda t, o, a: t.translate_list_reverse(o),
+        'count':      lambda t, o, a: t.translate_list_count(o, a),
+        'index':      lambda t, o, a: t.translate_list_index(o, a),
+        'insert':     lambda t, o, a: t.translate_list_insert(o, a),
+        # String methods
+        'upper':      lambda t, o, a: t.translate_string_upper(o),
+        'lower':      lambda t, o, a: t.translate_string_lower(o),
+        'split':      lambda t, o, a: t.translate_string_split(o, a),
+        'join':       lambda t, o, a: t.translate_string_join(o, a),
+        'startswith': lambda t, o, a: t.translate_string_startswith(o, a),
+        'endswith':   lambda t, o, a: t.translate_string_endswith(o, a),
+        'strip':      lambda t, o, a: t.translate_string_strip(o),
+        'replace':    lambda t, o, a: t.translate_string_replace(o, a),
+    }
+
+    def __init__(self, bc: Bytecode, source_lines: Optional[List[str]] = None):
         self.bc = bc
         self.scope_stack: List[Set[str]] = [set()]  # Stack of scopes, outermost first
         # Per-scope set of boxed names. Parallel to scope_stack; entry i lists
@@ -40,6 +159,23 @@ class PythonTranslator:
         # (because they are both captured by an inner function AND mutated).
         self.boxed_stack: List[Set[str]] = [set()]
         self.renamed_vars: Dict[str, str] = {}  # Map original names to safe names
+        # Used by PyveloxCompileError to render source-line snippets.
+        self._source_lines: Optional[List[str]] = source_lines
+        # Depth of the currently-being-translated loop nest. `break` and
+        # `continue` are only legal when this is positive.
+        self._loop_depth: int = 0
+        # Module-level bytecode emitted before any user statement —
+        # used to inject helpers (e.g. `_pyvelox_range`) on demand. The
+        # `_emitted_helpers` set guards against emitting the same helper
+        # twice when the construct appears more than once in a program.
+        self._preamble: bytearray = bytearray()
+        self._emitted_helpers: Set[str] = set()
+        # Defaults table populated by a pre-pass over the AST. Maps a
+        # function's safe name to a list whose i-th entry is either
+        # None (the i-th positional argument is required) or the
+        # already-encoded bytes of its literal default value. Used by
+        # translate_call to pad missing arguments at the call site.
+        self._function_defaults: Dict[str, List[Optional[bytes]]] = {}
 
     def is_vm_primitive(self, name: str) -> bool:
         """Check if a name conflicts with a VM primitive."""
@@ -118,14 +254,110 @@ class PythonTranslator:
         Returns:
             Compiled bytecode (to be stored in expression 0)
         """
-        accumulated = bytearray()
+        # Pre-pass: validate every function/lambda signature and
+        # record positional defaults. Doing it before any per-statement
+        # translation means call sites in earlier code can resolve
+        # defaults of functions defined later, matching Python's late
+        # binding for direct calls.
+        self._collect_function_defaults(module)
+
+        statements = bytearray()
 
         for stmt in module.body:
             bytecode = self.translate_stmt(stmt)
-            accumulated.extend(bytecode)
+            statements.extend(bytecode)
 
-        return bytes(accumulated)
+        # Helpers (filled in by translate_*) must run before user code,
+        # since user code may call them. They're emitted at translation
+        # time and concatenated here as the program prologue.
+        return bytes(self._preamble) + bytes(statements)
 
+    def _collect_function_defaults(self, node: ast.AST) -> None:
+        """Walk `node` recursively, validating every FunctionDef and
+        Lambda signature and recording literal positional defaults.
+        Errors are re-raised as PyveloxCompileError with the offending
+        function's source location."""
+        if isinstance(node, (ast.FunctionDef, ast.Lambda,
+                             ast.AsyncFunctionDef)):
+            try:
+                self._validate_function_signature(
+                    node, isinstance(node, ast.Lambda))
+            except NotImplementedError as exc:
+                raise PyveloxCompileError(
+                    str(exc),
+                    lineno=getattr(node, 'lineno', None),
+                    col_offset=getattr(node, 'col_offset', None),
+                    source_lines=self._source_lines,
+                ) from exc
+
+        # Recurse. ast.iter_child_nodes covers function body, lambda
+        # body, expression children — everything we need.
+        for child in ast.iter_child_nodes(node):
+            self._collect_function_defaults(child)
+
+    def _validate_function_signature(self, node, is_lambda: bool) -> None:
+        """Refuse vararg/kwarg/kw-only/positional-only forms; for
+        FunctionDefs also encode and record any literal defaults.
+        Raises NotImplementedError on anything we don't handle — the
+        caller wraps it with a source location."""
+        args = node.args
+        if args.vararg is not None:
+            raise NotImplementedError(
+                "*args is not yet supported in pyvelox")
+        if args.kwarg is not None:
+            raise NotImplementedError(
+                "**kwargs is not yet supported in pyvelox")
+        if args.kwonlyargs:
+            raise NotImplementedError(
+                "Keyword-only arguments (after `*`) are not yet "
+                "supported in pyvelox")
+        if getattr(args, 'posonlyargs', None):
+            raise NotImplementedError(
+                "Positional-only arguments (the `/` separator) are not "
+                "yet supported in pyvelox")
+
+        if not args.defaults:
+            return
+
+        if is_lambda:
+            raise NotImplementedError(
+                "Default arguments on `lambda` are not supported. Use "
+                "a `def` for the same signature.")
+
+        # Encode each default. Defaults align right: the last
+        # len(args.defaults) positional args are the ones with defaults.
+        n_args = len(args.args)
+        n_defaults = len(args.defaults)
+        encoded: List[Optional[bytes]] = []
+        for i in range(n_args):
+            if i < n_args - n_defaults:
+                encoded.append(None)
+                continue
+            default_node = args.defaults[i - (n_args - n_defaults)]
+            encoded.append(self._encode_literal_default(default_node))
+
+        self._function_defaults[self.get_safe_name(node.name)] = encoded
+
+    def _encode_literal_default(self, default_node: ast.expr) -> bytes:
+        """Default values must be literal constants so they can be
+        emitted at every call site without re-evaluating side effects.
+        Mutable defaults (`x=[]`) would be a footgun even if we
+        supported them, so we don't try."""
+        if not isinstance(default_node, ast.Constant):
+            raise NotImplementedError(
+                f"Default argument values must be literal constants "
+                f"(got {type(default_node).__name__}). Defaults are "
+                f"materialised at each call site, so non-literal "
+                f"defaults would re-evaluate their expression every "
+                f"time.")
+        value = default_node.value
+        if not isinstance(value, (int, str, bool)) and value is not None:
+            raise NotImplementedError(
+                f"Default argument values must be int, bool, str, or "
+                f"None (got {type(value).__name__})")
+        return self.translate_constant(default_node)
+
+    @_located_dispatch
     def translate_stmt(self, stmt: ast.stmt) -> bytes:
         """Translate a statement node."""
         if isinstance(stmt, ast.Expr):
@@ -165,14 +397,19 @@ class PythonTranslator:
             # program-wide symbol bindings rather than to a local.
             return encode_boolean(False)
         elif isinstance(stmt, ast.Break):
-            # Break needs special handling in loop context
-            raise NotImplementedError("break statement requires loop context")
+            if self._loop_depth == 0:
+                raise NotImplementedError(
+                    "'break' outside loop")
+            return self._raise_sentinel(self.BREAK_SENTINEL)
         elif isinstance(stmt, ast.Continue):
-            # Continue needs special handling in loop context
-            raise NotImplementedError("continue statement requires loop context")
+            if self._loop_depth == 0:
+                raise NotImplementedError(
+                    "'continue' outside loop")
+            return self._raise_sentinel(self.CONTINUE_SENTINEL)
         else:
             raise NotImplementedError(f"Statement type not supported: {type(stmt).__name__}")
 
+    @_located_dispatch
     def translate_expr(self, expr: ast.expr) -> bytes:
         """Translate an expression node."""
         if isinstance(expr, ast.Constant):
@@ -205,6 +442,8 @@ class PythonTranslator:
             return self.translate_list_comp(expr)
         elif isinstance(expr, ast.Attribute):
             return self.translate_attribute(expr)
+        elif isinstance(expr, ast.JoinedStr):
+            return self.translate_joined_str(expr)
         else:
             raise NotImplementedError(f"Expression type not supported: {type(expr).__name__}")
 
@@ -229,6 +468,53 @@ class PythonTranslator:
             return encode_integer(int(value))
         else:
             raise NotImplementedError(f"Constant type not supported: {type(value)}")
+
+    def translate_joined_str(self, node: ast.JoinedStr) -> bytes:
+        """Translate an f-string into a chain of `string_append` calls.
+
+        `f"hello {name}!"` parses as a JoinedStr whose `values` are a
+        mix of `ast.Constant` (the literal segments) and
+        `ast.FormattedValue` (the `{...}` interpolations). Each
+        formatted value is routed through our `str()` conversion
+        (literal fast paths plus runtime stringp/booleanp dispatch),
+        and everything is concatenated with `string_append`.
+
+        Format specs (`f"{x:.2f}"`) and conversions (`f"{x!r}"`) are
+        not yet supported and raise at compile time so they can't
+        silently produce wrong output.
+        """
+        parts: List[bytes] = []
+        for piece in node.values:
+            if isinstance(piece, ast.Constant) and isinstance(piece.value, str):
+                # An empty segment (e.g. `f"{x}{y}"` between the two
+                # placeholders) contributes nothing — skip it so the
+                # `string_append` call doesn't include zero-length args.
+                if piece.value:
+                    parts.append(encode_string(piece.value, self.bc))
+            elif isinstance(piece, ast.FormattedValue):
+                if piece.conversion != -1:
+                    raise NotImplementedError(
+                        "f-string conversions (`!s`, `!r`, `!a`) "
+                        "are not yet supported")
+                if piece.format_spec is not None:
+                    raise NotImplementedError(
+                        "f-string format specs (`:.2f`, `:>5`, ...) "
+                        "are not yet supported")
+                # Reuse the str() pipeline: literals constant-fold,
+                # variables get the runtime type-dispatch.
+                parts.append(self.translate_str([piece.value]))
+            else:
+                raise NotImplementedError(
+                    f"Unexpected f-string component: "
+                    f"{type(piece).__name__}")
+
+        if not parts:
+            return encode_string("", self.bc)
+        if len(parts) == 1:
+            # No concatenation needed — a single segment is already a
+            # string-typed expression.
+            return parts[0]
+        return create_inline_call('string_append', parts, self.bc)
 
     def translate_list(self, node: ast.List) -> bytes:
         """Translate a list literal: [1, 2, 3] -> (list 1 2 3). Complex elements stored separately."""
@@ -711,6 +997,11 @@ class PythonTranslator:
         # NOTE: Store SAFE names in scope_stack
         self.scope_stack.append(local_set)
         self.boxed_stack.append(boxed_names)
+        # Loops don't cross function boundaries: a function defined
+        # inside a loop has its own break/continue scope (which is
+        # empty until the function itself contains a loop).
+        saved_loop_depth = self._loop_depth
+        self._loop_depth = 0
 
         try:
             # Compile body with granular expression storage (like Racket compiler)
@@ -751,6 +1042,7 @@ class PythonTranslator:
             # Pop the function scope
             self.scope_stack.pop()
             self.boxed_stack.pop()
+            self._loop_depth = saved_loop_depth
 
     def translate_lambda(self, node: ast.Lambda) -> bytes:
         """
@@ -785,6 +1077,8 @@ class PythonTranslator:
         # parameters. Pushing it makes inner lambdas/defs see them as outer.
         self.scope_stack.append(local_set)
         self.boxed_stack.append(boxed_names)
+        saved_loop_depth = self._loop_depth
+        self._loop_depth = 0
         try:
             # Translate body directly - lambdas are single expressions.
             body_bytes = self.translate_expr(node.body)
@@ -810,6 +1104,7 @@ class PythonTranslator:
         finally:
             self.scope_stack.pop()
             self.boxed_stack.pop()
+            self._loop_depth = saved_loop_depth
 
     def translate_return(self, node: ast.Return) -> bytes:
         """
@@ -829,103 +1124,27 @@ class PythonTranslator:
         return create_inline_call('return', [value_bytes], self.bc)
 
     def translate_call(self, node: ast.Call) -> bytes:
-        """Translate function call."""
-        # Check for method calls (e.g., d.keys(), d.get(k))
+        """Translate function call.
+
+        Dispatch order:
+          1. Method calls (`obj.m(args)`) — checked against
+             `_METHOD_HANDLERS`. If `m` isn't recognised, the call
+             falls through to the generic-call path so an unknown
+             method can still resolve through the symbol table.
+          2. Built-in name calls (`name(args)`) — checked against
+             `_BUILTIN_HANDLERS`.
+          3. Otherwise, generic call: emit `(callee args...)`.
+        """
         if isinstance(node.func, ast.Attribute):
-            method_name = node.func.attr
-            obj_expr = node.func.value
+            handler = self._METHOD_HANDLERS.get(node.func.attr)
+            if handler is not None:
+                return handler(self, node.func.value, node.args)
+            # Unknown method: fall through to the generic call path.
 
-            # Dict methods
-            if method_name == 'keys':
-                return self.translate_dict_keys(obj_expr)
-            elif method_name == 'values':
-                return self.translate_dict_values(obj_expr)
-            elif method_name == 'items':
-                return self.translate_dict_items(obj_expr)
-            elif method_name == 'get':
-                return self.translate_dict_get(obj_expr, node.args)
-
-            # List methods
-            elif method_name == 'append':
-                return self.translate_list_append(obj_expr, node.args)
-            elif method_name == 'extend':
-                return self.translate_list_extend(obj_expr, node.args)
-            elif method_name == 'pop':
-                return self.translate_list_pop(obj_expr, node.args)
-            elif method_name == 'remove':
-                return self.translate_list_remove(obj_expr, node.args)
-            elif method_name == 'reverse':
-                return self.translate_list_reverse(obj_expr)
-            elif method_name == 'count':
-                return self.translate_list_count(obj_expr, node.args)
-            elif method_name == 'index':
-                return self.translate_list_index(obj_expr, node.args)
-            elif method_name == 'insert':
-                return self.translate_list_insert(obj_expr, node.args)
-
-            # String methods
-            elif method_name == 'upper':
-                return self.translate_string_upper(obj_expr)
-            elif method_name == 'lower':
-                return self.translate_string_lower(obj_expr)
-            elif method_name == 'split':
-                return self.translate_string_split(obj_expr, node.args)
-            elif method_name == 'join':
-                return self.translate_string_join(obj_expr, node.args)
-            elif method_name == 'startswith':
-                return self.translate_string_startswith(obj_expr, node.args)
-            elif method_name == 'endswith':
-                return self.translate_string_endswith(obj_expr, node.args)
-            elif method_name == 'strip':
-                return self.translate_string_strip(obj_expr)
-            elif method_name == 'replace':
-                return self.translate_string_replace(obj_expr, node.args)
-
-            # Fall through for other methods
-
-        # Check for built-in functions
         if isinstance(node.func, ast.Name):
-            func_name = node.func.id
-
-            # Handle special built-ins
-            if func_name == 'print':
-                return self.translate_print(node.args)
-            elif func_name == 'len':
-                return self.translate_len(node.args)
-            elif func_name == 'range':
-                return self.translate_range(node.args)
-            elif func_name == 'int':
-                return self.translate_int(node.args)
-            elif func_name == 'str':
-                return self.translate_str(node.args)
-            elif func_name == 'abs':
-                return self.translate_abs(node.args)
-            elif func_name == 'min':
-                return self.translate_min(node.args)
-            elif func_name == 'max':
-                return self.translate_max(node.args)
-            elif func_name == 'sum':
-                return self.translate_sum(node.args)
-            elif func_name == 'sorted':
-                return self.translate_sorted(node.args)
-            elif func_name == 'reversed':
-                return self.translate_reversed(node.args)
-            elif func_name == 'map':
-                return self.translate_map(node.args)
-            elif func_name == 'filter':
-                return self.translate_filter(node.args)
-            elif func_name == 'reduce':
-                return self.translate_reduce(node.args)
-            elif func_name == 'all':
-                return self.translate_all(node.args)
-            elif func_name == 'any':
-                return self.translate_any(node.args)
-            elif func_name == 'list':
-                return self.translate_list_constructor(node.args)
-            elif func_name == 'enumerate':
-                return self.translate_enumerate(node.args)
-            elif func_name == 'zip':
-                return self.translate_zip(node.args)
+            handler_name = self._BUILTIN_HANDLERS.get(node.func.id)
+            if handler_name is not None:
+                return getattr(self, handler_name)(node.args)
 
         # Regular function call. Resolve the callee carefully: when a
         # user binding shadows a primitive (tracked in renamed_vars by
@@ -952,6 +1171,28 @@ class PythonTranslator:
             # ((lambda ...) ...) still inlines.
             func_bytes = self.translate_expr_with_ref(node.func)
         arg_bytes = [self.translate_expr_with_ref(arg) for arg in node.args]
+
+        # If this call names a function with recorded defaults, pad
+        # missing trailing arguments with the defaults' encoded bytes.
+        # The pre-pass restricts defaults to literals, so reusing the
+        # same bytes at every call site is safe.
+        if isinstance(node.func, ast.Name):
+            safe_fname = self.get_safe_name(node.func.id)
+            defaults = self._function_defaults.get(safe_fname)
+            if defaults is not None:
+                n_provided = len(arg_bytes)
+                n_total = len(defaults)
+                if n_provided > n_total:
+                    raise NotImplementedError(
+                        f"{node.func.id}() takes at most {n_total} "
+                        f"positional arguments but {n_provided} were given")
+                for i in range(n_provided, n_total):
+                    if defaults[i] is None:
+                        raise NotImplementedError(
+                            f"{node.func.id}() missing required "
+                            f"positional argument: "
+                            f"{node.func.id}'s parameter at index {i}")
+                    arg_bytes.append(defaults[i])
 
         # Create inline call: inline(argc) + func + args
         result = bytearray()
@@ -1038,6 +1279,22 @@ class PythonTranslator:
         else:
             raise NotImplementedError(f"Unary operator not supported: {type(node.op).__name__}")
 
+    def _emit_eq(self, left_bytes: bytes, right_bytes: bytes,
+                 negate: bool) -> bytes:
+        """Emit Python-style equality.
+
+        Routes through the VM's `equalp` (deep, type-aware) primitive
+        rather than the numeric-only `equal`. `equal` silently returns
+        false for any non-numeric operand, which made `"a" == "a"` and
+        `True == True` evaluate to false. `equalp` returns false on
+        type mismatch, matching Python `==`'s cross-type behaviour.
+        """
+        eq_call = create_inline_call('equalp', [left_bytes, right_bytes], self.bc)
+        if not negate:
+            return eq_call
+        eq_id = self.bc.add_expression(eq_call)
+        return create_inline_call('not', [encode_form_ref(eq_id)], self.bc)
+
     def translate_compare(self, node: ast.Compare) -> bytes:
         """
         Translate comparison.
@@ -1045,9 +1302,10 @@ class PythonTranslator:
         Supports chaining: a < b < c -> (and (< a b) (< b c))
         Complex operands are stored separately.
         """
+        # `==` and `!=` are handled separately because they need to work
+        # for strings, booleans, lists, etc. — not just numbers. Other
+        # relational ops stay on the numeric primitives.
         op_map = {
-            ast.Eq: 'equal',
-            ast.NotEq: 'different',
             ast.Lt: 'less_than',
             ast.LtE: 'less_than_equal',
             ast.Gt: 'greater_than',
@@ -1101,12 +1359,17 @@ class PythonTranslator:
                     member_ref = encode_form_ref(member_id)
                     return create_inline_call('not', [member_ref], self.bc)
 
+            left_bytes = self.translate_expr_with_ref(node.left)
+            right_bytes = self.translate_expr_with_ref(node.comparators[0])
+
+            if op_type is ast.Eq:
+                return self._emit_eq(left_bytes, right_bytes, negate=False)
+            if op_type is ast.NotEq:
+                return self._emit_eq(left_bytes, right_bytes, negate=True)
+
             op = op_map.get(op_type)
             if not op:
                 raise NotImplementedError(f"Comparison operator not supported: {op_type.__name__}")
-
-            left_bytes = self.translate_expr_with_ref(node.left)
-            right_bytes = self.translate_expr_with_ref(node.comparators[0])
 
             return create_inline_call(op, [left_bytes, right_bytes], self.bc)
         else:
@@ -1115,14 +1378,20 @@ class PythonTranslator:
             left = node.left
 
             for op_node, right in zip(node.ops, node.comparators):
-                op = op_map.get(type(op_node))
-                if not op:
-                    raise NotImplementedError(f"Comparison operator not supported: {type(op_node).__name__}")
-
+                op_type = type(op_node)
                 left_bytes = self.translate_expr_with_ref(left)
                 right_bytes = self.translate_expr_with_ref(right)
 
-                comp_bytes = create_inline_call(op, [left_bytes, right_bytes], self.bc)
+                if op_type is ast.Eq:
+                    comp_bytes = self._emit_eq(left_bytes, right_bytes, negate=False)
+                elif op_type is ast.NotEq:
+                    comp_bytes = self._emit_eq(left_bytes, right_bytes, negate=True)
+                else:
+                    op = op_map.get(op_type)
+                    if not op:
+                        raise NotImplementedError(f"Comparison operator not supported: {op_type.__name__}")
+                    comp_bytes = create_inline_call(op, [left_bytes, right_bytes], self.bc)
+
                 # Store each comparison separately
                 comp_id = self.bc.add_expression(comp_bytes)
                 comparisons.append(encode_form_ref(comp_id))
@@ -1177,6 +1446,52 @@ class PythonTranslator:
 
         return create_inline_call('if', [test_bytes, body_bytes, alt_bytes], self.bc)
 
+    def _raise_sentinel(self, sentinel_name: str) -> bytes:
+        """Emit `(raise (quote <sentinel>))`. raise evaluates its
+        argument, so the symbol must be quoted to survive lookup."""
+        sym_bytes = create_inline_call(
+            'quote', [encode_symbol(sentinel_name, self.bc)], self.bc)
+        return create_inline_call('raise', [sym_bytes], self.bc)
+
+    def _wrap_with_sentinel_guard(self, body_bytes: bytes,
+                                  sentinel_name: str) -> bytes:
+        """Wrap body in a guard that swallows raises of `sentinel_name`
+        and re-raises everything else:
+
+            (guard _exc
+              (if (eqp _exc (quote <sentinel>)) #f (raise _exc))
+              <body>)
+
+        The exception variable name is fixed (`_exc`); the VM doesn't
+        evaluate it, so the same name can nest without conflict."""
+        exc_name = '_exc'
+        sentinel_quoted = create_inline_call(
+            'quote', [encode_symbol(sentinel_name, self.bc)], self.bc)
+        eq_check = create_inline_call(
+            'eqp',
+            [encode_symbol(exc_name, self.bc), sentinel_quoted],
+            self.bc)
+        eq_id = self.bc.add_expression(eq_check)
+        eq_ref = encode_form_ref(eq_id)
+
+        rethrow = create_inline_call(
+            'raise', [encode_symbol(exc_name, self.bc)], self.bc)
+        rethrow_id = self.bc.add_expression(rethrow)
+        rethrow_ref = encode_form_ref(rethrow_id)
+
+        handler = create_inline_call(
+            'if', [eq_ref, encode_boolean(False), rethrow_ref], self.bc)
+        handler_id = self.bc.add_expression(handler)
+        handler_ref = encode_form_ref(handler_id)
+
+        body_id = self.bc.add_expression(body_bytes)
+        body_ref = encode_form_ref(body_id)
+
+        return create_inline_call(
+            'guard',
+            [encode_symbol(exc_name, self.bc), handler_ref, body_ref],
+            self.bc)
+
     def translate_for(self, node: ast.For) -> bytes:
         """
         Translate for loop: for x in iterable: body -> (for-each (lambda (x) body) iterable).
@@ -1190,7 +1505,17 @@ class PythonTranslator:
         if isinstance(node.target, ast.Name):
             param = node.target.id
             safe_param = self.get_safe_name(param)
-            body_bytes = self.translate_block(node.body)
+
+            self._loop_depth += 1
+            try:
+                body_bytes = self.translate_block(node.body)
+            finally:
+                self._loop_depth -= 1
+
+            # Wrap each iteration's body so `continue` returns from the
+            # body lambda without escaping for_each.
+            body_bytes = self._wrap_with_sentinel_guard(
+                body_bytes, self.CONTINUE_SENTINEL)
 
             # Store body as separate expression
             body_id = self.bc.add_expression(body_bytes)
@@ -1205,7 +1530,12 @@ class PythonTranslator:
             iterable_bytes = self.translate_expr_with_ref(node.iter)
 
             # (for-each lambda iterable)
-            return create_inline_call('for_each', [lambda_bytes, iterable_bytes], self.bc)
+            for_each_call = create_inline_call(
+                'for_each', [lambda_bytes, iterable_bytes], self.bc)
+            # Wrap the whole loop so `break` exits it without
+            # propagating further.
+            return self._wrap_with_sentinel_guard(
+                for_each_call, self.BREAK_SENTINEL)
 
         # Handle tuple unpacking: for x, y in pairs
         elif isinstance(node.target, ast.Tuple):
@@ -1225,7 +1555,13 @@ class PythonTranslator:
             item_param = self.bc.get_unique_var_name("_item")
 
             # Translate the loop body
-            body_bytes = self.translate_block(node.body)
+            self._loop_depth += 1
+            try:
+                body_bytes = self.translate_block(node.body)
+            finally:
+                self._loop_depth -= 1
+            body_bytes = self._wrap_with_sentinel_guard(
+                body_bytes, self.CONTINUE_SENTINEL)
 
             # Create inner lambda that takes unpacked variables as parameters
             # (lambda (x y) body)
@@ -1258,7 +1594,10 @@ class PythonTranslator:
             iterable_bytes = self.translate_expr_with_ref(node.iter)
 
             # (for-each outer_lambda iterable)
-            return create_inline_call('for_each', [outer_lambda_ref, iterable_bytes], self.bc)
+            for_each_call = create_inline_call(
+                'for_each', [outer_lambda_ref, iterable_bytes], self.bc)
+            return self._wrap_with_sentinel_guard(
+                for_each_call, self.BREAK_SENTINEL)
 
         else:
             raise NotImplementedError(f"For loop target type not supported: {type(node.target).__name__}")
@@ -1285,7 +1624,17 @@ class PythonTranslator:
         test_bytes = self.translate_expr(node.test)
 
         # Translate loop body (which may contain set! for variables)
-        body_bytes = self.translate_block(node.body)
+        self._loop_depth += 1
+        try:
+            body_bytes = self.translate_block(node.body)
+        finally:
+            self._loop_depth -= 1
+
+        # `continue` raises a sentinel that this guard swallows, so the
+        # body lambda returns #f and the recursive call below fires the
+        # next iteration.
+        body_bytes = self._wrap_with_sentinel_guard(
+            body_bytes, self.CONTINUE_SENTINEL)
 
         # Create recursive call with NO arguments (closure captures variables)
         recurse_bytes = create_inline_call(loop_name, [], self.bc)
@@ -1319,7 +1668,10 @@ class PythonTranslator:
         wrapper_lambda = encode_form_lambda(wrapper_id)
 
         # Call the wrapper lambda: ((lambda () (define loop ...) (loop)))
-        return create_inline_call_direct(wrapper_lambda, [], self.bc)
+        loop_call = create_inline_call_direct(wrapper_lambda, [], self.bc)
+        # Wrap the entire while construct so `break` exits cleanly.
+        return self._wrap_with_sentinel_guard(
+            loop_call, self.BREAK_SENTINEL)
 
     # === Exceptions ===
 
@@ -1328,14 +1680,15 @@ class PythonTranslator:
         Translate try/except:
         try: body except Exception as e: handler
         ->
-        (guard (e (#t handler)) body)
+        (guard exc handler body)
 
-        Only a single catch-all handler (bare `except:` or `except Exception:`)
-        is currently implementable; VeloxVM's guard form takes one test
-        expression and there is no exception-type introspection plumbed through
-        to Python yet. Typed handlers (except KeyError:) and multiple handlers
-        would silently become catch-alls if we translated them, so we refuse
-        them at compile time instead.
+        VeloxVM's `guard` takes exactly three arguments — the bound
+        exception variable, the handler, and the body — and runs the
+        handler on every exception. Only a single bare `except:` or
+        `except Exception:` is currently implementable; typed handlers
+        (`except KeyError:`) and multiple handlers would silently
+        become catch-alls if we translated them, so we refuse them at
+        compile time instead.
         """
         body_bytes = self.translate_block(node.body)
 
@@ -1364,23 +1717,64 @@ class PythonTranslator:
         # Handler body
         handler_bytes = self.translate_block(handler.body)
 
-        # For generic catch-all, use #t as test
-        test_bytes = encode_boolean(True)
+        # Inside a loop, an `except:` written by the user shouldn't
+        # accidentally swallow our break/continue sentinels. Prepend a
+        # filter that re-raises if the bound exception is one of those
+        # sentinels:
+        #   (if (or (eqp exc 'break) (eqp exc 'continue)) (raise exc) <user-handler>)
+        if self._loop_depth > 0:
+            handler_bytes = self._filter_loop_sentinels(exc_var, handler_bytes)
 
-        # Store body and handler as separate expressions if complex
+        # Store body and handler as separate expressions
         body_id = self.bc.add_expression(body_bytes)
         body_ref = encode_form_ref(body_id)
 
         handler_id = self.bc.add_expression(handler_bytes)
         handler_ref = encode_form_ref(handler_id)
 
-        # (guard exc_var test handler body)
+        # (guard exc_var handler body) — guard's min/max argc is 3.
         return create_inline_call('guard', [
             encode_symbol(exc_var, self.bc),
-            test_bytes,
             handler_ref,
             body_ref
         ], self.bc)
+
+    def _filter_loop_sentinels(self, exc_var: str,
+                               handler_bytes: bytes) -> bytes:
+        """Return `(if (or (eqp exc 'break) (eqp exc 'continue))
+                       (raise exc) <handler>)` so loop-control
+        exceptions raised inside a try-block get propagated rather
+        than absorbed by a user-written `except:` clause."""
+        break_quoted = create_inline_call(
+            'quote', [encode_symbol(self.BREAK_SENTINEL, self.bc)], self.bc)
+        cont_quoted = create_inline_call(
+            'quote', [encode_symbol(self.CONTINUE_SENTINEL, self.bc)], self.bc)
+
+        is_break = create_inline_call(
+            'eqp', [encode_symbol(exc_var, self.bc), break_quoted], self.bc)
+        is_break_id = self.bc.add_expression(is_break)
+        is_break_ref = encode_form_ref(is_break_id)
+
+        is_cont = create_inline_call(
+            'eqp', [encode_symbol(exc_var, self.bc), cont_quoted], self.bc)
+        is_cont_id = self.bc.add_expression(is_cont)
+        is_cont_ref = encode_form_ref(is_cont_id)
+
+        is_sentinel = create_inline_call(
+            'or', [is_break_ref, is_cont_ref], self.bc)
+        is_sentinel_id = self.bc.add_expression(is_sentinel)
+        is_sentinel_ref = encode_form_ref(is_sentinel_id)
+
+        rethrow = create_inline_call(
+            'raise', [encode_symbol(exc_var, self.bc)], self.bc)
+        rethrow_id = self.bc.add_expression(rethrow)
+        rethrow_ref = encode_form_ref(rethrow_id)
+
+        handler_id = self.bc.add_expression(handler_bytes)
+        handler_ref = encode_form_ref(handler_id)
+
+        return create_inline_call(
+            'if', [is_sentinel_ref, rethrow_ref, handler_ref], self.bc)
 
     def translate_import(self, node: ast.Import) -> bytes:
         """Translate `import lib` to the VM's `(import "lib")` primitive.
@@ -1415,7 +1809,12 @@ class PythonTranslator:
         else:
             exc_name = 'Exception'
 
-        exc_bytes = encode_symbol(exc_name, self.bc)
+        # raise evaluates its argument before invocation. Without
+        # quoting, the exception type name would be looked up as a
+        # variable and fail with "Undefined symbol". Wrap the symbol in
+        # (quote ...) so it survives evaluation as a symbol literal.
+        exc_bytes = create_inline_call(
+            'quote', [encode_symbol(exc_name, self.bc)], self.bc)
         return create_inline_call('raise', [exc_bytes], self.bc)
 
     # === Subscripting ===
@@ -2039,45 +2438,287 @@ class PythonTranslator:
         # TODO: Could inspect type to choose between length/string-length/vector-length
         return create_inline_call('length', [arg_bytes], self.bc)
 
+    # Inline-form argc fits in 6 bits (max 63), so a literal
+    # `(list 0 1 ... n-1)` form caps out at ~62 elements. We also
+    # don't want to bloat the symbol/expr tables for every modest
+    # range. Anything above this threshold falls through to the
+    # runtime helper.
+    _RANGE_LITERAL_LIMIT = 16
+
     def translate_range(self, args: List[ast.expr]) -> bytes:
+        """Translate `range(stop)` / `range(start, stop)` /
+        `range(start, stop, step)`.
+
+        A small literal `range(N)` constant-folds to
+        `(list 0 1 ... N-1)`. Everything else goes through a
+        per-module `_pyvelox_range` helper emitted into the program
+        prologue on first use.
         """
-        Translate range(n) to a list: (list 0 1 2 ... n-1).
+        if not 1 <= len(args) <= 3:
+            raise ValueError(
+                f"range() takes 1 to 3 arguments ({len(args)} given)")
 
-        For simplicity, only support constant ranges for now.
-        """
-        if len(args) != 1:
-            raise NotImplementedError("range() only supports single argument for now")
-
-        # Evaluate to get constant value (simplified)
-        if isinstance(args[0], ast.Constant):
-            n = args[0].value
-            if not isinstance(n, int):
-                raise ValueError("range() argument must be an integer")
-
-            # Generate (list 0 1 2 ... n-1)
-            elements = [encode_integer(i) for i in range(n)]
+        # Constant fast path: range(N) where N is a small integer
+        # literal. Avoids materializing huge inline lists.
+        if (len(args) == 1
+                and isinstance(args[0], ast.Constant)
+                and isinstance(args[0].value, int)
+                and not isinstance(args[0].value, bool)
+                and 0 <= args[0].value <= self._RANGE_LITERAL_LIMIT):
+            elements = [encode_integer(i) for i in range(args[0].value)]
             return create_inline_call('list', elements, self.bc)
+
+        self._emit_range_helper()
+
+        if len(args) == 1:
+            start_b = encode_integer(0)
+            stop_b = self.translate_expr_with_ref(args[0])
+            step_b = encode_integer(1)
+        elif len(args) == 2:
+            start_b = self.translate_expr_with_ref(args[0])
+            stop_b = self.translate_expr_with_ref(args[1])
+            step_b = encode_integer(1)
         else:
-            raise NotImplementedError("range() only supports constant arguments for now")
+            start_b = self.translate_expr_with_ref(args[0])
+            stop_b = self.translate_expr_with_ref(args[1])
+            step_b = self.translate_expr_with_ref(args[2])
+
+        return create_inline_call(
+            '_pyvelox_range', [start_b, stop_b, step_b], self.bc)
+
+    def _emit_range_helper(self) -> None:
+        """Emit a top-level `_pyvelox_range(start, stop, step)` helper
+        that returns `[start, start+step, ..., stop)` as a list. Idempotent
+        — only the first call adds bytecode to the prologue.
+
+        The implementation is two top-level defines:
+
+            (define _pyvelox_range_loop
+              (lambda (i stop step acc)
+                (if (or (and (> step 0) (>= i stop))
+                        (and (< step 0) (<= i stop)))
+                    (reverse acc)
+                    (_pyvelox_range_loop (+ i step) stop step
+                                         (cons i acc)))))
+
+            (define _pyvelox_range
+              (lambda (start stop step)
+                (_pyvelox_range_loop start stop step (list))))
+
+        stop and step are passed through the recursion so the inner
+        lambda doesn't have to capture them — keeping us off the
+        closure-materialisation path.
+        """
+        if '_pyvelox_range' in self._emitted_helpers:
+            return
+        self._emitted_helpers.add('_pyvelox_range')
+
+        sym_i = lambda: encode_symbol('i', self.bc)
+        sym_stop = lambda: encode_symbol('stop', self.bc)
+        sym_step = lambda: encode_symbol('step', self.bc)
+        sym_acc = lambda: encode_symbol('acc', self.bc)
+        sym_start = lambda: encode_symbol('start', self.bc)
+
+        # Termination predicate: counting up past stop, or counting
+        # down past stop. step=0 falls through and recurses forever;
+        # callers shouldn't pass it (Python raises ValueError there).
+        pos_done = create_inline_call(
+            'and',
+            [create_inline_call('greater_than',
+                                [sym_step(), encode_integer(0)], self.bc),
+             create_inline_call('greater_than_equal',
+                                [sym_i(), sym_stop()], self.bc)],
+            self.bc)
+        neg_done = create_inline_call(
+            'and',
+            [create_inline_call('less_than',
+                                [sym_step(), encode_integer(0)], self.bc),
+             create_inline_call('less_than_equal',
+                                [sym_i(), sym_stop()], self.bc)],
+            self.bc)
+        done_test = create_inline_call('or', [pos_done, neg_done], self.bc)
+
+        rev_acc = create_inline_call('reverse', [sym_acc()], self.bc)
+
+        next_i = create_inline_call('add', [sym_i(), sym_step()], self.bc)
+        next_acc = create_inline_call('cons', [sym_i(), sym_acc()], self.bc)
+        recurse = create_inline_call(
+            '_pyvelox_range_loop',
+            [next_i, sym_stop(), sym_step(), next_acc],
+            self.bc)
+
+        loop_body = create_inline_call(
+            'if', [done_test, rev_acc, recurse], self.bc)
+        loop_bind = create_bind_form(
+            ['i', 'stop', 'step', 'acc'], loop_body, self.bc,
+            is_function=True)
+        loop_lambda_id = self.bc.add_expression(loop_bind)
+        loop_lambda_ref = encode_form_lambda(loop_lambda_id)
+        define_loop = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_range_loop', self.bc),
+             loop_lambda_ref],
+            self.bc)
+
+        outer_call = create_inline_call(
+            '_pyvelox_range_loop',
+            [sym_start(), sym_stop(), sym_step(),
+             create_inline_call('list', [], self.bc)],
+            self.bc)
+        outer_bind = create_bind_form(
+            ['start', 'stop', 'step'], outer_call, self.bc,
+            is_function=True)
+        outer_lambda_id = self.bc.add_expression(outer_bind)
+        outer_lambda_ref = encode_form_lambda(outer_lambda_id)
+        define_outer = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_range', self.bc), outer_lambda_ref],
+            self.bc)
+
+        self._preamble.extend(define_loop)
+        self._preamble.extend(define_outer)
 
     def translate_int(self, args: List[ast.expr]) -> bytes:
-        """Translate int(x) -> (string->number x) or just x."""
+        """Translate `int(x)`.
+
+        Python's `int(x)` accepts ints, strings, and bools; ours
+        previously emitted only `string_to_number`, which raises a
+        type error for anything else (including ints — `int(5)` was
+        broken). Literal arguments resolve at compile time; variables
+        get a runtime type-dispatch:
+
+            (if (numberp x) x
+              (if (stringp x) (string-to-number x)
+                (if x 1 0)))
+
+        The fallback branch coerces by truthiness, matching Python's
+        `int(True) == 1` / `int(False) == 0`. Calling `int()` on a
+        list or None falls into the truthiness branch instead of
+        raising, which is a documented divergence from CPython.
+        """
         if len(args) != 1:
             raise ValueError("int() takes exactly 1 argument")
 
-        arg_bytes = self.translate_expr_with_ref(args[0])
+        arg = args[0]
 
-        # If it's already a number, return it; otherwise convert
-        # For simplicity, use string->number
-        return create_inline_call('string_to_number', [arg_bytes], self.bc)
+        if isinstance(arg, ast.Constant):
+            value = arg.value
+            # bool is an int subclass — check first.
+            if isinstance(value, bool):
+                return encode_integer(1 if value else 0)
+            if isinstance(value, int):
+                return encode_integer(value)
+            if isinstance(value, str):
+                return create_inline_call(
+                    'string_to_number',
+                    [self.translate_expr_with_ref(arg)],
+                    self.bc)
+            # Other constants (None, floats) fall through to runtime.
+
+        arg_bytes = self.translate_expr_with_ref(arg)
+
+        def _hoist(call_bytes: bytes) -> bytes:
+            return encode_form_ref(self.bc.add_expression(call_bytes))
+
+        # Innermost: (if x 1 0) — handles booleans (and any truthy
+        # value, gracefully degrading instead of crashing).
+        bool_branch_ref = _hoist(create_inline_call(
+            'if',
+            [arg_bytes, encode_integer(1), encode_integer(0)],
+            self.bc))
+
+        # (string-to-number x)
+        str_branch_ref = _hoist(create_inline_call(
+            'string_to_number', [arg_bytes], self.bc))
+
+        # (stringp x)
+        str_test_ref = _hoist(create_inline_call(
+            'stringp', [arg_bytes], self.bc))
+
+        # (if (stringp x) (string-to-number x) bool_branch)
+        inner_if_ref = _hoist(create_inline_call(
+            'if', [str_test_ref, str_branch_ref, bool_branch_ref], self.bc))
+
+        # (numberp x)
+        num_test_ref = _hoist(create_inline_call(
+            'numberp', [arg_bytes], self.bc))
+
+        # (if (numberp x) x inner_if)
+        return create_inline_call(
+            'if', [num_test_ref, arg_bytes, inner_if_ref], self.bc)
 
     def translate_str(self, args: List[ast.expr]) -> bytes:
-        """Translate str(x) -> (number->string x)."""
+        """Translate `str(x)`.
+
+        Python `str(x)` accepts any type; the VM has no single
+        `to_string` primitive, so we either pick the right conversion
+        at compile time (for literal arguments) or emit a small
+        runtime type-dispatch:
+
+            (if (stringp x) x
+              (if (booleanp x) (if x "True" "False")
+                (number-to-string x)))
+
+        The fallback branch errors at runtime for unsupported types
+        (e.g. lists), matching pre-existing behaviour. None is encoded
+        as `False` in PyVelox, so `str(None)` on a variable yields
+        "False" — see the `None`/`bool` row of doc/python.md's status
+        table.
+        """
         if len(args) != 1:
             raise ValueError("str() takes exactly 1 argument")
 
-        arg_bytes = self.translate_expr_with_ref(args[0])
-        return create_inline_call('number_to_string', [arg_bytes], self.bc)
+        arg = args[0]
+
+        # Compile-time fast path: the source already tells us the type.
+        if isinstance(arg, ast.Constant):
+            value = arg.value
+            if isinstance(value, str):
+                return encode_string(value, self.bc)
+            # bool is a subclass of int; check it before the int branch.
+            if isinstance(value, bool):
+                return encode_string("True" if value else "False", self.bc)
+            if value is None:
+                return encode_string("None", self.bc)
+            if isinstance(value, int):
+                return create_inline_call(
+                    'number_to_string',
+                    [self.translate_expr_with_ref(arg)],
+                    self.bc)
+            # Other constant types fall through to the runtime path.
+
+        arg_bytes = self.translate_expr_with_ref(arg)
+
+        def _hoist(call_bytes: bytes) -> bytes:
+            return encode_form_ref(self.bc.add_expression(call_bytes))
+
+        # Inner branch for booleans: (if x "True" "False")
+        bool_branch_ref = _hoist(create_inline_call(
+            'if',
+            [arg_bytes,
+             encode_string("True", self.bc),
+             encode_string("False", self.bc)],
+            self.bc))
+
+        # Numeric/fallback branch: (number-to-string x)
+        num_branch_ref = _hoist(create_inline_call(
+            'number_to_string', [arg_bytes], self.bc))
+
+        # (booleanp x)
+        bool_test_ref = _hoist(create_inline_call(
+            'booleanp', [arg_bytes], self.bc))
+
+        # (if (booleanp x) bool_branch num_branch)
+        inner_if_ref = _hoist(create_inline_call(
+            'if', [bool_test_ref, bool_branch_ref, num_branch_ref], self.bc))
+
+        # (stringp x)
+        str_test_ref = _hoist(create_inline_call(
+            'stringp', [arg_bytes], self.bc))
+
+        # (if (stringp x) x inner_if)
+        return create_inline_call(
+            'if', [str_test_ref, arg_bytes, inner_if_ref], self.bc)
 
     def translate_abs(self, args: List[ast.expr]) -> bytes:
         """Translate abs(x) -> (if (< x 0) (- 0 x) x)."""
@@ -2648,8 +3289,12 @@ def translate_python_to_bytecode(source_code: str) -> Bytecode:
     # Pre-allocate expression 0 (entry point)
     bc.add_expression(b'')
 
+    # Pre-split the source so PyveloxCompileError can quote the offending
+    # line. splitlines() drops the trailing newline, which is what we want.
+    source_lines = source_code.splitlines()
+
     # Translate module
-    translator = PythonTranslator(bc)
+    translator = PythonTranslator(bc, source_lines=source_lines)
     accumulated_bytes = translator.translate_module(tree)
 
     # Replace expression 0 with accumulated bytecode

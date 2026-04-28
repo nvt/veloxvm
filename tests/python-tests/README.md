@@ -1,107 +1,57 @@
 # PyVelox Test Suite
 
-Unit tests for the PyVelox Python-to-VeloxVM compiler.
+Tests for the PyVelox Python-to-VeloxVM compiler. There are two layers:
 
-## Overview
+- **`compiler/`** — Python `unittest` tests of the compiler itself
+  (encoder, translator, edge cases, located errors).
+- **`programs/`** — end-to-end tests that compile a `.py` file with
+  `pyvelox-compile` and run the resulting bytecode on `bin/vm`.
 
-These tests verify that Python source code compiles correctly to VeloxVM bytecode and executes as expected. Unlike the Scheme unit tests which use a test framework, these are Python programs that compile to bytecode and run directly on the VM.
+## Running
 
-## Test Files
-
-**test_basic_features.py** - Core language features test
-Tests all major Python features supported by PyVelox:
-- Arithmetic operations (+, -, *, //, %)
-- Numeric comparisons (==, !=, <, <=, >, >=)
-- Lists (indexing, slicing, concatenation)
-- Dictionaries (lookup via association lists)
-- Variables and augmented assignment (+=, -=, *=)
-- Tuple unpacking
-- Functions (def, lambda, return)
-- Control flow (if/elif/else, ternary expressions)
-- Loops (for, while)
-- Built-in functions (len, int, str, abs, min, max, sum)
-- Higher-order functions (map, filter)
-- Bitwise operators (&, |, ^, <<, >>)
-- Enumerate and zip
-- Complex expressions
-
-**test_pyvelox_suite.py** - Broader suite with PASS/FAIL assertions
-covering most supported features. Known gaps: boolean/string `==`
-comparisons and list mutation.
-
-## Running Tests
-
-### Run All Tests (Recommended)
-
-```bash
-# Run all Python tests with the test runner
+```sh
 ./tests/python-tests/run-tests.sh
 ```
 
-This will compile and run all `test_*.py` files, showing a summary of results.
+That builds, compiles, and runs both layers and prints a summary. The
+end-to-end runner only checks the VM's exit code, so a runtime error
+in a test program is currently invisible — runtime assertions in
+`programs/test_pyvelox_suite.py` print explicit `PASS`/`FAIL` lines
+that you can scan visually.
 
-### Run Individual Tests
+To run an individual program test:
 
-```bash
-# Compile a test
-./languages/python/pyvelox-compile tests/python-tests/test_basic_features.py
-
-# Run the compiled test
-bin/vm tests/python-tests/test_basic_features.vm
+```sh
+./languages/python/pyvelox-compile tests/python-tests/programs/test_basic_features.py
+./bin/vm tests/python-tests/programs/test_basic_features.vm
 ```
 
-## Known Limitations
+To run the compiler unit tests directly:
 
-Based on testing, the following features have issues in the current PyVelox implementation:
-
-1. **Negative indexing**: `lst[-1]` not supported
-2. **Negative slice indices**: `lst[-2:]` not supported
-3. **Boolean comparisons**: `True == True` causes type error (use boolean values directly)
-4. **String comparisons**: `"a" == "a"` causes type error (compiler uses `=` instead of `equal?`)
-5. **List mutation**: Updating list elements `lst[0] = x` may have issues
-6. **sorted/reversed**: These functions may cause infinite loops (needs investigation)
-
-## Expected Output
-
-The basic features test should produce output like:
-
-```
-==========================================================
-PyVelox Basic Features Test
-==========================================================
-
-===Arithmetic Operations===
-  Integer assignment: x =42
-  Addition 10 + 5 =15
-  ...
-  OK: All arithmetic operations work
-
-===Numeric Comparisons===
-  5 == 5:#t
-  ...
-  OK: Numeric comparisons work
-
-...
-
-==========================================================
-PyVelox Basic Features Test Complete
-==========================================================
-All tested features compiled and executed successfully!
-==========================================================
+```sh
+PYTHONPATH=languages/python python3 -m unittest discover -s tests/python-tests/compiler -v
 ```
 
-## Adding New Tests
+## Programs
 
-When creating new Python tests:
+| File | What it covers |
+|------|----------------|
+| `test_basic_features.py` | Demonstrative tour of the supported feature set (arithmetic, lists, dicts, control flow, built-ins). |
+| `test_closures.py` | Lexical scope, free-variable capture, mutable captures via box rewrite. |
+| `test_pyvelox_suite.py` | Broader suite with `PASS`/`FAIL` print-out. Skips the documented footguns (see `doc/python.md`'s status table). |
 
-1. **Focus on demonstrative output**: Print results showing feature works
-2. **Avoid problematic features**: Skip features listed in Known Limitations
-3. **Document issues**: Add comments when skipping tests due to compiler bugs
-4. **Keep tests simple**: One feature per section
-5. **Use descriptive output**: Make it easy to see what's being tested
+## Adding tests
 
-## See Also
+- Prefer reusing `test_pyvelox_suite.py`'s `test(condition, label)`
+  helper for new cases; new files only when the surface area calls
+  for it (e.g. a major language feature).
+- Avoid features marked `Buggy` in `doc/python.md`'s language status
+  table — those compile but produce wrong runtime behaviour.
+- Print enough output to make the failure mode obvious; the runner
+  doesn't surface runtime errors otherwise.
 
-- `doc/python.md` - PyVelox compiler documentation
-- `languages/python/pyvelox/` - Compiler implementation
-- `tests/unit-tests/` - Scheme unit tests (use test framework)
+## See also
+
+- `doc/python.md` — supported-feature matrix and runtime caveats.
+- `languages/python/pyvelox/` — compiler implementation.
+- `tests/unit-tests/` — Scheme/R5RS test framework (separate runner).

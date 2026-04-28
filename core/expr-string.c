@@ -121,7 +121,12 @@ VM_FUNCTION(stringp)
 
 VM_FUNCTION(string_length)
 {
-  VM_PUSH_INTEGER(argv[0].value.string->length);
+  vm_string_t *string = argv[0].value.string;
+  if(vm_string_resolve(thread, string) == NULL) {
+    vm_signal_error(thread, VM_ERROR_STRING_ID);
+    return;
+  }
+  VM_PUSH_INTEGER(string->length);
 }
 
 VM_FUNCTION(string_ref)
@@ -135,6 +140,10 @@ VM_FUNCTION(string_ref)
   }
 
   string = argv[0].value.string;
+  if(vm_string_resolve(thread, string) == NULL) {
+    vm_signal_error(thread, VM_ERROR_STRING_ID);
+    return;
+  }
   k = argv[1].value.integer;
 
   if(k < 0 || k >= string->length) {
@@ -158,6 +167,10 @@ VM_FUNCTION(string_set)
   }
 
   string = argv[0].value.string;
+  if(vm_string_resolve(thread, string) == NULL) {
+    vm_signal_error(thread, VM_ERROR_STRING_ID);
+    return;
+  }
   k = argv[1].value.integer;
 
   if(VM_IS_SET(string->flags, VM_STRING_FLAG_IMMUTABLE)) {
@@ -178,6 +191,10 @@ VM_FUNCTION(string_to_list)
   vm_obj_t obj;
 
   string = argv[0].value.string;
+  if(vm_string_resolve(thread, string) == NULL) {
+    vm_signal_error(thread, VM_ERROR_STRING_ID);
+    return;
+  }
 
   /* Disable GC during list construction */
   vm_gc_disable();
@@ -270,6 +287,10 @@ VM_FUNCTION(string_fill)
   }
 
   string = argv[0].value.string;
+  if(vm_string_resolve(thread, string) == NULL) {
+    vm_signal_error(thread, VM_ERROR_STRING_ID);
+    return;
+  }
   if(VM_IS_SET(string->flags, VM_STRING_FLAG_IMMUTABLE)) {
     vm_signal_error(thread, VM_ERROR_WRITE_PROHIBITED);
   } else {
@@ -281,6 +302,12 @@ VM_FUNCTION(string_compare)
 {
   char *str1;
   char *str2;
+
+  if(vm_string_resolve(thread, argv[0].value.string) == NULL ||
+     vm_string_resolve(thread, argv[1].value.string) == NULL) {
+    vm_signal_error(thread, VM_ERROR_STRING_ID);
+    return;
+  }
 
   str1 = argv[0].value.string->str;
   str2 = argv[1].value.string->str;
@@ -305,6 +332,10 @@ VM_FUNCTION(substring)
   }
 
   string = argv[0].value.string;
+  if(vm_string_resolve(thread, string) == NULL) {
+    vm_signal_error(thread, VM_ERROR_STRING_ID);
+    return;
+  }
   start = argv[1].value.integer;
   end = argv[2].value.integer;
 
@@ -336,8 +367,15 @@ VM_FUNCTION(string_append)
   int i;
   int offset;
 
+  /* Strings stored by ID (e.g. literals bound to top-level names) have
+     length 0 and a NULL str pointer until vm_string_resolve runs --
+     skipping the resolve here silently dropped those args. */
   for(i = result_length = 0; i < argc; i++) {
     string = argv[i].value.string;
+    if(vm_string_resolve(thread, string) == NULL) {
+      vm_signal_error(thread, VM_ERROR_STRING_ID);
+      return;
+    }
     if(string->length > VM_STRING_MAX_LENGTH - result_length) {
       vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
       return;
@@ -390,6 +428,12 @@ VM_FUNCTION(string_split)
   const char *p;
   vm_list_t *list;
   vm_obj_t obj;
+
+  if(vm_string_resolve(thread, argv[0].value.string) == NULL ||
+     vm_string_resolve(thread, argv[1].value.string) == NULL) {
+    vm_signal_error(thread, VM_ERROR_STRING_ID);
+    return;
+  }
 
   string = argv[0].value.string->str;
   seps = argv[1].value.string->str;
@@ -451,6 +495,10 @@ VM_FUNCTION(string_join)
   }
 
   separator = argv[0].value.string;
+  if(vm_string_resolve(thread, separator) == NULL) {
+    vm_signal_error(thread, VM_ERROR_STRING_ID);
+    return;
+  }
   list = argv[1].value.list;
 
   /* Empty list returns empty string */
@@ -469,6 +517,10 @@ VM_FUNCTION(string_join)
   for(item = list->head; item != NULL; item = item->next) {
     if(item->obj.type != VM_TYPE_STRING) {
       vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+      return;
+    }
+    if(vm_string_resolve(thread, item->obj.value.string) == NULL) {
+      vm_signal_error(thread, VM_ERROR_STRING_ID);
       return;
     }
     if(item->obj.value.string->length > VM_STRING_MAX_LENGTH - total_length) {
@@ -582,6 +634,16 @@ VM_FUNCTION(string_to_number)
   }
 
   radix = argc == 2 ? argv[1].value.integer : 10;
+
+  /* Same string-table-id quirk as in string_append etc.: a string
+     loaded from the program's string table has length 0 / str == NULL
+     until vm_string_resolve materializes the bytes. Without this,
+     (string->number s) on a top-level (define s "42") read NULL and
+     segfaulted. */
+  if(vm_string_resolve(thread, argv[0].value.string) == NULL) {
+    return;
+  }
+
   str = argv[0].value.string->str;
 
   /* Skip leading whitespace */
