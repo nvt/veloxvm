@@ -1375,107 +1375,67 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
             [encode_symbol(exc_name, self.bc), handler_ref, body_ref],
             self.bc)
 
+    def _translate_loop_body(self, body_stmts: List[ast.stmt]) -> bytes:
+        """Translate `body_stmts` as a loop body: bumps `_loop_depth`
+        so `break`/`continue` can identify themselves as in-loop, then
+        wraps the result in a continue-guard. Caller still installs
+        the surrounding break-guard around the whole loop."""
+        self._loop_depth += 1
+        try:
+            body_bytes = self.translate_block(body_stmts)
+        finally:
+            self._loop_depth -= 1
+        return self._wrap_with_sentinel_guard(
+            body_bytes, self.CONTINUE_SENTINEL)
+
     def translate_for(self, node: ast.For) -> bytes:
+        """Translate `for x in iterable: body` to
+        `(for_each (lambda (x) body) iterable)` and similarly for
+        tuple-unpacking targets, with surrounding break/continue
+        guards so the loop-control sentinels exit cleanly.
         """
-        Translate for loop: for x in iterable: body -> (for-each (lambda (x) body) iterable).
+        body_bytes = self._translate_loop_body(node.body)
 
-        Supports tuple unpacking:
-        for x, y in pairs: body -> (for-each (lambda (pair) (let ((x (car pair)) (y (cdr pair))) body)) pairs)
-
-        Lambda body stored separately and referenced.
-        """
-        # Handle simple variable target
         if isinstance(node.target, ast.Name):
-            param = node.target.id
-            safe_param = self.get_safe_name(param)
-
-            self._loop_depth += 1
-            try:
-                body_bytes = self.translate_block(node.body)
-            finally:
-                self._loop_depth -= 1
-
-            # Wrap each iteration's body so `continue` returns from the
-            # body lambda without escaping for_each.
-            body_bytes = self._wrap_with_sentinel_guard(
-                body_bytes, self.CONTINUE_SENTINEL)
-
-            # Store body as separate expression
-            body_ref = self._hoist(body_bytes)
-
-            # Create lambda for loop body with body reference
-            lambda_bytes = self._emit_lambda([safe_param], body_ref)
-
-            # Translate iterable
-            iterable_bytes = self.translate_expr_with_ref(node.iter)
-
-            # (for-each lambda iterable)
-            for_each_call = create_inline_call(
-                'for_each', [lambda_bytes, iterable_bytes], self.bc)
-            # Wrap the whole loop so `break` exits it without
-            # propagating further.
-            return self._wrap_with_sentinel_guard(
-                for_each_call, self.BREAK_SENTINEL)
-
-        # Handle tuple unpacking: for x, y in pairs
+            safe_param = self.get_safe_name(node.target.id)
+            body_lambda = self._emit_lambda(
+                [safe_param], self._hoist(body_bytes))
         elif isinstance(node.target, ast.Tuple):
-            # Extract target variable names
             if not all(isinstance(elt, ast.Name) for elt in node.target.elts):
-                raise NotImplementedError("For loop tuple unpacking only supports simple variable names")
-
+                raise NotImplementedError(
+                    "For loop tuple unpacking only supports simple variable names")
             target_names = [self.get_safe_name(elt.id) for elt in node.target.elts]
 
-            # Use nested lambda approach:
-            # (for-each (lambda (item)
-            #             ((lambda (x y) body) (list-ref item 0) (list-ref item 1)))
-            #           iterable)
-            # This ensures list-ref calls are evaluated before binding to lambda parameters
-
-            # Create a temp parameter for the outer lambda (the list item)
+            # Nested-lambda shape:
+            #   (for_each (lambda (_item)
+            #               ((lambda (x y ...) body)
+            #                (list_ref _item 0) (list_ref _item 1) ...))
+            #             iterable)
+            # The inner call evaluates the list_refs before binding to
+            # the unpacked parameters.
             item_param = self.bc.get_unique_var_name("_item")
-
-            # Translate the loop body
-            self._loop_depth += 1
-            try:
-                body_bytes = self.translate_block(node.body)
-            finally:
-                self._loop_depth -= 1
-            body_bytes = self._wrap_with_sentinel_guard(
-                body_bytes, self.CONTINUE_SENTINEL)
-
-            # Create inner lambda that takes unpacked variables as parameters
-            # (lambda (x y) body)
-            inner_lambda_ref = self._emit_lambda(target_names, body_bytes)
-
-            # Create list-ref calls for each position
-            # (list-ref item 0), (list-ref item 1), ...
-            list_ref_calls = []
-            for i in range(len(target_names)):
-                index_bytes = encode_integer(i)
-                list_ref_call = create_inline_call('list_ref',
-                                                   [encode_symbol(item_param, self.bc), index_bytes],
-                                                   self.bc)
-                list_ref_calls.append(list_ref_call)
-
-            # Call inner lambda with list-ref expressions
-            # (inner_lambda (list-ref item 0) (list-ref item 1))
-            inner_call = create_inline_call(inner_lambda_ref, list_ref_calls, self.bc)
-            inner_call_ref = self._hoist(inner_call)
-
-            # Create outer lambda: (lambda (item) inner_call_ref)
-            outer_lambda_ref = self._emit_lambda([item_param], inner_call_ref)
-
-            # Translate iterable
-            iterable_bytes = self.translate_expr_with_ref(node.iter)
-
-            # (for-each outer_lambda iterable)
-            for_each_call = create_inline_call(
-                'for_each', [outer_lambda_ref, iterable_bytes], self.bc)
-            return self._wrap_with_sentinel_guard(
-                for_each_call, self.BREAK_SENTINEL)
-
+            inner_lambda = self._emit_lambda(target_names, body_bytes)
+            list_refs = [
+                create_inline_call(
+                    'list_ref',
+                    [encode_symbol(item_param, self.bc), encode_integer(i)],
+                    self.bc)
+                for i in range(len(target_names))
+            ]
+            inner_call_ref = self._hoist(
+                create_inline_call(inner_lambda, list_refs, self.bc))
+            body_lambda = self._emit_lambda([item_param], inner_call_ref)
         else:
-            raise NotImplementedError(f"For loop target type not supported: {type(node.target).__name__}")
+            raise NotImplementedError(
+                f"For loop target type not supported: "
+                f"{type(node.target).__name__}")
+
+        # (for_each <body_lambda> <iterable>) wrapped in break-guard.
+        iterable_bytes = self.translate_expr_with_ref(node.iter)
+        for_each_call = create_inline_call(
+            'for_each', [body_lambda, iterable_bytes], self.bc)
+        return self._wrap_with_sentinel_guard(
+            for_each_call, self.BREAK_SENTINEL)
 
     def translate_while(self, node: ast.While) -> bytes:
         """
@@ -1498,18 +1458,11 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
         # This ensures it's evaluated in the closure's context
         test_bytes = self.translate_expr(node.test)
 
-        # Translate loop body (which may contain set! for variables)
-        self._loop_depth += 1
-        try:
-            body_bytes = self.translate_block(node.body)
-        finally:
-            self._loop_depth -= 1
-
-        # `continue` raises a sentinel that this guard swallows, so the
-        # body lambda returns #f and the recursive call below fires the
-        # next iteration.
-        body_bytes = self._wrap_with_sentinel_guard(
-            body_bytes, self.CONTINUE_SENTINEL)
+        # Translate loop body — bumps loop depth so break/continue
+        # know they're inside a loop, then wraps in a continue-guard
+        # so a `continue` raises out of the body and lets the
+        # recursive call below fire the next iteration.
+        body_bytes = self._translate_loop_body(node.body)
 
         # Create recursive call with NO arguments (closure captures variables)
         recurse_bytes = create_inline_call(loop_name, [], self.bc)
