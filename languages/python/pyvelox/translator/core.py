@@ -844,6 +844,34 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
             self.bc.record_captures(expr_id, capture_ids)
         return encode_form_lambda(expr_id)
 
+    def _emit_type_dispatch(self, arg_token: bytes,
+                            branches: List["tuple[str, bytes]"],
+                            fallback: bytes) -> bytes:
+        """Build a chain of `(if (test arg_token) branch ...)` ending
+        in `fallback`. `branches` is `[(test-op-name, branch-bytes),
+        ...]` from outermost test to innermost.
+
+        Used by `int(x)` and `str(x)` to do their runtime type
+        dispatch without hand-rolling the same nested-if scaffold.
+        Each test call is hoisted into the expression table; the
+        intermediate `if` forms are too. The outermost `if` is
+        returned inline, leaving its placement up to the caller.
+        """
+        # Build innermost-to-outermost so each subsequent `if` gets
+        # the previous chain as its else branch.
+        result = fallback
+        last = len(branches) - 1
+        for i, (test_op, branch_bytes) in enumerate(reversed(branches)):
+            test_ref = self._hoist(create_inline_call(
+                test_op, [arg_token], self.bc))
+            if_form = create_inline_call(
+                'if', [test_ref, branch_bytes, result], self.bc)
+            # Hoist every intermediate so the outer `if` sees a
+            # single-token else branch. The final iteration (the
+            # outermost `if`) is what we return — not hoisted.
+            result = if_form if i == last else self._hoist(if_form)
+        return result
+
     def _evaluate_once(self, arg_node: ast.expr,
                        build: Callable[[bytes], bytes]) -> bytes:
         """Evaluate `arg_node` exactly once, then run the bytecode

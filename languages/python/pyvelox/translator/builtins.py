@@ -273,30 +273,21 @@ class _BuiltinHandlers:
             # Other constants (None, floats) fall through to runtime.
 
         def build(arg_token: bytes) -> bytes:
-            # (if x 1 0) — booleans and any truthy value, degrades
-            # gracefully for unsupported types.
-            bool_branch = self._hoist(create_inline_call(
-                'if', [arg_token, encode_integer(1), encode_integer(0)],
-                self.bc))
-            # (string-to-number x)
-            str_branch = self._hoist(create_inline_call(
-                'string_to_number', [arg_token], self.bc))
-            # (stringp x)
-            str_test = self._hoist(create_inline_call(
-                'stringp', [arg_token], self.bc))
-            # (if (stringp x) (string-to-number x) bool_branch)
-            inner_if = self._hoist(create_inline_call(
-                'if', [str_test, str_branch, bool_branch], self.bc))
-            # (numberp x)
-            num_test = self._hoist(create_inline_call(
-                'numberp', [arg_token], self.bc))
-            # (if (numberp x) x inner_if)
-            return create_inline_call(
-                'if', [num_test, arg_token, inner_if], self.bc)
+            # (numberp x) -> x ;; already a number
+            # (stringp x) -> (string-to-number x)
+            # (else)      -> (if x 1 0) ;; booleans + truthy fallback
+            return self._emit_type_dispatch(
+                arg_token,
+                [('numberp', arg_token),
+                 ('stringp', create_inline_call(
+                     'string_to_number', [arg_token], self.bc))],
+                create_inline_call(
+                    'if',
+                    [arg_token, encode_integer(1), encode_integer(0)],
+                    self.bc))
 
-        # Evaluate `arg` exactly once before the dispatch reads it
-        # five times — otherwise side effects in the argument would
-        # fire repeatedly.
+        # Evaluate `arg` once before the dispatch reads it from
+        # multiple branches.
         return self._evaluate_once(arg, build)
 
     def translate_str(self, args: List[ast.expr]) -> bytes:
@@ -340,32 +331,23 @@ class _BuiltinHandlers:
             # Other constant types fall through to the runtime path.
 
         def build(arg_token: bytes) -> bytes:
-            # (if x "True" "False") — booleans
-            bool_branch = self._hoist(create_inline_call(
-                'if',
-                [arg_token,
-                 encode_string("True", self.bc),
-                 encode_string("False", self.bc)],
-                self.bc))
-            # (number-to-string x)
-            num_branch = self._hoist(create_inline_call(
-                'number_to_string', [arg_token], self.bc))
-            # (booleanp x)
-            bool_test = self._hoist(create_inline_call(
-                'booleanp', [arg_token], self.bc))
-            # (if (booleanp x) bool_branch num_branch)
-            inner_if = self._hoist(create_inline_call(
-                'if', [bool_test, bool_branch, num_branch], self.bc))
-            # (stringp x)
-            str_test = self._hoist(create_inline_call(
-                'stringp', [arg_token], self.bc))
-            # (if (stringp x) x inner_if)
-            return create_inline_call(
-                'if', [str_test, arg_token, inner_if], self.bc)
+            # (stringp x)  -> x ;; already a string
+            # (booleanp x) -> (if x "True" "False")
+            # (else)       -> (number-to-string x)
+            return self._emit_type_dispatch(
+                arg_token,
+                [('stringp', arg_token),
+                 ('booleanp', create_inline_call(
+                     'if',
+                     [arg_token,
+                      encode_string("True", self.bc),
+                      encode_string("False", self.bc)],
+                     self.bc))],
+                create_inline_call(
+                    'number_to_string', [arg_token], self.bc))
 
-        # Evaluate `arg` exactly once — the dispatch reads it from
-        # multiple branches and we don't want side effects to fire
-        # more than once.
+        # Evaluate `arg` once — the dispatch reads it from multiple
+        # branches.
         return self._evaluate_once(arg, build)
 
     def translate_abs(self, args: List[ast.expr]) -> bytes:
