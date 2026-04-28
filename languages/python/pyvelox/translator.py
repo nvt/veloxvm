@@ -42,7 +42,7 @@ from .bytecode import Bytecode
 from .encoder import (
     encode_integer, encode_boolean, encode_string, encode_symbol,
     encode_inline_form, encode_form_ref, encode_form_lambda,
-    create_inline_call, create_inline_call_direct, create_bind_form
+    create_inline_call, create_bind_form
 )
 from .errors import PyveloxCompileError
 from .primitives import get_primitive_id
@@ -1571,7 +1571,7 @@ class PythonTranslator:
 
             # Call inner lambda with list-ref expressions
             # (inner_lambda (list-ref item 0) (list-ref item 1))
-            inner_call = create_inline_call_direct(inner_lambda_ref, list_ref_calls, self.bc)
+            inner_call = create_inline_call(inner_lambda_ref, list_ref_calls, self.bc)
             inner_call_ref = self._hoist(inner_call)
 
             # Create outer lambda: (lambda (item) inner_call_ref)
@@ -1657,7 +1657,7 @@ class PythonTranslator:
         wrapper_lambda = encode_form_lambda(wrapper_id)
 
         # Call the wrapper lambda: ((lambda () (define loop ...) (loop)))
-        loop_call = create_inline_call_direct(wrapper_lambda, [], self.bc)
+        loop_call = create_inline_call(wrapper_lambda, [], self.bc)
         # Wrap the entire while construct so `break` exits cleanly.
         return self._wrap_with_sentinel_guard(
             loop_call, self.BREAK_SENTINEL)
@@ -3125,7 +3125,7 @@ class PythonTranslator:
             false_args = [encode_boolean(False) for _ in local_var_list]
 
             # Create the call: ((lambda (x y ...) body) #f #f ...)
-            let_call_bytes = create_inline_call_direct(let_lambda_bytes, false_args, self.bc)
+            let_call_bytes = create_inline_call(let_lambda_bytes, false_args, self.bc)
 
             # Return the let-expansion call directly, do NOT store as expression
             # Storing it and returning a form ref creates nested inline forms which is malformed bytecode

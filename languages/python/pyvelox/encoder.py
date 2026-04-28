@@ -309,35 +309,28 @@ def _is_inline_form_byte(arg: bytes) -> bool:
             and ((arg[0] >> 5) & 0x03) == 0)
 
 
-def create_inline_call(operator: str, args: list, bc: Bytecode) -> bytes:
-    """
-    Create an inline function call: inline(argc) + operator-symbol + arg-bytes.
+def create_inline_call(operator, args: list, bc: Bytecode) -> bytes:
+    """Emit an inline call: `inline(argc) + operator + args`.
 
-    The inline form comes FIRST, then the operator, then arguments.
+    `operator` may be either a symbol name (str) — encoded with
+    `encode_symbol(operator, bc)` — or pre-encoded operator bytes
+    (e.g. a lambda form-ref). The latter form was historically a
+    separate `create_inline_call_direct` helper.
 
-    If any argument is an inline form, we must store it separately
-    and use a form ref to avoid nested inline forms (which creates malformed bytecode).
-
-    Args:
-        operator: The operator name (e.g., 'add', '+', 'if')
-        args: List of already-encoded argument bytecode
-        bc: Bytecode container
-
-    Returns:
-        Complete inline call bytecode
+    Any argument that is itself an inline form is hoisted into the
+    expression table and replaced by a form-ref, since nested inline
+    forms aren't representable in the bytecode.
     """
     argc = 1 + len(args)  # operator + arguments
 
     result = bytearray()
-
-    # 1. Inline form header FIRST
     result.extend(encode_inline_form(argc))
 
-    # 2. Operator symbol
-    result.extend(encode_symbol(operator, bc))
+    if isinstance(operator, str):
+        result.extend(encode_symbol(operator, bc))
+    else:
+        result.extend(operator)
 
-    # 3. Arguments — hoist any nested inline form into the expression
-    #    table to keep the outer form parseable.
     for arg in args:
         if _is_inline_form_byte(arg):
             result.extend(encode_form_ref(bc.add_expression(arg)))
@@ -347,40 +340,10 @@ def create_inline_call(operator: str, args: list, bc: Bytecode) -> bytes:
     return bytes(result)
 
 
-def create_inline_call_direct(operator_bytes: bytes, args: list, bc: Bytecode = None) -> bytes:
-    """
-    Create an inline function call with pre-encoded operator bytes.
-    Used for lambda calls: inline(argc) + lambda-bytes + arg-bytes.
-
-    If any argument is an inline form and bc is provided, we must store it separately
-    and use a form ref to avoid nested inline forms (which creates malformed bytecode).
-
-    Args:
-        operator_bytes: Already-encoded operator (e.g., lambda form)
-        args: List of already-encoded argument bytecode
-        bc: Optional Bytecode container for storing nested inline forms
-
-    Returns:
-        Complete inline call bytecode
-    """
-    argc = 1 + len(args)  # operator + arguments
-
-    result = bytearray()
-
-    # 1. Inline form header FIRST
-    result.extend(encode_inline_form(argc))
-
-    # 2. Operator (already encoded)
-    result.extend(operator_bytes)
-
-    # 3. Arguments — hoist any nested inline form (when bc is provided).
-    for arg in args:
-        if bc is not None and _is_inline_form_byte(arg):
-            result.extend(encode_form_ref(bc.add_expression(arg)))
-        else:
-            result.extend(arg)
-
-    return bytes(result)
+# Historical alias. Both flavours now share `create_inline_call`,
+# which dispatches on whether `operator` is a string or pre-encoded
+# bytes. New code should call `create_inline_call` directly.
+create_inline_call_direct = create_inline_call
 
 
 def create_bind_form(params: list, body: bytes, bc: Bytecode, is_function: bool = False) -> bytes:
