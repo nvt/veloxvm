@@ -680,56 +680,97 @@ class PythonTranslator:
 
     # === Functions ===
 
-    def _compute_captures(self,
-                          body_stmts: List[ast.stmt],
-                          local_names: Set[str],
-                          outer_env: Set[str]) -> List[str]:
-        """
-        Compute the captures for a function or lambda body.
+    def _analyze_body(self,
+                      body_stmts: List[ast.stmt],
+                      local_names: Set[str],
+                      outer_env: Set[str]) -> "tuple[List[str], Set[str]]":
+        """One AST walk that returns everything `translate_function_def`
+        and `translate_lambda` need about their body's free-variable
+        and binding behaviour:
 
-        A captured name is one that is referenced (Load context) inside
-        body_stmts -- including nested functions/lambdas whose own binders
-        don't shadow it -- but is not bound by this function's params or
-        local assignments, and is bound in some enclosing function (outer_env).
+        - **captures** — free references (Load of a name not bound in
+          this function), filtered to names that exist in `outer_env`
+          and ordered by first reference. Top-level globals are
+          excluded by leaving them out of `outer_env`, so they resolve
+          via program-wide symbol bindings rather than as captures.
 
-        Top-level globals are deliberately excluded from outer_env at the
-        call site, so they resolve through the program-wide symbol bindings
-        rather than being captured.
+        - **needs_box** — the subset of `local_names` that has to live
+          in a heap-allocated box: captured by some nested closure
+          AND mutated somewhere. Pure value captures and mutated-but-
+          uncaptured locals are fine as plain bindings; only the
+          intersection has the alias-sharing problem.
 
-        Returns a deduplicated list of safe names in first-reference order.
+        Folds three walkers into one. The bookkeeping splits into
+        `bound` (all bindings visible at the current point, used to
+        detect free names) and `inner_local` (bindings introduced
+        AFTER entering a nested function, used to detect shadowing of
+        our locals from inside a nested closure).
         """
         free: List[str] = []
         seen: Set[str] = set()
+        captured_by_inner: Set[str] = set()
+        mutated: Set[str] = set()
 
-        def walk(node, bound: Set[str]):
+        def record_target(target, inner_local: Set[str]) -> None:
+            if isinstance(target, ast.Name):
+                safe = self.get_safe_name(target.id)
+                if safe in local_names and safe not in inner_local:
+                    mutated.add(safe)
+            elif isinstance(target, ast.Tuple):
+                for elt in target.elts:
+                    record_target(elt, inner_local)
+
+        def walk(node, bound: Set[str], inside: bool,
+                 inner_local: Set[str]) -> None:
             if isinstance(node, ast.Name):
                 if isinstance(node.ctx, ast.Load):
                     safe = self.get_safe_name(node.id)
                     if safe not in bound and safe not in seen:
                         seen.add(safe)
                         free.append(safe)
+                    if (inside and safe in local_names
+                            and safe not in inner_local):
+                        captured_by_inner.add(safe)
+                return
+
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    record_target(t, inner_local)
+                walk(node.value, bound, inside, inner_local)
+                return
+            if isinstance(node, ast.AugAssign):
+                record_target(node.target, inner_local)
+                walk(node.value, bound, inside, inner_local)
                 return
 
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                inner_params = {self.get_safe_name(a.arg) for a in node.args.args}
+                inner_params = {self.get_safe_name(a.arg)
+                                for a in node.args.args}
                 inner_locals = self.collect_assigned_vars(node.body)
-                inner_bound = bound | inner_params | inner_locals
+                new_bound = bound | inner_params | inner_locals
+                new_inner_local = inner_local | inner_params | inner_locals
                 for stmt in node.body:
-                    walk(stmt, inner_bound)
+                    walk(stmt, new_bound, True, new_inner_local)
                 return
 
             if isinstance(node, ast.Lambda):
-                inner_params = {self.get_safe_name(a.arg) for a in node.args.args}
-                walk(node.body, bound | inner_params)
+                inner_params = {self.get_safe_name(a.arg)
+                                for a in node.args.args}
+                walk(node.body,
+                     bound | inner_params,
+                     True,
+                     inner_local | inner_params)
                 return
 
             for child in ast.iter_child_nodes(node):
-                walk(child, bound)
+                walk(child, bound, inside, inner_local)
 
         for stmt in body_stmts:
-            walk(stmt, local_names)
+            walk(stmt, local_names, False, set())
 
-        return [n for n in free if n in outer_env]
+        captures = [n for n in free if n in outer_env]
+        needs_box = captured_by_inner & mutated
+        return captures, needs_box
 
     def _is_boxed(self, safe_name: str) -> bool:
         """
@@ -804,112 +845,6 @@ class PythonTranslator:
         return create_inline_call('set',
                                   [encode_symbol(safe_name, self.bc), box_call],
                                   self.bc)
-
-    def _params_captured_by_inner(self,
-                                  body_stmts: List[ast.stmt],
-                                  owned_names: Set[str]) -> Set[str]:
-        """
-        Names from owned_names that are referenced (Load) inside any nested
-        function or lambda whose binders don't shadow them. These are the
-        names that an inner closure would capture from this function.
-        """
-        hits: Set[str] = set()
-
-        def walk(node, inside: bool, local: Set[str]):
-            if isinstance(node, ast.Name):
-                if isinstance(node.ctx, ast.Load):
-                    safe = self.get_safe_name(node.id)
-                    if inside and safe in owned_names and safe not in local:
-                        hits.add(safe)
-                return
-
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                inner_params = {self.get_safe_name(a.arg) for a in node.args.args}
-                inner_locals = self.collect_assigned_vars(node.body)
-                inner_local = local | inner_params | inner_locals
-                for stmt in node.body:
-                    walk(stmt, True, inner_local)
-                return
-
-            if isinstance(node, ast.Lambda):
-                inner_params = {self.get_safe_name(a.arg) for a in node.args.args}
-                walk(node.body, True, local | inner_params)
-                return
-
-            for child in ast.iter_child_nodes(node):
-                walk(child, inside, local)
-
-        for stmt in body_stmts:
-            walk(stmt, False, set())
-
-        return hits
-
-    def _params_mutated_in(self,
-                           body_stmts: List[ast.stmt],
-                           owned_names: Set[str]) -> Set[str]:
-        """
-        Names from owned_names that are the target of an assignment somewhere
-        in body_stmts, where intermediate binders don't rebind the name. A
-        name declared `nonlocal` inside a nested function does NOT rebind it
-        (collect_assigned_vars subtracts nonlocal declarations), so writes
-        through that nested function count as mutations of the outer name.
-        """
-        hits: Set[str] = set()
-
-        def record_target(t, local: Set[str]):
-            if isinstance(t, ast.Name):
-                safe = self.get_safe_name(t.id)
-                if safe in owned_names and safe not in local:
-                    hits.add(safe)
-            elif isinstance(t, ast.Tuple):
-                for elt in t.elts:
-                    record_target(elt, local)
-
-        def walk(node, local: Set[str]):
-            if isinstance(node, ast.Assign):
-                for t in node.targets:
-                    record_target(t, local)
-                walk(node.value, local)
-                return
-            if isinstance(node, ast.AugAssign):
-                record_target(node.target, local)
-                walk(node.value, local)
-                return
-
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                inner_params = {self.get_safe_name(a.arg) for a in node.args.args}
-                inner_locals = self.collect_assigned_vars(node.body)
-                inner_local = local | inner_params | inner_locals
-                for stmt in node.body:
-                    walk(stmt, inner_local)
-                return
-
-            if isinstance(node, ast.Lambda):
-                inner_params = {self.get_safe_name(a.arg) for a in node.args.args}
-                walk(node.body, local | inner_params)
-                return
-
-            for child in ast.iter_child_nodes(node):
-                walk(child, local)
-
-        for stmt in body_stmts:
-            walk(stmt, set())
-
-        return hits
-
-    def _params_needing_box(self,
-                            body_stmts: List[ast.stmt],
-                            owned_names: Set[str]) -> Set[str]:
-        """
-        Subset of owned_names that need to live in heap-allocated boxes:
-        captured by an inner function AND mutated somewhere. A captured-only
-        name is fine as a value capture; a mutated-but-not-captured name is
-        fine as a plain local. Only the intersection has the alias-sharing
-        problem (writes through one path must be visible through all).
-        """
-        captured = self._params_captured_by_inner(body_stmts, owned_names)
-        mutated = self._params_mutated_in(body_stmts, owned_names)
-        return captured & mutated
 
     def collect_assigned_vars(self, stmts: List[ast.stmt]) -> Set[str]:
         """
@@ -1017,13 +952,13 @@ class PythonTranslator:
         is_nested = len(self.scope_stack) > 1
         outer_env: Set[str] = set().union(*self.scope_stack[1:]) \
             if is_nested else set()
-        captures = self._compute_captures(node.body, local_set, outer_env)
-
-        # Box analysis: which params/locals must live in shared boxes because
-        # they are both captured by an inner function AND mutated. Computed
-        # before we push scope/box state so it sees only THIS function's
+        # Single AST walk that returns both the body's free-variable
+        # captures and the locals that must live in heap boxes
+        # (captured by an inner closure AND mutated). Computed before
+        # we push scope/box state so it sees only THIS function's
         # body shape.
-        boxed_names = self._params_needing_box(node.body, local_set)
+        captures, boxed_names = self._analyze_body(
+            node.body, local_set, outer_env)
 
         # Push a new scope for the function body
         # Include both params AND local vars so they're all treated as "already defined"
@@ -1089,22 +1024,16 @@ class PythonTranslator:
         params = [arg.arg for arg in node.args.args]
         safe_params = [self.get_safe_name(p) for p in params]
 
-        # Free-variable analysis. Lambda bodies are single expressions but may
-        # still close over enclosing-function locals (the most common case).
+        # Free-variable + box analysis in one pass. Lambda bodies are
+        # single expressions but can still close over enclosing
+        # locals; their own params can still be captured + mutated by
+        # an inner closure that uses nonlocal. _analyze_body expects a
+        # statement list, so wrap the body in an Expr.
         local_set = set(safe_params)
         outer_env: Set[str] = set().union(*self.scope_stack[1:]) \
             if len(self.scope_stack) > 1 else set()
-        # _compute_captures expects a list of statements; wrap the lambda body
-        # in an Expr statement so the same analyzer applies.
-        captures = self._compute_captures(
+        captures, boxed_names = self._analyze_body(
             [ast.Expr(value=node.body)], local_set, outer_env)
-
-        # A lambda's body is a single expression, so the only assignments it
-        # can contribute are inside nested functions/lambdas. Its own params
-        # could still be captured + mutated by an inner closure that uses
-        # nonlocal -- so the box analysis still applies.
-        boxed_names = self._params_needing_box(
-            [ast.Expr(value=node.body)], local_set)
 
         # Lambdas don't currently hoist locals, so the new scope is just the
         # parameters. Pushing it makes inner lambdas/defs see them as outer.
