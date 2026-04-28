@@ -499,85 +499,86 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
         return self._emit_name_load(safe_name)
 
     def translate_assign(self, node: ast.Assign) -> bytes:
-        """
-        Translate assignment: x = 5 -> (define x 5) or (set! x 5).
+        """Dispatch `target = value` to a per-target-shape helper.
 
-        Also handles:
-        - Dict subscript assignment: d['key'] = val -> (set! d (cons (cons 'key val) (filter ... d)))
-        - Tuple unpacking: x, y = (1, 2) -> (begin (define _temp value) (define x (car _temp)) (define y (cdr _temp)))
+        Supported target shapes:
+        - `ast.Subscript` — `d['k'] = v`, handled as a dict rebind by
+          `translate_dict_subscript_assign`.
+        - `ast.Tuple`     — `a, b = pair`, lowered to a sequence of
+          `(define <name> (list-ref value <i>))`.
+        - `ast.Name`      — `x = expr`, emitted as `define`/`set!`/
+          `box-set!` depending on scope and whether the binding is
+          boxed for closure aliasing.
 
-        Uses 'define' for the first assignment to a variable in the current scope,
-        and 'set!' for assignments to variables from outer scopes (to avoid shadowing).
+        Multi-target assignment (`a = b = 5`) is refused.
         """
         if len(node.targets) != 1:
             raise NotImplementedError("Multiple assignment targets not supported")
 
         target = node.targets[0]
 
-        # Handle dict subscript assignment: d['key'] = value
         if isinstance(target, ast.Subscript):
             return self.translate_dict_subscript_assign(target, node.value)
-
-        # Handle tuple unpacking: x, y = value
         if isinstance(target, ast.Tuple):
-            # Extract target variable names
-            if not all(isinstance(elt, ast.Name) for elt in target.elts):
-                raise NotImplementedError("Tuple unpacking only supports simple variable names")
+            return self._assign_tuple_unpack(target, node.value)
+        if isinstance(target, ast.Name):
+            return self._assign_simple(target, node.value)
+        raise NotImplementedError(
+            f"Assignment target type not supported: {type(target).__name__}")
 
-            target_names = [self.get_safe_name(elt.id) for elt in target.elts]
+    def _assign_tuple_unpack(self, target: ast.Tuple,
+                             value_expr: ast.expr) -> bytes:
+        """Lower `a, b, ... = value` to
+        `(begin (define a (list-ref value 0))
+                (define b (list-ref value 1))
+                ...)`.
 
-            # Translate the value expression (evaluate it once)
-            value_bytes = self.translate_expr_with_ref(node.value)
+        Each unpacked name gets its own `define`. The element
+        expressions are stored separately by create_inline_call's
+        nested-inline-form auto-hoist, so the outer `begin` stays a
+        single inline form.
+        """
+        if not all(isinstance(elt, ast.Name) for elt in target.elts):
+            raise NotImplementedError(
+                "Tuple unpacking only supports simple variable names")
+        target_names = [self.get_safe_name(elt.id) for elt in target.elts]
+        value_bytes = self.translate_expr_with_ref(value_expr)
 
-            # Simple approach: (begin (define a (list-ref val 0)) (define b (list-ref val 1)))
-            # create_inline_call will automatically handle nested inline forms by storing them
-
-            define_calls = []
-            current_scope = self.scope_stack[-1]
-
-            for i, target_name in enumerate(target_names):
-                index_bytes = encode_integer(i)
-                # (list-ref value i) - This will be stored as expression by create_inline_call
-                list_ref_call = create_inline_call('list_ref', [value_bytes, index_bytes], self.bc)
-
-                # (define target (list-ref value i))
-                define_call = create_inline_call('define',
-                                                [encode_symbol(target_name, self.bc), list_ref_call],
-                                                self.bc)
-                define_calls.append(define_call)
-                current_scope.add(target_name)
-
-            # (begin (define a ...) (define b ...))
-            return create_inline_call('begin', define_calls, self.bc)
-
-        # Handle simple name assignment
-        if not isinstance(target, ast.Name):
-            raise NotImplementedError(f"Assignment target type not supported: {type(target).__name__}")
-
-        var_name = target.id
-        safe_name = self.get_safe_name(var_name)
-        value_bytes = self.translate_expr_with_ref(node.value)
-
-        # Check if variable is already defined in current scope
-        # NOTE: We track SAFE names in scope_stack, not original names
         current_scope = self.scope_stack[-1]
+        defines = []
+        for i, name in enumerate(target_names):
+            list_ref = create_inline_call(
+                'list_ref', [value_bytes, encode_integer(i)], self.bc)
+            defines.append(create_inline_call(
+                'define', [encode_symbol(name, self.bc), list_ref], self.bc))
+            current_scope.add(name)
+        return create_inline_call('begin', defines, self.bc)
 
-        # Check if variable exists in any outer scope
-        in_outer_scope = any(safe_name in scope for scope in self.scope_stack[:-1])
+    def _assign_simple(self, target: ast.Name,
+                       value_expr: ast.expr) -> bytes:
+        """Lower `x = expr` to one of `define` / `set!` / `box-set!`.
 
-        if safe_name in current_scope:
-            # Re-assignment in current scope: set! (or box-set! if boxed).
+        - The first time `x` is bound in the current scope, emit
+          `define`.
+        - Re-assignment in the current scope or an outer scope emits
+          `set!` (to mutate, not shadow). When the binding is in a
+          heap box because an inner closure captures and mutates it,
+          route through `box-set!` instead.
+        """
+        safe_name = self.get_safe_name(target.id)
+        value_bytes = self.translate_expr_with_ref(value_expr)
+        sym = encode_symbol(safe_name, self.bc)
+
+        current_scope = self.scope_stack[-1]
+        in_outer_scope = any(safe_name in scope
+                             for scope in self.scope_stack[:-1])
+
+        if safe_name in current_scope or in_outer_scope:
             op = 'box_set' if self._is_boxed(safe_name) else 'set'
-            return create_inline_call(op, [encode_symbol(safe_name, self.bc), value_bytes], self.bc)
-        elif in_outer_scope:
-            # Assignment to variable from outer scope: set! to modify, not shadow.
-            # If the outer binding is boxed, route through box-set!.
-            op = 'box_set' if self._is_boxed(safe_name) else 'set'
-            return create_inline_call(op, [encode_symbol(safe_name, self.bc), value_bytes], self.bc)
         else:
-            # First assignment in current scope - use define
             current_scope.add(safe_name)
-            return create_inline_call('define', [encode_symbol(safe_name, self.bc), value_bytes], self.bc)
+            op = 'define'
+        return create_inline_call(op, [sym, value_bytes], self.bc)
 
     def translate_aug_assign(self, node: ast.AugAssign) -> bytes:
         """
