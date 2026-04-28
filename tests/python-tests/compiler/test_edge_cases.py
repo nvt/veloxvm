@@ -401,6 +401,89 @@ class TestTryExceptCompilation(unittest.TestCase):
         self.assertIn(encode_symbol('quote', bc), all_bytes)
 
 
+class TestCallDispatchRegistry(unittest.TestCase):
+    """`translate_call` dispatches builtins and methods through two
+    class-level registries. The tests below pin the registry shape so
+    accidental drift (e.g. a renamed handler that the registry still
+    points at) shows up loudly, and confirm dispatch still works
+    end-to-end through the registry lookup."""
+
+    def test_builtin_handlers_resolve_to_real_methods(self):
+        # Every entry in _BUILTIN_HANDLERS must name an existing
+        # method on the translator class. A typo here would currently
+        # crash at the first call site, but only if the program
+        # exercises that builtin.
+        for name, attr in PythonTranslator._BUILTIN_HANDLERS.items():
+            self.assertTrue(hasattr(PythonTranslator, attr),
+                            f"builtin {name!r} -> {attr!r} not found "
+                            "on PythonTranslator")
+
+    def test_method_handlers_are_callable(self):
+        for name, handler in PythonTranslator._METHOD_HANDLERS.items():
+            self.assertTrue(callable(handler),
+                            f"method {name!r} handler is not callable")
+
+    def test_builtin_registry_covers_documented_set(self):
+        # If you remove or add a builtin, doc/python.md's built-ins
+        # table needs to follow. Pin the names here so the change
+        # is conscious. (Update both together when the set legitimately
+        # changes.)
+        expected = {
+            'print', 'len', 'range', 'int', 'str', 'abs', 'min',
+            'max', 'sum', 'sorted', 'reversed', 'map', 'filter',
+            'reduce', 'all', 'any', 'list', 'enumerate', 'zip',
+        }
+        self.assertEqual(set(PythonTranslator._BUILTIN_HANDLERS), expected)
+
+    def test_method_registry_covers_documented_set(self):
+        expected = {
+            # Dict
+            'keys', 'values', 'items', 'get',
+            # List
+            'append', 'extend', 'pop', 'remove', 'reverse',
+            'count', 'index', 'insert',
+            # String
+            'upper', 'lower', 'split', 'join', 'startswith',
+            'endswith', 'strip', 'replace',
+        }
+        self.assertEqual(set(PythonTranslator._METHOD_HANDLERS), expected)
+
+    def test_builtin_dispatch_compiles(self):
+        from pyvelox.compiler import compile_string
+        # Touch a representative slice of the registry; if the
+        # dispatch were broken this would raise PyveloxCompileError or
+        # produce empty bytecode.
+        bc = compile_string(
+            'print(len([1, 2, 3]))\n'
+            'x = abs(-5)\n'
+            'y = max(1, 2, 3)\n'
+        )
+        self.assertGreater(len(bc.expressions), 0)
+
+    def test_method_dispatch_compiles(self):
+        from pyvelox.compiler import compile_string
+        bc = compile_string(
+            's = "Hi"\n'
+            'u = s.upper()\n'
+            'print(u)\n'
+            'd = {"a": 1}\n'
+            'k = d.keys()\n'
+        )
+        self.assertGreater(len(bc.expressions), 0)
+
+    def test_user_function_call_uses_generic_path(self):
+        # Names not in _BUILTIN_HANDLERS must fall through to the
+        # generic call path so user-defined functions still resolve
+        # through the symbol table.
+        from pyvelox.compiler import compile_string
+        bc = compile_string(
+            'def square(x):\n'
+            '    return x * x\n'
+            'r = square(5)\n'
+        )
+        self.assertGreater(len(bc.expressions), 0)
+
+
 class TestDefaultArguments(unittest.TestCase):
     """Functions with literal positional defaults work via call-site
     padding. Unsupported signature features (vararg, kwarg, kwonly,

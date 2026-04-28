@@ -9,7 +9,7 @@ different Python constructs.
 import ast
 import functools
 import sys
-from typing import List, Optional, Set, Dict
+from typing import Callable, Dict, List, Optional, Set
 from .bytecode import Bytecode
 from .encoder import (
     encode_integer, encode_boolean, encode_string, encode_symbol,
@@ -64,6 +64,64 @@ class PythonTranslator:
     # `except:` inside a loop body.
     BREAK_SENTINEL = '__pyvelox_break__'
     CONTINUE_SENTINEL = '__pyvelox_continue__'
+
+    # Built-in name -> handler-method-name. translate_call dispatches
+    # `name(args)` calls through this table when `name` is an
+    # ast.Name. Each handler takes (self, args: List[ast.expr]) and
+    # returns bytes. Adding a new built-in is a one-line addition
+    # plus a `translate_<name>` method below.
+    _BUILTIN_HANDLERS: Dict[str, str] = {
+        'print':     'translate_print',
+        'len':       'translate_len',
+        'range':     'translate_range',
+        'int':       'translate_int',
+        'str':       'translate_str',
+        'abs':       'translate_abs',
+        'min':       'translate_min',
+        'max':       'translate_max',
+        'sum':       'translate_sum',
+        'sorted':    'translate_sorted',
+        'reversed':  'translate_reversed',
+        'map':       'translate_map',
+        'filter':    'translate_filter',
+        'reduce':    'translate_reduce',
+        'all':       'translate_all',
+        'any':       'translate_any',
+        'list':      'translate_list_constructor',
+        'enumerate': 'translate_enumerate',
+        'zip':       'translate_zip',
+    }
+
+    # Method name -> dispatch lambda. The lambda receives
+    # (translator, receiver_expr, args) and adapts to whichever
+    # underlying handler signature the method needs (some take
+    # `args`, some don't). Adding a new method dispatch is a
+    # one-line addition.
+    _METHOD_HANDLERS: Dict[str, Callable] = {
+        # Dict methods
+        'keys':       lambda t, o, a: t.translate_dict_keys(o),
+        'values':     lambda t, o, a: t.translate_dict_values(o),
+        'items':      lambda t, o, a: t.translate_dict_items(o),
+        'get':        lambda t, o, a: t.translate_dict_get(o, a),
+        # List methods
+        'append':     lambda t, o, a: t.translate_list_append(o, a),
+        'extend':     lambda t, o, a: t.translate_list_extend(o, a),
+        'pop':        lambda t, o, a: t.translate_list_pop(o, a),
+        'remove':     lambda t, o, a: t.translate_list_remove(o, a),
+        'reverse':    lambda t, o, a: t.translate_list_reverse(o),
+        'count':      lambda t, o, a: t.translate_list_count(o, a),
+        'index':      lambda t, o, a: t.translate_list_index(o, a),
+        'insert':     lambda t, o, a: t.translate_list_insert(o, a),
+        # String methods
+        'upper':      lambda t, o, a: t.translate_string_upper(o),
+        'lower':      lambda t, o, a: t.translate_string_lower(o),
+        'split':      lambda t, o, a: t.translate_string_split(o, a),
+        'join':       lambda t, o, a: t.translate_string_join(o, a),
+        'startswith': lambda t, o, a: t.translate_string_startswith(o, a),
+        'endswith':   lambda t, o, a: t.translate_string_endswith(o, a),
+        'strip':      lambda t, o, a: t.translate_string_strip(o),
+        'replace':    lambda t, o, a: t.translate_string_replace(o, a),
+    }
 
     def __init__(self, bc: Bytecode, source_lines: Optional[List[str]] = None):
         self.bc = bc
@@ -1038,103 +1096,27 @@ class PythonTranslator:
         return create_inline_call('return', [value_bytes], self.bc)
 
     def translate_call(self, node: ast.Call) -> bytes:
-        """Translate function call."""
-        # Check for method calls (e.g., d.keys(), d.get(k))
+        """Translate function call.
+
+        Dispatch order:
+          1. Method calls (`obj.m(args)`) — checked against
+             `_METHOD_HANDLERS`. If `m` isn't recognised, the call
+             falls through to the generic-call path so an unknown
+             method can still resolve through the symbol table.
+          2. Built-in name calls (`name(args)`) — checked against
+             `_BUILTIN_HANDLERS`.
+          3. Otherwise, generic call: emit `(callee args...)`.
+        """
         if isinstance(node.func, ast.Attribute):
-            method_name = node.func.attr
-            obj_expr = node.func.value
+            handler = self._METHOD_HANDLERS.get(node.func.attr)
+            if handler is not None:
+                return handler(self, node.func.value, node.args)
+            # Unknown method: fall through to the generic call path.
 
-            # Dict methods
-            if method_name == 'keys':
-                return self.translate_dict_keys(obj_expr)
-            elif method_name == 'values':
-                return self.translate_dict_values(obj_expr)
-            elif method_name == 'items':
-                return self.translate_dict_items(obj_expr)
-            elif method_name == 'get':
-                return self.translate_dict_get(obj_expr, node.args)
-
-            # List methods
-            elif method_name == 'append':
-                return self.translate_list_append(obj_expr, node.args)
-            elif method_name == 'extend':
-                return self.translate_list_extend(obj_expr, node.args)
-            elif method_name == 'pop':
-                return self.translate_list_pop(obj_expr, node.args)
-            elif method_name == 'remove':
-                return self.translate_list_remove(obj_expr, node.args)
-            elif method_name == 'reverse':
-                return self.translate_list_reverse(obj_expr)
-            elif method_name == 'count':
-                return self.translate_list_count(obj_expr, node.args)
-            elif method_name == 'index':
-                return self.translate_list_index(obj_expr, node.args)
-            elif method_name == 'insert':
-                return self.translate_list_insert(obj_expr, node.args)
-
-            # String methods
-            elif method_name == 'upper':
-                return self.translate_string_upper(obj_expr)
-            elif method_name == 'lower':
-                return self.translate_string_lower(obj_expr)
-            elif method_name == 'split':
-                return self.translate_string_split(obj_expr, node.args)
-            elif method_name == 'join':
-                return self.translate_string_join(obj_expr, node.args)
-            elif method_name == 'startswith':
-                return self.translate_string_startswith(obj_expr, node.args)
-            elif method_name == 'endswith':
-                return self.translate_string_endswith(obj_expr, node.args)
-            elif method_name == 'strip':
-                return self.translate_string_strip(obj_expr)
-            elif method_name == 'replace':
-                return self.translate_string_replace(obj_expr, node.args)
-
-            # Fall through for other methods
-
-        # Check for built-in functions
         if isinstance(node.func, ast.Name):
-            func_name = node.func.id
-
-            # Handle special built-ins
-            if func_name == 'print':
-                return self.translate_print(node.args)
-            elif func_name == 'len':
-                return self.translate_len(node.args)
-            elif func_name == 'range':
-                return self.translate_range(node.args)
-            elif func_name == 'int':
-                return self.translate_int(node.args)
-            elif func_name == 'str':
-                return self.translate_str(node.args)
-            elif func_name == 'abs':
-                return self.translate_abs(node.args)
-            elif func_name == 'min':
-                return self.translate_min(node.args)
-            elif func_name == 'max':
-                return self.translate_max(node.args)
-            elif func_name == 'sum':
-                return self.translate_sum(node.args)
-            elif func_name == 'sorted':
-                return self.translate_sorted(node.args)
-            elif func_name == 'reversed':
-                return self.translate_reversed(node.args)
-            elif func_name == 'map':
-                return self.translate_map(node.args)
-            elif func_name == 'filter':
-                return self.translate_filter(node.args)
-            elif func_name == 'reduce':
-                return self.translate_reduce(node.args)
-            elif func_name == 'all':
-                return self.translate_all(node.args)
-            elif func_name == 'any':
-                return self.translate_any(node.args)
-            elif func_name == 'list':
-                return self.translate_list_constructor(node.args)
-            elif func_name == 'enumerate':
-                return self.translate_enumerate(node.args)
-            elif func_name == 'zip':
-                return self.translate_zip(node.args)
+            handler_name = self._BUILTIN_HANDLERS.get(node.func.id)
+            if handler_name is not None:
+                return getattr(self, handler_name)(node.args)
 
         # Regular function call. Resolve the callee carefully: when a
         # user binding shadows a primitive (tracked in renamed_vars by
