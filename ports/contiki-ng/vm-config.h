@@ -201,7 +201,16 @@
 #endif
 
 #ifndef VM_OBJECT_STACK_SIZE
+#if CONTIKI_TARGET_ZOUL
 #define VM_OBJECT_STACK_SIZE 10
+#else
+/* Each vm_expr_t carries an argv[] of this size. Compiled apps from
+   pyvelox can lower a literal like `range(10)` to a (list 0 1 ... 9)
+   form whose width exceeds 10, tripping a "too many arguments" stack
+   overflow at the call site. 16 matches the POSIX port. Zoul keeps
+   the tighter ceiling because of its 32 kB RAM budget. */
+#define VM_OBJECT_STACK_SIZE 16
+#endif
 #endif
 
 #ifndef VM_ERROR_MESSAGES
