@@ -2194,42 +2194,26 @@ class PythonTranslator:
 
     # === String Methods ===
 
-    def translate_string_upper(self, str_expr: ast.expr) -> bytes:
-        """
-        Translate s.upper() -> (list-to-string (map char-upcase (string-to-list s)))
+    def _translate_string_case(self, str_expr: ast.expr,
+                               char_op: str) -> bytes:
+        """Common implementation for s.upper() / s.lower():
+        `(list-to-string (map <char_op> (string-to-list s)))`.
+        `char_op` is `char_upcase` or `char_downcase`.
         """
         str_bytes = self.translate_expr_with_ref(str_expr)
-
-        # (string-to-list s)
-        to_list_bytes = create_inline_call('string_to_list', [str_bytes], self.bc)
-        to_list_ref = self._hoist(to_list_bytes)
-
-        # Create lambda (c) (char-upcase c) - actually, map can take primitive directly
-        # (map char-upcase (string-to-list s))
-        char_upcase_symbol = encode_symbol('char_upcase', self.bc)
-        map_bytes = create_inline_call('map', [char_upcase_symbol, to_list_ref], self.bc)
-        map_ref = self._hoist(map_bytes)
-
-        # (list-to-string (map ...))
+        to_list_ref = self._hoist(
+            create_inline_call('string_to_list', [str_bytes], self.bc))
+        map_ref = self._hoist(create_inline_call(
+            'map', [encode_symbol(char_op, self.bc), to_list_ref], self.bc))
         return create_inline_call('list_to_string', [map_ref], self.bc)
+
+    def translate_string_upper(self, str_expr: ast.expr) -> bytes:
+        """Translate `s.upper()`."""
+        return self._translate_string_case(str_expr, 'char_upcase')
 
     def translate_string_lower(self, str_expr: ast.expr) -> bytes:
-        """
-        Translate s.lower() -> (list-to-string (map char-downcase (string-to-list s)))
-        """
-        str_bytes = self.translate_expr_with_ref(str_expr)
-
-        # (string-to-list s)
-        to_list_bytes = create_inline_call('string_to_list', [str_bytes], self.bc)
-        to_list_ref = self._hoist(to_list_bytes)
-
-        # (map char-downcase (string-to-list s))
-        char_downcase_symbol = encode_symbol('char_downcase', self.bc)
-        map_bytes = create_inline_call('map', [char_downcase_symbol, to_list_ref], self.bc)
-        map_ref = self._hoist(map_bytes)
-
-        # (list-to-string (map ...))
-        return create_inline_call('list_to_string', [map_ref], self.bc)
+        """Translate `s.lower()`."""
+        return self._translate_string_case(str_expr, 'char_downcase')
 
     def translate_string_split(self, str_expr: ast.expr, args: List[ast.expr]) -> bytes:
         """
