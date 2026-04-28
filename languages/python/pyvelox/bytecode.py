@@ -127,14 +127,6 @@ class Bytecode:
         self.loop_counter = 0  # For generating unique loop names
         self.var_counter = 0   # For generating unique variable names
 
-    def add_string(self, s: str) -> int:
-        """Add a string to the string table."""
-        return self.symbol_table.add_string(s)
-
-    def add_symbol(self, sym: str) -> int:
-        """Add an application-scope symbol to the symbol table."""
-        return self.symbol_table.add_symbol(sym)
-
     def add_expression(self, bytecode: bytes) -> int:
         """
         Add an expression to the expression table.

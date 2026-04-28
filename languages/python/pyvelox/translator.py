@@ -1029,7 +1029,7 @@ class PythonTranslator:
 
             # Record captured-symbol IDs for the runtime closure machinery.
             if captures:
-                capture_ids = [self.bc.add_symbol(name) for name in captures]
+                capture_ids = [self.bc.symbol_table.add_symbol(name) for name in captures]
                 self.bc.record_captures(expr_id, capture_ids)
 
             # Create lambda reference
@@ -1102,7 +1102,7 @@ class PythonTranslator:
             expr_id = self.bc.add_expression(bind_bytes)
 
             if captures:
-                capture_ids = [self.bc.add_symbol(name) for name in captures]
+                capture_ids = [self.bc.symbol_table.add_symbol(name) for name in captures]
                 self.bc.record_captures(expr_id, capture_ids)
 
             # Return lambda reference

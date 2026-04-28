@@ -142,7 +142,7 @@ def encode_string(s: str, bc: Bytecode) -> bytes:
     Returns:
         2-3 byte encoding
     """
-    string_id = bc.add_string(s)
+    string_id = bc.symbol_table.add_string(s)
 
     # Header byte
     header = (VM_TOKEN_ATOM << 7) | VM_TYPE_STRING
@@ -204,7 +204,7 @@ def encode_symbol(name: str, bc: Bytecode) -> bytes:
     else:
         # Application symbol (user-defined)
         scope = VM_SYMBOL_SCOPE_APP
-        symbol_id = bc.add_symbol(name)
+        symbol_id = bc.symbol_table.add_symbol(name)
 
     # Header byte
     header = (VM_TOKEN_ATOM << 7) | VM_TYPE_SYMBOL
