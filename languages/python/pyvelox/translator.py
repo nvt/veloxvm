@@ -2690,78 +2690,44 @@ class PythonTranslator:
 
         return create_inline_call('reduce', [lambda_bytes, list_bytes], self.bc)
 
-    def translate_min(self, args: List[ast.expr]) -> bytes:
-        """
-        Translate min(a, b, ...) to nested if comparisons.
-        min(a, b) -> (if (< a b) a b)
-        min(a, b, c) -> (if (< a b) (if (< a c) a c) (if (< b c) b c))
-        min(iterable) -> (reduce (lambda (a b) (if (< a b) a b)) iterable)
-        """
-        if len(args) == 0:
-            raise ValueError("min() requires at least 1 argument")
+    def _translate_min_max(self, args: List[ast.expr],
+                           cmp_op: str, label: str) -> bytes:
+        """Common implementation for `min()` and `max()`.
 
+        - `min(iterable)` / `max(iterable)` fold with a two-arg lambda.
+        - Two or more positional args build a right-associated chain:
+              cmp(a, b)        -> (if (cmp a b) a b)
+              cmp(a, b, c, …)  -> (if (cmp a chain(b, c, …))
+                                       a chain(b, c, …))
+
+        `cmp_op` selects `less_than` (min) or `greater_than` (max);
+        `label` is used in error messages.
+        """
+        if not args:
+            raise ValueError(f"{label}() requires at least 1 argument")
         if len(args) == 1:
-            # Python min(iterable): fold with a two-arg min lambda.
-            return self._translate_fold_min_max(args[0], 'less_than')
+            return self._translate_fold_min_max(args[0], cmp_op)
 
-        # For 2+ arguments, recursively build min comparisons
         arg_bytes = [self.translate_expr_with_ref(arg) for arg in args]
 
-        def build_min(items):
+        def build(items):
             if len(items) == 1:
                 return items[0]
-            elif len(items) == 2:
-                # (if (< a b) a b)
-                cmp = create_inline_call('less_than', [items[0], items[1]], self.bc)
-                cmp_ref = self._hoist(cmp)
-                return create_inline_call('if', [cmp_ref, items[0], items[1]], self.bc)
-            else:
-                # min(a, rest) = (if (< a min(rest)) a min(rest))
-                first = items[0]
-                rest_min = build_min(items[1:])
-                rest_ref = self._hoist(rest_min)
+            first = items[0]
+            rest = items[1] if len(items) == 2 else self._hoist(build(items[1:]))
+            cmp_ref = self._hoist(
+                create_inline_call(cmp_op, [first, rest], self.bc))
+            return create_inline_call('if', [cmp_ref, first, rest], self.bc)
 
-                cmp = create_inline_call('less_than', [first, rest_ref], self.bc)
-                cmp_ref = self._hoist(cmp)
-                return create_inline_call('if', [cmp_ref, first, rest_ref], self.bc)
+        return build(arg_bytes)
 
-        return build_min(arg_bytes)
+    def translate_min(self, args: List[ast.expr]) -> bytes:
+        """Translate `min(...)` — see `_translate_min_max`."""
+        return self._translate_min_max(args, 'less_than', 'min')
 
     def translate_max(self, args: List[ast.expr]) -> bytes:
-        """
-        Translate max(a, b, ...) to nested if comparisons.
-        max(a, b) -> (if (> a b) a b)
-        max(iterable) -> (reduce (lambda (a b) (if (> a b) a b)) iterable)
-        """
-        if len(args) == 0:
-            raise ValueError("max() requires at least 1 argument")
-
-        if len(args) == 1:
-            # Python max(iterable): fold with a two-arg max lambda.
-            return self._translate_fold_min_max(args[0], 'greater_than')
-
-        # For 2+ arguments, recursively build max comparisons
-        arg_bytes = [self.translate_expr_with_ref(arg) for arg in args]
-
-        def build_max(items):
-            if len(items) == 1:
-                return items[0]
-            elif len(items) == 2:
-                # (if (> a b) a b)
-                cmp = create_inline_call('greater_than', [items[0], items[1]], self.bc)
-                cmp_ref = self._hoist(cmp)
-                return create_inline_call('if', [cmp_ref, items[0], items[1]], self.bc)
-            else:
-                # max(a, rest) = (if (> a max(rest)) a max(rest))
-                first = items[0]
-                rest_max = build_max(items[1:])
-                rest_ref = self._hoist(rest_max)
-
-                cmp = create_inline_call('greater_than', [first, rest_ref], self.bc)
-                cmp_ref = self._hoist(cmp)
-                return create_inline_call('if', [cmp_ref, first, rest_ref], self.bc)
-
-        return build_max(arg_bytes)
+        """Translate `max(...)` — see `_translate_min_max`."""
+        return self._translate_min_max(args, 'greater_than', 'max')
 
     def translate_sum(self, args: List[ast.expr]) -> bytes:
         """
