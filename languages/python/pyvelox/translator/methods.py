@@ -137,112 +137,70 @@ class _MethodHandlers:
         # (if pair (cdr pair) default)
         return create_inline_call('if', [assoc_ref, cdr_ref, default_bytes], self.bc)
 
-    def translate_dict_subscript_assign(self, target: ast.Subscript, value_expr: ast.expr) -> bytes:
+    def translate_dict_subscript_assign(self, target: ast.Subscript,
+                                        value_expr: ast.expr) -> bytes:
+        """Translate `d['key'] = val`.
+
+        Dicts are association lists in PyVelox, so this rebinds the
+        variable to a new list with any existing pair for `key`
+        filtered out and the new (key, val) pair consed on:
+
+            (set! d (cons (cons 'key val)
+                          (filter (lambda (p) (not (equal (car p) 'key))) d)))
         """
-        Translate dict subscript assignment: d['key'] = val
-
-        Since dicts are immutable (association lists), we create a new dict:
-        (set! d (cons (cons 'key val) (filter (lambda (p) (not (equal (car p) 'key))) d)))
-
-        This removes any existing pair with the same key, then adds the new pair.
-        """
-        # Only support simple variable dict targets (not complex expressions)
-        if not isinstance(target.value, ast.Name):
-            raise NotImplementedError("Dict subscript assignment only supports simple variable targets")
-
-        dict_name = target.value.id
-        safe_dict_name = self.get_safe_name(dict_name)
-
-        # Translate key and value
         key_bytes = self.translate_expr_with_ref(target.slice)
         value_bytes = self.translate_expr_with_ref(value_expr)
 
-        # Create (cons 'key val)
-        new_pair_bytes = create_inline_call('cons', [key_bytes, value_bytes], self.bc)
-        new_pair_ref = self._hoist(new_pair_bytes)
+        # (cons key val) — the new pair, hoisted so the outer cons
+        # can reference it as a single token.
+        new_pair_ref = self._hoist(create_inline_call(
+            'cons', [key_bytes, value_bytes], self.bc))
 
-        # Create filter lambda: (lambda (p) (not (equal (car p) 'key)))
-        # This filters out any existing pair with the same key
+        # (lambda (p) (not (equal (car p) key))) — drops any existing
+        # pair whose key matches.
+        car_p_ref = self._hoist(create_inline_call(
+            'car', [encode_symbol('p', self.bc)], self.bc))
+        eq_ref = self._hoist(create_inline_call(
+            'equalp', [car_p_ref, key_bytes], self.bc))
+        not_bytes = create_inline_call('not', [eq_ref], self.bc)
+        filter_lambda = self._emit_lambda(['p'], not_bytes)
 
-        # (car p) - extract key from pair
-        car_p_bytes = create_inline_call('car', [encode_symbol('p', self.bc)], self.bc)
-        car_p_ref = self._hoist(car_p_bytes)
+        def build(dict_token: bytes) -> bytes:
+            filtered_ref = self._hoist(create_inline_call(
+                'filter', [filter_lambda, dict_token], self.bc))
+            return create_inline_call(
+                'cons', [new_pair_ref, filtered_ref], self.bc)
 
-        # (equal (car p) 'key)
-        equal_bytes = create_inline_call('equalp', [car_p_ref, key_bytes], self.bc)
-        equal_ref = self._hoist(equal_bytes)
+        return self._mutate_simple_name(
+            target.value, "Dict subscript assignment", build)
 
-        # (not (equal ...))
-        not_bytes = create_inline_call('not', [equal_ref], self.bc)
+    def translate_list_append(self, list_expr: ast.expr,
+                              args: List[ast.expr]) -> bytes:
+        """Translate `lst.append(x)` to `(set! lst (append lst (list x)))`.
 
-        # (lambda (p) (not (equal (car p) 'key)))
-        filter_lambda_bytes = self._emit_lambda(['p'], not_bytes)
-
-        # (filter lambda d)
-        dict_ref = encode_symbol(safe_dict_name, self.bc)
-        filter_bytes = create_inline_call('filter', [filter_lambda_bytes, dict_ref], self.bc)
-        filter_ref = self._hoist(filter_bytes)
-
-        # (cons new_pair filtered_dict)
-        new_dict_bytes = create_inline_call('cons', [new_pair_ref, filter_ref], self.bc)
-        new_dict_ref = self._hoist(new_dict_bytes)
-
-        # (set! d new_dict)
-        return create_inline_call('set', [dict_ref, new_dict_ref], self.bc)
-
-    def translate_list_append(self, list_expr: ast.expr, args: List[ast.expr]) -> bytes:
-        """
-        Translate lst.append(x) -> (set! lst (append lst (list x)))
-
-        Note: Python's append mutates in-place, but VeloxVM lists are immutable.
-        We use set! to reassign the variable.
+        Python's `append` mutates in place; PyVelox lists are
+        immutable cons cells so we emit a rebind instead.
         """
         if len(args) != 1:
             raise ValueError("list.append() takes exactly 1 argument")
-
-        # Only support simple variable list targets
-        if not isinstance(list_expr, ast.Name):
-            raise NotImplementedError("List append only supports simple variable targets")
-
-        list_name = list_expr.id
-        safe_list_name = self.get_safe_name(list_name)
-
         value_bytes = self.translate_expr_with_ref(args[0])
+        wrapper_ref = self._hoist(create_inline_call(
+            'list', [value_bytes], self.bc))
+        return self._mutate_simple_name(
+            list_expr, "List append",
+            lambda token: create_inline_call(
+                'append', [token, wrapper_ref], self.bc))
 
-        # Create (list value)
-        list_wrapper = create_inline_call('list', [value_bytes], self.bc)
-        list_wrapper_ref = self._hoist(list_wrapper)
-
-        # (append lst (list value))
-        list_ref = encode_symbol(safe_list_name, self.bc)
-        append_bytes = create_inline_call('append', [list_ref, list_wrapper_ref], self.bc)
-        append_ref = self._hoist(append_bytes)
-
-        # (set! lst (append ...))
-        return create_inline_call('set', [list_ref, append_ref], self.bc)
-
-    def translate_list_extend(self, list_expr: ast.expr, args: List[ast.expr]) -> bytes:
-        """
-        Translate lst.extend(other) -> (set! lst (append lst other))
-        """
+    def translate_list_extend(self, list_expr: ast.expr,
+                              args: List[ast.expr]) -> bytes:
+        """Translate `lst.extend(other)` to `(set! lst (append lst other))`."""
         if len(args) != 1:
             raise ValueError("list.extend() takes exactly 1 argument")
-
-        if not isinstance(list_expr, ast.Name):
-            raise NotImplementedError("List extend only supports simple variable targets")
-
-        list_name = list_expr.id
-        safe_list_name = self.get_safe_name(list_name)
-
         other_bytes = self.translate_expr_with_ref(args[0])
-
-        # (append lst other)
-        list_ref = encode_symbol(safe_list_name, self.bc)
-        append_bytes = create_inline_call('append', [list_ref, other_bytes], self.bc)
-        append_ref = self._hoist(append_bytes)
-
-        # (set! lst (append ...))
-        return create_inline_call('set', [list_ref, append_ref], self.bc)
+        return self._mutate_simple_name(
+            list_expr, "List extend",
+            lambda token: create_inline_call(
+                'append', [token, other_bytes], self.bc))
 
     def translate_list_pop(self, list_expr: ast.expr, args: List[ast.expr]) -> bytes:
         """
@@ -263,46 +221,23 @@ class _MethodHandlers:
         # Simple version: just return last element (no mutation)
         return create_inline_call('pop', [list_bytes], self.bc)
 
-    def translate_list_remove(self, list_expr: ast.expr, args: List[ast.expr]) -> bytes:
-        """
-        Translate lst.remove(x) -> (set! lst (remove x lst))
-        """
+    def translate_list_remove(self, list_expr: ast.expr,
+                              args: List[ast.expr]) -> bytes:
+        """Translate `lst.remove(x)` to `(set! lst (remove x lst))`."""
         if len(args) != 1:
             raise ValueError("list.remove() takes exactly 1 argument")
-
-        if not isinstance(list_expr, ast.Name):
-            raise NotImplementedError("List remove only supports simple variable targets")
-
-        list_name = list_expr.id
-        safe_list_name = self.get_safe_name(list_name)
-
         value_bytes = self.translate_expr_with_ref(args[0])
-
-        # (remove value lst)
-        list_ref = encode_symbol(safe_list_name, self.bc)
-        remove_bytes = create_inline_call('remove', [value_bytes, list_ref], self.bc)
-        remove_ref = self._hoist(remove_bytes)
-
-        # (set! lst (remove ...))
-        return create_inline_call('set', [list_ref, remove_ref], self.bc)
+        return self._mutate_simple_name(
+            list_expr, "List remove",
+            lambda token: create_inline_call(
+                'remove', [value_bytes, token], self.bc))
 
     def translate_list_reverse(self, list_expr: ast.expr) -> bytes:
-        """
-        Translate lst.reverse() -> (set! lst (reverse lst))
-        """
-        if not isinstance(list_expr, ast.Name):
-            raise NotImplementedError("List reverse only supports simple variable targets")
-
-        list_name = list_expr.id
-        safe_list_name = self.get_safe_name(list_name)
-
-        # (reverse lst)
-        list_ref = encode_symbol(safe_list_name, self.bc)
-        reverse_bytes = create_inline_call('reverse', [list_ref], self.bc)
-        reverse_ref = self._hoist(reverse_bytes)
-
-        # (set! lst (reverse ...))
-        return create_inline_call('set', [list_ref, reverse_ref], self.bc)
+        """Translate `lst.reverse()` to `(set! lst (reverse lst))`."""
+        return self._mutate_simple_name(
+            list_expr, "List reverse",
+            lambda token: create_inline_call(
+                'reverse', [token], self.bc))
 
     def translate_list_count(self, list_expr: ast.expr, args: List[ast.expr]) -> bytes:
         """

@@ -742,6 +742,28 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
         """
         return encode_form_ref(self.bc.add_expression(call_bytes))
 
+    def _mutate_simple_name(self, receiver: ast.expr, label: str,
+                            build_new_value: Callable[[bytes], bytes]) -> bytes:
+        """Scaffolding for handlers that mutate a simple-named
+        variable: `lst.append(x)`, `d['k'] = v`, etc.
+
+        Validates that `receiver` is an `ast.Name`, encodes its safe
+        symbol token, calls `build_new_value(var_token)` to produce
+        the replacement value, and emits `(set! var new_value)`. The
+        receiver-validation message is `"<label> only supports simple
+        variable targets"`.
+
+        Used so the receiver-Name restriction lives in one place
+        (where we'll later either tighten it or lift it).
+        """
+        if not isinstance(receiver, ast.Name):
+            raise NotImplementedError(
+                f"{label} only supports simple variable targets")
+        var_token = encode_symbol(
+            self.get_safe_name(receiver.id), self.bc)
+        new_value = build_new_value(var_token)
+        return create_inline_call('set', [var_token, new_value], self.bc)
+
     @contextlib.contextmanager
     def _function_scope(self, local_set: Set[str],
                         body_stmts: List[ast.stmt]):
