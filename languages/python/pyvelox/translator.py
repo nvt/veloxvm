@@ -41,7 +41,7 @@ from typing import Callable, Dict, List, Optional, Set
 from .bytecode import Bytecode
 from .encoder import (
     encode_integer, encode_boolean, encode_string, encode_symbol,
-    encode_inline_form, encode_form_ref, encode_form_lambda,
+    encode_form_ref, encode_form_lambda,
     create_inline_call, create_bind_form
 )
 from .errors import PyveloxCompileError
@@ -1197,15 +1197,10 @@ class PythonTranslator:
                             f"positional argument at index {i}")
                     arg_bytes.append(defaults[i])
 
-        # Create inline call: inline(argc) + func + args
-        result = bytearray()
-        argc = 1 + len(arg_bytes)
-        result.extend(encode_inline_form(argc))
-        result.extend(func_bytes)
-        for arg in arg_bytes:
-            result.extend(arg)
-
-        return bytes(result)
+        # Emit (callee args...). create_inline_call accepts pre-encoded
+        # operator bytes and handles the nested-inline-form auto-hoist
+        # for arguments — no need to open-code the form construction.
+        return create_inline_call(func_bytes, arg_bytes, self.bc)
 
     # === Operators ===
 
