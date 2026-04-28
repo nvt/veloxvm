@@ -1138,63 +1138,63 @@ class PythonTranslator:
              `_BUILTIN_HANDLERS`.
           3. Otherwise, generic call: emit `(callee args...)`.
         """
+        # Special-case 1: known method calls.
         if isinstance(node.func, ast.Attribute):
             handler = self._METHOD_HANDLERS.get(node.func.attr)
             if handler is not None:
                 return handler(self, node.func.value, node.args)
-            # Unknown method: fall through to the generic call path.
 
+        # Resolve a Name callee once. callee_name is the source-level
+        # name (or None for compound callees); func_bytes is the
+        # encoded operator to emit.
         if isinstance(node.func, ast.Name):
-            handler_name = self._BUILTIN_HANDLERS.get(node.func.id)
+            callee_name = node.func.id
+            # Special-case 2: known built-ins.
+            handler_name = self._BUILTIN_HANDLERS.get(callee_name)
             if handler_name is not None:
                 return getattr(self, handler_name)(node.args)
-
-        # Regular function call. Resolve the callee carefully: when a
-        # user binding shadows a primitive (tracked in renamed_vars by
-        # get_safe_name), call the user's py_-prefixed function;
-        # otherwise, if the name matches a primitive, emit the
-        # primitive ID directly instead of going through the variable
-        # path (which would rename thread_sleep -> py_thread_sleep and
-        # produce an unbound app symbol).
-        if isinstance(node.func, ast.Name):
-            fname = node.func.id
-            if fname in self.renamed_vars:
-                func_bytes = encode_symbol(self.renamed_vars[fname], self.bc)
-            elif self.is_vm_primitive(fname):
-                func_bytes = encode_symbol(fname, self.bc)
+            # Resolve the callee carefully: when a user binding shadows
+            # a primitive (tracked in renamed_vars by get_safe_name),
+            # call the user's py_-prefixed function; otherwise, if the
+            # name matches a primitive, emit the primitive ID directly
+            # instead of going through the variable path (which would
+            # rename thread_sleep -> py_thread_sleep and produce an
+            # unbound app symbol).
+            if callee_name in self.renamed_vars:
+                func_bytes = encode_symbol(self.renamed_vars[callee_name], self.bc)
+            elif self.is_vm_primitive(callee_name):
+                func_bytes = encode_symbol(callee_name, self.bc)
             else:
                 func_bytes = self.translate_expr(node.func)
         else:
-            # Compound operator (e.g. ((f x) y), or (obj.method() ...)). Lift
-            # it into a form-ref so the runtime sees a single token. Inlining
-            # a nested call here would corrupt byte parsing -- the byte
-            # loader advances past only the inline header, leaving the inner
-            # body to be misread as the outer call's arguments.
-            # encodes_as_single_token exempts ast.Lambda (a single lambda-
-            # form token), so a literal ((lambda ...) ...) still inlines.
+            # Compound callee (e.g. ((f x) y), or (obj.method() ...)).
+            # Lift to a form-ref so the runtime sees a single token —
+            # inlining would corrupt byte parsing. encodes_as_single_token
+            # exempts ast.Lambda, so a literal ((lambda ...) ...) still
+            # inlines.
+            callee_name = None
             func_bytes = self.translate_expr_with_ref(node.func)
+
         arg_bytes = [self.translate_expr_with_ref(arg) for arg in node.args]
 
         # If this call names a function with recorded defaults, pad
         # missing trailing arguments with the defaults' encoded bytes.
         # The pre-pass restricts defaults to literals, so reusing the
         # same bytes at every call site is safe.
-        if isinstance(node.func, ast.Name):
-            safe_fname = self.get_safe_name(node.func.id)
-            defaults = self._function_defaults.get(safe_fname)
+        if callee_name is not None:
+            defaults = self._function_defaults.get(self.get_safe_name(callee_name))
             if defaults is not None:
                 n_provided = len(arg_bytes)
                 n_total = len(defaults)
                 if n_provided > n_total:
                     raise NotImplementedError(
-                        f"{node.func.id}() takes at most {n_total} "
+                        f"{callee_name}() takes at most {n_total} "
                         f"positional arguments but {n_provided} were given")
                 for i in range(n_provided, n_total):
                     if defaults[i] is None:
                         raise NotImplementedError(
-                            f"{node.func.id}() missing required "
-                            f"positional argument: "
-                            f"{node.func.id}'s parameter at index {i}")
+                            f"{callee_name}() missing required "
+                            f"positional argument at index {i}")
                     arg_bytes.append(defaults[i])
 
         # Create inline call: inline(argc) + func + args
