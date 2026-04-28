@@ -35,6 +35,7 @@ different Python constructs.
 """
 
 import ast
+import contextlib
 import functools
 import sys
 from typing import Callable, Dict, List, Optional, Set
@@ -47,6 +48,7 @@ from ..encoder import (
 from ..errors import PyveloxCompileError
 from ..primitives import get_primitive_id
 from .builtins import _BuiltinHandlers
+from .closures import _ClosureAnalysis
 from .methods import _MethodHandlers
 
 
@@ -74,7 +76,7 @@ def _located_dispatch(method):
 
 
 
-class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
+class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
     """Translate Python AST nodes to VeloxVM bytecode.
 
     The class itself owns dispatch (`translate_stmt`, `translate_expr`),
@@ -117,10 +119,18 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
         self._emitted_helpers: Set[str] = set()
         # Defaults table populated by a pre-pass over the AST. Maps a
         # function's safe name to a list whose i-th entry is either
-        # None (the i-th positional argument is required) or the
-        # already-encoded bytes of its literal default value. Used by
-        # translate_call to pad missing arguments at the call site.
-        self._function_defaults: Dict[str, List[Optional[bytes]]] = {}
+        # None (the i-th positional argument is required) or the AST
+        # node for its literal default value. translate_call pads
+        # missing trailing arguments at the call site by encoding the
+        # node lazily — see `_get_function_defaults`. Storing AST
+        # nodes instead of pre-encoded bytes keeps the pre-pass from
+        # writing into bc's string table; that's the main pass's
+        # responsibility.
+        self._default_nodes: Dict[str, List[Optional[ast.expr]]] = {}
+        # Caches the encoded form of each default the first time a
+        # call site references it; keeps subsequent call sites from
+        # re-emitting the same constant.
+        self._default_bytes: Dict[str, List[Optional[bytes]]] = {}
 
     def is_vm_primitive(self, name: str) -> bool:
         """Check if a name conflicts with a VM primitive."""
@@ -269,25 +279,29 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
                 "Default arguments on `lambda` are not supported. Use "
                 "a `def` for the same signature.")
 
-        # Encode each default. Defaults align right: the last
-        # len(args.defaults) positional args are the ones with defaults.
+        # Validate each default and record the AST node. Encoding
+        # happens lazily at the first call site that needs to pad
+        # this default in (see `_get_function_defaults`), keeping
+        # the pre-pass from mutating bc's string/symbol tables.
+        # Defaults align right: the last len(args.defaults) positional
+        # args are the ones with defaults.
         n_args = len(args.args)
         n_defaults = len(args.defaults)
-        encoded: List[Optional[bytes]] = []
+        nodes: List[Optional[ast.expr]] = []
         for i in range(n_args):
             if i < n_args - n_defaults:
-                encoded.append(None)
+                nodes.append(None)
                 continue
             default_node = args.defaults[i - (n_args - n_defaults)]
-            encoded.append(self._encode_literal_default(default_node))
+            self._validate_literal_default(default_node)
+            nodes.append(default_node)
 
-        self._function_defaults[self.get_safe_name(node.name)] = encoded
+        self._default_nodes[self.get_safe_name(node.name)] = nodes
 
-    def _encode_literal_default(self, default_node: ast.expr) -> bytes:
-        """Default values must be literal constants so they can be
-        emitted at every call site without re-evaluating side effects.
-        Mutable defaults (`x=[]`) would be a footgun even if we
-        supported them, so we don't try."""
+    def _validate_literal_default(self, default_node: ast.expr) -> None:
+        """Default values must be literal constants — anything else
+        would either re-evaluate side effects at every call site or
+        introduce mutable-default footguns."""
         if not isinstance(default_node, ast.Constant):
             raise NotImplementedError(
                 f"Default argument values must be literal constants "
@@ -300,7 +314,21 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
             raise NotImplementedError(
                 f"Default argument values must be int, bool, str, or "
                 f"None (got {type(value).__name__})")
-        return self.translate_constant(default_node)
+
+    def _get_function_defaults(self, safe_name: str
+                               ) -> Optional[List[Optional[bytes]]]:
+        """Return the encoded default-bytes list for `safe_name`, or
+        None if the function has no recorded defaults. Encoded form
+        is cached after first emission so subsequent call sites reuse
+        the same bytes (and avoid re-adding string-table entries)."""
+        if safe_name not in self._default_nodes:
+            return None
+        cached = self._default_bytes.get(safe_name)
+        if cached is None:
+            cached = [self.translate_constant(node) if node is not None else None
+                      for node in self._default_nodes[safe_name]]
+            self._default_bytes[safe_name] = cached
+        return cached
 
     @_located_dispatch
     def translate_stmt(self, stmt: ast.stmt) -> bytes:
@@ -498,85 +526,86 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
         return self._emit_name_load(safe_name)
 
     def translate_assign(self, node: ast.Assign) -> bytes:
-        """
-        Translate assignment: x = 5 -> (define x 5) or (set! x 5).
+        """Dispatch `target = value` to a per-target-shape helper.
 
-        Also handles:
-        - Dict subscript assignment: d['key'] = val -> (set! d (cons (cons 'key val) (filter ... d)))
-        - Tuple unpacking: x, y = (1, 2) -> (begin (define _temp value) (define x (car _temp)) (define y (cdr _temp)))
+        Supported target shapes:
+        - `ast.Subscript` — `d['k'] = v`, handled as a dict rebind by
+          `translate_dict_subscript_assign`.
+        - `ast.Tuple`     — `a, b = pair`, lowered to a sequence of
+          `(define <name> (list-ref value <i>))`.
+        - `ast.Name`      — `x = expr`, emitted as `define`/`set!`/
+          `box-set!` depending on scope and whether the binding is
+          boxed for closure aliasing.
 
-        Uses 'define' for the first assignment to a variable in the current scope,
-        and 'set!' for assignments to variables from outer scopes (to avoid shadowing).
+        Multi-target assignment (`a = b = 5`) is refused.
         """
         if len(node.targets) != 1:
             raise NotImplementedError("Multiple assignment targets not supported")
 
         target = node.targets[0]
 
-        # Handle dict subscript assignment: d['key'] = value
         if isinstance(target, ast.Subscript):
             return self.translate_dict_subscript_assign(target, node.value)
-
-        # Handle tuple unpacking: x, y = value
         if isinstance(target, ast.Tuple):
-            # Extract target variable names
-            if not all(isinstance(elt, ast.Name) for elt in target.elts):
-                raise NotImplementedError("Tuple unpacking only supports simple variable names")
+            return self._assign_tuple_unpack(target, node.value)
+        if isinstance(target, ast.Name):
+            return self._assign_simple(target, node.value)
+        raise NotImplementedError(
+            f"Assignment target type not supported: {type(target).__name__}")
 
-            target_names = [self.get_safe_name(elt.id) for elt in target.elts]
+    def _assign_tuple_unpack(self, target: ast.Tuple,
+                             value_expr: ast.expr) -> bytes:
+        """Lower `a, b, ... = value` to
+        `(begin (define a (list-ref value 0))
+                (define b (list-ref value 1))
+                ...)`.
 
-            # Translate the value expression (evaluate it once)
-            value_bytes = self.translate_expr_with_ref(node.value)
+        Each unpacked name gets its own `define`. The element
+        expressions are stored separately by create_inline_call's
+        nested-inline-form auto-hoist, so the outer `begin` stays a
+        single inline form.
+        """
+        if not all(isinstance(elt, ast.Name) for elt in target.elts):
+            raise NotImplementedError(
+                "Tuple unpacking only supports simple variable names")
+        target_names = [self.get_safe_name(elt.id) for elt in target.elts]
+        value_bytes = self.translate_expr_with_ref(value_expr)
 
-            # Simple approach: (begin (define a (list-ref val 0)) (define b (list-ref val 1)))
-            # create_inline_call will automatically handle nested inline forms by storing them
-
-            define_calls = []
-            current_scope = self.scope_stack[-1]
-
-            for i, target_name in enumerate(target_names):
-                index_bytes = encode_integer(i)
-                # (list-ref value i) - This will be stored as expression by create_inline_call
-                list_ref_call = create_inline_call('list_ref', [value_bytes, index_bytes], self.bc)
-
-                # (define target (list-ref value i))
-                define_call = create_inline_call('define',
-                                                [encode_symbol(target_name, self.bc), list_ref_call],
-                                                self.bc)
-                define_calls.append(define_call)
-                current_scope.add(target_name)
-
-            # (begin (define a ...) (define b ...))
-            return create_inline_call('begin', define_calls, self.bc)
-
-        # Handle simple name assignment
-        if not isinstance(target, ast.Name):
-            raise NotImplementedError(f"Assignment target type not supported: {type(target).__name__}")
-
-        var_name = target.id
-        safe_name = self.get_safe_name(var_name)
-        value_bytes = self.translate_expr_with_ref(node.value)
-
-        # Check if variable is already defined in current scope
-        # NOTE: We track SAFE names in scope_stack, not original names
         current_scope = self.scope_stack[-1]
+        defines = []
+        for i, name in enumerate(target_names):
+            list_ref = create_inline_call(
+                'list_ref', [value_bytes, encode_integer(i)], self.bc)
+            defines.append(create_inline_call(
+                'define', [encode_symbol(name, self.bc), list_ref], self.bc))
+            current_scope.add(name)
+        return create_inline_call('begin', defines, self.bc)
 
-        # Check if variable exists in any outer scope
-        in_outer_scope = any(safe_name in scope for scope in self.scope_stack[:-1])
+    def _assign_simple(self, target: ast.Name,
+                       value_expr: ast.expr) -> bytes:
+        """Lower `x = expr` to one of `define` / `set!` / `box-set!`.
 
-        if safe_name in current_scope:
-            # Re-assignment in current scope: set! (or box-set! if boxed).
+        - The first time `x` is bound in the current scope, emit
+          `define`.
+        - Re-assignment in the current scope or an outer scope emits
+          `set!` (to mutate, not shadow). When the binding is in a
+          heap box because an inner closure captures and mutates it,
+          route through `box-set!` instead.
+        """
+        safe_name = self.get_safe_name(target.id)
+        value_bytes = self.translate_expr_with_ref(value_expr)
+        sym = encode_symbol(safe_name, self.bc)
+
+        current_scope = self.scope_stack[-1]
+        in_outer_scope = any(safe_name in scope
+                             for scope in self.scope_stack[:-1])
+
+        if safe_name in current_scope or in_outer_scope:
             op = 'box_set' if self._is_boxed(safe_name) else 'set'
-            return create_inline_call(op, [encode_symbol(safe_name, self.bc), value_bytes], self.bc)
-        elif in_outer_scope:
-            # Assignment to variable from outer scope: set! to modify, not shadow.
-            # If the outer binding is boxed, route through box-set!.
-            op = 'box_set' if self._is_boxed(safe_name) else 'set'
-            return create_inline_call(op, [encode_symbol(safe_name, self.bc), value_bytes], self.bc)
         else:
-            # First assignment in current scope - use define
             current_scope.add(safe_name)
-            return create_inline_call('define', [encode_symbol(safe_name, self.bc), value_bytes], self.bc)
+            op = 'define'
+        return create_inline_call(op, [sym, value_bytes], self.bc)
 
     def translate_aug_assign(self, node: ast.AugAssign) -> bytes:
         """
@@ -618,121 +647,6 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
                                   [encode_symbol(safe_name, self.bc), result_ref],
                                   self.bc)
 
-    def _analyze_body(self,
-                      body_stmts: List[ast.stmt],
-                      local_names: Set[str],
-                      outer_env: Set[str]) -> "tuple[List[str], Set[str]]":
-        """One AST walk that returns everything `translate_function_def`
-        and `translate_lambda` need about their body's free-variable
-        and binding behaviour:
-
-        - **captures** — free references (Load of a name not bound in
-          this function), filtered to names that exist in `outer_env`
-          and ordered by first reference. Top-level globals are
-          excluded by leaving them out of `outer_env`, so they resolve
-          via program-wide symbol bindings rather than as captures.
-
-        - **needs_box** — the subset of `local_names` that has to live
-          in a heap-allocated box: captured by some nested closure
-          AND mutated somewhere. Pure value captures and mutated-but-
-          uncaptured locals are fine as plain bindings; only the
-          intersection has the alias-sharing problem.
-
-        Folds three walkers into one. The bookkeeping splits into
-        `bound` (all bindings visible at the current point, used to
-        detect free names) and `inner_local` (bindings introduced
-        AFTER entering a nested function, used to detect shadowing of
-        our locals from inside a nested closure).
-        """
-        free: List[str] = []
-        seen: Set[str] = set()
-        captured_by_inner: Set[str] = set()
-        mutated: Set[str] = set()
-
-        def record_target(target, inner_local: Set[str]) -> None:
-            if isinstance(target, ast.Name):
-                safe = self.get_safe_name(target.id)
-                if safe in local_names and safe not in inner_local:
-                    mutated.add(safe)
-            elif isinstance(target, ast.Tuple):
-                for elt in target.elts:
-                    record_target(elt, inner_local)
-
-        def walk(node, bound: Set[str], inside: bool,
-                 inner_local: Set[str]) -> None:
-            if isinstance(node, ast.Name):
-                if isinstance(node.ctx, ast.Load):
-                    safe = self.get_safe_name(node.id)
-                    if safe not in bound and safe not in seen:
-                        seen.add(safe)
-                        free.append(safe)
-                    if (inside and safe in local_names
-                            and safe not in inner_local):
-                        captured_by_inner.add(safe)
-                return
-
-            if isinstance(node, ast.Assign):
-                for t in node.targets:
-                    record_target(t, inner_local)
-                walk(node.value, bound, inside, inner_local)
-                return
-            if isinstance(node, ast.AugAssign):
-                record_target(node.target, inner_local)
-                walk(node.value, bound, inside, inner_local)
-                return
-
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                inner_params = {self.get_safe_name(a.arg)
-                                for a in node.args.args}
-                inner_locals = self.collect_assigned_vars(node.body)
-                new_bound = bound | inner_params | inner_locals
-                new_inner_local = inner_local | inner_params | inner_locals
-                for stmt in node.body:
-                    walk(stmt, new_bound, True, new_inner_local)
-                return
-
-            if isinstance(node, ast.Lambda):
-                inner_params = {self.get_safe_name(a.arg)
-                                for a in node.args.args}
-                walk(node.body,
-                     bound | inner_params,
-                     True,
-                     inner_local | inner_params)
-                return
-
-            for child in ast.iter_child_nodes(node):
-                walk(child, bound, inside, inner_local)
-
-        for stmt in body_stmts:
-            walk(stmt, local_names, False, set())
-
-        captures = [n for n in free if n in outer_env]
-        needs_box = captured_by_inner & mutated
-        return captures, needs_box
-
-    def _is_boxed(self, safe_name: str) -> bool:
-        """
-        True if safe_name resolves to a binding that lives in a heap box at
-        this point in translation. Walks the scope stack inward-to-outward
-        and checks the box flag of the innermost scope that contains the
-        name -- so a shadowing local in an inner scope correctly hides an
-        outer boxed binding.
-        """
-        for i in range(len(self.scope_stack) - 1, -1, -1):
-            if safe_name in self.scope_stack[i]:
-                return safe_name in self.boxed_stack[i]
-        return False
-
-    def _emit_name_load(self, safe_name: str) -> bytes:
-        """
-        Emit bytecode for a Load of safe_name. If the binding is boxed, wrap
-        in (box_ref name); otherwise emit the bare symbol.
-        """
-        if self._is_boxed(safe_name):
-            return create_inline_call(
-                'box_ref', [encode_symbol(safe_name, self.bc)], self.bc)
-        return encode_symbol(safe_name, self.bc)
-
     def _hoist(self, call_bytes: bytes) -> bytes:
         """Stash `call_bytes` in the expression table and return the
         form-ref that references it. Used wherever a complex inline
@@ -740,6 +654,109 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
         token (an `if` branch, a nested-form argument, etc.).
         """
         return encode_form_ref(self.bc.add_expression(call_bytes))
+
+    def _mutate_simple_name(self, receiver: ast.expr, label: str,
+                            build_new_value: Callable[[bytes], bytes]) -> bytes:
+        """Scaffolding for handlers that mutate a simple-named
+        variable: `lst.append(x)`, `d['k'] = v`, etc.
+
+        Validates that `receiver` is an `ast.Name`, encodes its safe
+        symbol token, calls `build_new_value(var_token)` to produce
+        the replacement value, and emits `(set! var new_value)`. The
+        receiver-validation message is `"<label> only supports simple
+        variable targets"`.
+
+        Used so the receiver-Name restriction lives in one place
+        (where we'll later either tighten it or lift it).
+        """
+        if not isinstance(receiver, ast.Name):
+            raise NotImplementedError(
+                f"{label} only supports simple variable targets")
+        var_token = encode_symbol(
+            self.get_safe_name(receiver.id), self.bc)
+        new_value = build_new_value(var_token)
+        return create_inline_call('set', [var_token, new_value], self.bc)
+
+    @contextlib.contextmanager
+    def _function_scope(self, local_set: Set[str],
+                        body_stmts: List[ast.stmt]):
+        """Enter a fresh function-level scope to translate `body_stmts`.
+
+        Runs the closure/box analysis (`_analyze_body`) and yields
+        `(captures, boxed_names)` for the body builder to use. Pushes
+        scope_stack and boxed_stack, zeros out _loop_depth (loops
+        don't cross function boundaries), and unwinds all of that
+        when the context exits.
+
+        Used by translate_function_def and translate_lambda to share
+        their identical setup/teardown.
+        """
+        outer_env: Set[str] = (set().union(*self.scope_stack[1:])
+                               if len(self.scope_stack) > 1 else set())
+        captures, boxed_names = self._analyze_body(
+            body_stmts, local_set, outer_env)
+
+        self.scope_stack.append(local_set)
+        self.boxed_stack.append(boxed_names)
+        saved_loop_depth = self._loop_depth
+        self._loop_depth = 0
+        try:
+            yield captures, boxed_names
+        finally:
+            self.scope_stack.pop()
+            self.boxed_stack.pop()
+            self._loop_depth = saved_loop_depth
+
+    def _emit_lambda(self, params: List[str], body: bytes, *,
+                     is_function: bool = False,
+                     captures: Optional[List[str]] = None) -> bytes:
+        """Build a `(bind[_function] params... body)` form, store it
+        in the expression table, and return its lambda form-ref.
+
+        `is_function=True` marks the lambda as a Python function
+        boundary (used by the `return` primitive to know what to
+        unwind to); plain lambdas used for control flow stay False.
+
+        `captures`, if given, is a list of safe names whose IDs are
+        recorded against the lambda's expression for the runtime
+        closure machinery.
+        """
+        bind_bytes = create_bind_form(
+            params, body, self.bc, is_function=is_function)
+        expr_id = self.bc.add_expression(bind_bytes)
+        if captures:
+            capture_ids = [self.bc.symbol_table.add_symbol(name)
+                           for name in captures]
+            self.bc.record_captures(expr_id, capture_ids)
+        return encode_form_lambda(expr_id)
+
+    def _emit_type_dispatch(self, arg_token: bytes,
+                            branches: List["tuple[str, bytes]"],
+                            fallback: bytes) -> bytes:
+        """Build a chain of `(if (test arg_token) branch ...)` ending
+        in `fallback`. `branches` is `[(test-op-name, branch-bytes),
+        ...]` from outermost test to innermost.
+
+        Used by `int(x)` and `str(x)` to do their runtime type
+        dispatch without hand-rolling the same nested-if scaffold.
+        Each test call is hoisted into the expression table; the
+        intermediate `if` forms are too. The outermost `if` is
+        returned inline, leaving its placement up to the caller.
+        """
+        # Build innermost-to-outermost so each subsequent `if` gets
+        # the previous chain as its else branch.
+        result = fallback
+        last = len(branches) - 1
+        for i, (test_op, branch_bytes) in enumerate(reversed(branches)):
+            test_ref = self._hoist(create_inline_call(
+                test_op, [arg_token], self.bc))
+            if_form = create_inline_call(
+                'if', [test_ref, branch_bytes, result], self.bc)
+            # Hoist every intermediate so the outer `if` sees a
+            # single-token else branch. The final iteration (the
+            # outermost `if`) is what we return — not hoisted.
+            result = if_form if i == last else self._hoist(if_form)
+        return result
 
     def _evaluate_once(self, arg_node: ast.expr,
                        build: Callable[[bytes], bytes]) -> bytes:
@@ -763,248 +780,72 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
         arg_bytes = self.translate_expr_with_ref(arg_node)
         temp_name = self.bc.get_unique_var_name("_t")
         temp_token = encode_symbol(temp_name, self.bc)
-        body_bytes = build(temp_token)
-        bind_bytes = create_bind_form([temp_name], body_bytes, self.bc)
-        lambda_ref = encode_form_lambda(self.bc.add_expression(bind_bytes))
+        lambda_ref = self._emit_lambda([temp_name], build(temp_token))
         return create_inline_call(lambda_ref, [arg_bytes], self.bc)
 
-    def _make_box_init_bytes(self, safe_name: str) -> bytes:
-        """
-        Emit (set! name (box name)) -- the function-entry wrap that replaces
-        the initial value of name with a box containing it. Subsequent reads
-        of name will be rewritten to (box-ref name) by _emit_name_load. The
-        inner (box name) is a plain symbol reference; we cannot route it
-        through _emit_name_load because at this point name still holds its
-        unboxed value.
-        """
-        box_call = create_inline_call('box',
-                                      [encode_symbol(safe_name, self.bc)],
-                                      self.bc)
-        return create_inline_call('set',
-                                  [encode_symbol(safe_name, self.bc), box_call],
-                                  self.bc)
-
-    def collect_assigned_vars(self, stmts: List[ast.stmt]) -> Set[str]:
-        """
-        Collect all variable names that are assigned within a list of statements.
-        This is used for Python's function-level scoping - all variables must be
-        hoisted to the top of the function.
-
-        Names declared with `nonlocal` or `global` are excluded from the
-        result: nonlocal names refer to bindings in an enclosing function,
-        and global names refer to module-level (program-wide) bindings.
-        Neither should be hoisted as a function-local.
-
-        Returns safe names (with 'py_' prefix if they conflict with VM primitives).
-        """
-        assigned = set()
-        nonlocal_names = set()
-        global_names = set()
-
-        def visit_node(node):
-            if isinstance(node, ast.Nonlocal):
-                for name in node.names:
-                    nonlocal_names.add(self.get_safe_name(name))
-                return
-            if isinstance(node, ast.Global):
-                for name in node.names:
-                    global_names.add(self.get_safe_name(name))
-                return
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        assigned.add(self.get_safe_name(target.id))
-            elif isinstance(node, ast.AugAssign):
-                if isinstance(node.target, ast.Name):
-                    assigned.add(self.get_safe_name(node.target.id))
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                # A nested def binds its name in the enclosing function's
-                # scope. We do not recurse into the def's body since that's
-                # a separate scope.
-                assigned.add(self.get_safe_name(node.name))
-            elif isinstance(node, ast.For):
-                if isinstance(node.target, ast.Name):
-                    assigned.add(self.get_safe_name(node.target.id))
-                for stmt in node.body:
-                    visit_node(stmt)
-                for stmt in node.orelse:
-                    visit_node(stmt)
-            elif isinstance(node, ast.While):
-                for stmt in node.body:
-                    visit_node(stmt)
-                for stmt in node.orelse:
-                    visit_node(stmt)
-            elif isinstance(node, ast.If):
-                for stmt in node.body:
-                    visit_node(stmt)
-                for stmt in node.orelse:
-                    visit_node(stmt)
-            elif isinstance(node, ast.Try):
-                for stmt in node.body:
-                    visit_node(stmt)
-                for handler in node.handlers:
-                    if handler.name:
-                        assigned.add(self.get_safe_name(handler.name))
-                    for stmt in handler.body:
-                        visit_node(stmt)
-                for stmt in node.orelse:
-                    visit_node(stmt)
-                for stmt in node.finalbody:
-                    visit_node(stmt)
-
-        for stmt in stmts:
-            visit_node(stmt)
-
-        return assigned - nonlocal_names - global_names
-
     def translate_function_def(self, node: ast.FunctionDef) -> bytes:
-        """
-        Translate function definition:
-        def f(a, b): return a + b
-        ->
-        (define f (lambda (a b) (+ a b)))
+        """Translate `def f(a, b): ...` to `(define f (lambda (a b) ...))`.
 
-        Python has function-level scoping, so we hoist all variable
-        definitions to the top of the function, then use set! for all assignments.
+        Python has function-level scoping, so all variables assigned
+        in the body are hoisted to the top of the lambda via the
+        let-expansion in `translate_function_body`; subsequent
+        assignments use `set!`.
         """
-        func_name = node.name
-        safe_func_name = self.get_safe_name(func_name)
-        params = [arg.arg for arg in node.args.args]
-        safe_params = [self.get_safe_name(p) for p in params]
+        safe_func_name = self.get_safe_name(node.name)
+        safe_params = [self.get_safe_name(a.arg) for a in node.args.args]
 
-        # Encode the function name symbol FIRST, before compiling the body
-        # This ensures function names appear before local variables in the symbol table
+        # Encode the function name symbol FIRST so it appears in the
+        # symbol table before any of its locals.
         func_name_symbol = encode_symbol(safe_func_name, self.bc)
 
-        # Collect all variables assigned in the function body (for hoisting)
-        assigned_vars = self.collect_assigned_vars(node.body)
-        # Remove parameters - they're already defined by the bind form
-        # NOTE: We compare SAFE names here because collect_assigned_vars returns safe names
-        local_vars = assigned_vars - set(safe_params)
-
-        # Free-variable analysis: capture names referenced by the body that
-        # come from an enclosing function's scope. The global scope (index 0)
-        # is excluded because top-level names resolve through program-wide
-        # symbol bindings rather than via captures.
+        # Body's local vars get hoisted by the let-expansion in
+        # translate_function_body — drop the params, which are already
+        # bound by the lambda's bind form.
+        local_vars = (self.collect_assigned_vars(node.body)
+                      - set(safe_params))
         local_set = set(safe_params) | local_vars
         is_nested = len(self.scope_stack) > 1
-        outer_env: Set[str] = set().union(*self.scope_stack[1:]) \
-            if is_nested else set()
-        # Single AST walk that returns both the body's free-variable
-        # captures and the locals that must live in heap boxes
-        # (captured by an inner closure AND mutated). Computed before
-        # we push scope/box state so it sees only THIS function's
-        # body shape.
-        captures, boxed_names = self._analyze_body(
-            node.body, local_set, outer_env)
 
-        # Push a new scope for the function body
-        # Include both params AND local vars so they're all treated as "already defined"
-        # NOTE: Store SAFE names in scope_stack
-        self.scope_stack.append(local_set)
-        self.boxed_stack.append(boxed_names)
-        # Loops don't cross function boundaries: a function defined
-        # inside a loop has its own break/continue scope (which is
-        # empty until the function itself contains a loop).
-        saved_loop_depth = self._loop_depth
-        self._loop_depth = 0
-
-        try:
-            # Compile body with granular expression storage (like Racket compiler)
-            # Each statement is stored as a separate expression, then referenced in a begin form
+        with self._function_scope(local_set, node.body) as (captures, boxed_names):
             body_bytes = self.translate_function_body(
                 node.body, local_vars, box_inits=boxed_names)
+            # is_function=True marks this as a Python function boundary
+            # so the `return` primitive knows what to unwind to.
+            lambda_bytes = self._emit_lambda(
+                safe_params, body_bytes,
+                is_function=True, captures=captures)
 
-            # Don't store body as form ref - inline it directly in bind form
-            # This matches what Racket does: (bind args body) where body is compiled directly
-            # The body itself may contain form refs to individual statements or let-expansion
-            body_for_bind = body_bytes
-
-            # Create bind form: (bind_function param1 param2 ... body)
-            # Use is_function=True to mark actual function boundaries for the return primitive
-            bind_bytes = create_bind_form(safe_params, body_for_bind, self.bc, is_function=True)
-
-            # Store bind in expression table
-            expr_id = self.bc.add_expression(bind_bytes)
-
-            # Record captured-symbol IDs for the runtime closure machinery.
-            if captures:
-                capture_ids = [self.bc.symbol_table.add_symbol(name) for name in captures]
-                self.bc.record_captures(expr_id, capture_ids)
-
-            # Create lambda reference
-            lambda_bytes = encode_form_lambda(expr_id)
-
-            # Top-level defs become global bindings via 'define'. Defs nested
-            # inside another function bind into the enclosing function's
-            # let-expansion local (collect_assigned_vars hoists the name),
-            # so we emit 'set!' instead. set!'s mid-arg evaluation gives the
-            # scheduler a chance to materialize a closure when the lambda
-            # has free-variable captures.
-            #
-            op = 'set' if is_nested else 'define'
-            return create_inline_call(op, [func_name_symbol, lambda_bytes], self.bc)
-        finally:
-            # Pop the function scope
-            self.scope_stack.pop()
-            self.boxed_stack.pop()
-            self._loop_depth = saved_loop_depth
+        # Top-level defs become global bindings via `define`. Nested
+        # defs bind into the enclosing function's let-expansion local
+        # (collect_assigned_vars hoists the name), so we emit `set!`
+        # instead. set!'s mid-arg evaluation gives the scheduler a
+        # chance to materialize a closure for a lambda with free
+        # variables.
+        op = 'set' if is_nested else 'define'
+        return create_inline_call(op, [func_name_symbol, lambda_bytes], self.bc)
 
     def translate_lambda(self, node: ast.Lambda) -> bytes:
+        """Translate `lambda x: expr` — Python lambdas are real
+        functions (like `def`), so they get `bind_function`. Unlike
+        `def`, no variable hoisting — the body is a single expression.
         """
-        Translate lambda expression.
+        safe_params = [self.get_safe_name(a.arg) for a in node.args.args]
+        # _analyze_body takes a statement list; wrap the body in an
+        # Expr so the same analyser handles lambdas and defs.
+        body_stmts = [ast.Expr(value=node.body)]
 
-        Lambda expressions in Python are true functions (like def), so we use
-        bind_function to mark them as function boundaries for proper call semantics.
-
-        Unlike def, lambda has no variable hoisting - it's a single expression.
-        """
-        params = [arg.arg for arg in node.args.args]
-        safe_params = [self.get_safe_name(p) for p in params]
-
-        # Free-variable + box analysis in one pass. Lambda bodies are
-        # single expressions but can still close over enclosing
-        # locals; their own params can still be captured + mutated by
-        # an inner closure that uses nonlocal. _analyze_body expects a
-        # statement list, so wrap the body in an Expr.
-        local_set = set(safe_params)
-        outer_env: Set[str] = set().union(*self.scope_stack[1:]) \
-            if len(self.scope_stack) > 1 else set()
-        captures, boxed_names = self._analyze_body(
-            [ast.Expr(value=node.body)], local_set, outer_env)
-
-        # Lambdas don't currently hoist locals, so the new scope is just the
-        # parameters. Pushing it makes inner lambdas/defs see them as outer.
-        self.scope_stack.append(local_set)
-        self.boxed_stack.append(boxed_names)
-        saved_loop_depth = self._loop_depth
-        self._loop_depth = 0
-        try:
-            # Translate body directly - lambdas are single expressions.
+        with self._function_scope(set(safe_params), body_stmts) as (captures, boxed_names):
             body_bytes = self.translate_expr(node.body)
             if boxed_names:
-                # Prepend (set! p (box p)) wraps for each boxed param. We
-                # build (begin wrap1 ... wrapN body) and use that as the
-                # bind body.
-                wraps = [self._make_box_init_bytes(name) for name in sorted(boxed_names)]
-                body_bytes = create_inline_call('begin', wraps + [body_bytes], self.bc)
-
-            # Create bind_function form (lambdas are real functions, like def)
-            bind_bytes = create_bind_form(safe_params, body_bytes, self.bc, is_function=True)
-
-            # Store in expression table
-            expr_id = self.bc.add_expression(bind_bytes)
-
-            if captures:
-                capture_ids = [self.bc.symbol_table.add_symbol(name) for name in captures]
-                self.bc.record_captures(expr_id, capture_ids)
-
-            # Return lambda reference
-            return encode_form_lambda(expr_id)
-        finally:
-            self.scope_stack.pop()
-            self.boxed_stack.pop()
-            self._loop_depth = saved_loop_depth
+                # Prepend (set! p (box p)) wraps for each boxed param,
+                # joining them with the body in a begin form.
+                wraps = [self._make_box_init_bytes(n)
+                         for n in sorted(boxed_names)]
+                body_bytes = create_inline_call(
+                    'begin', wraps + [body_bytes], self.bc)
+            return self._emit_lambda(
+                safe_params, body_bytes,
+                is_function=True, captures=captures)
 
     def translate_return(self, node: ast.Return) -> bytes:
         """Translate `return value` to `(return value)`.
@@ -1076,7 +917,7 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
         # The pre-pass restricts defaults to literals, so reusing the
         # same bytes at every call site is safe.
         if callee_name is not None:
-            defaults = self._function_defaults.get(self.get_safe_name(callee_name))
+            defaults = self._get_function_defaults(self.get_safe_name(callee_name))
             if defaults is not None:
                 n_provided = len(arg_bytes)
                 n_total = len(defaults)
@@ -1258,31 +1099,49 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
 
             return create_inline_call(op, [left_bytes, right_bytes], self.bc)
         else:
-            # Chained comparison
+            # Chained comparison: a OP1 b OP2 c ...  ->  (and (OP1 a b) (OP2 b c) ...).
+            # An intermediate operand (the b above) appears in two
+            # comparisons. translate_expr_with_ref hands back a form-ref
+            # that re-evaluates the underlying expression each time it
+            # is read, so a side-effecting intermediate would fire
+            # twice. Bind such operands to let-temps so each evaluates
+            # exactly once. Endpoints (used in only one comparison) and
+            # single-token operands (re-reading the token has no side
+            # effects) stay inline.
+            operands = [node.left, *node.comparators]
+            wrap_params: List[str] = []
+            wrap_args: List[bytes] = []
+            tokens: List[bytes] = []
+            for i, operand in enumerate(operands):
+                used_twice = 0 < i < len(operands) - 1
+                if used_twice and not self.encodes_as_single_token(operand):
+                    temp = self.bc.get_unique_var_name("_t")
+                    wrap_params.append(temp)
+                    wrap_args.append(self.translate_expr_with_ref(operand))
+                    tokens.append(encode_symbol(temp, self.bc))
+                else:
+                    tokens.append(self.translate_expr_with_ref(operand))
+
             comparisons = []
-            left = node.left
-
-            for op_node, right in zip(node.ops, node.comparators):
+            for i, op_node in enumerate(node.ops):
+                left_t, right_t = tokens[i], tokens[i + 1]
                 op_type = type(op_node)
-                left_bytes = self.translate_expr_with_ref(left)
-                right_bytes = self.translate_expr_with_ref(right)
-
                 if op_type is ast.Eq:
-                    comp_bytes = self._emit_eq(left_bytes, right_bytes, negate=False)
+                    comp_bytes = self._emit_eq(left_t, right_t, negate=False)
                 elif op_type is ast.NotEq:
-                    comp_bytes = self._emit_eq(left_bytes, right_bytes, negate=True)
+                    comp_bytes = self._emit_eq(left_t, right_t, negate=True)
                 else:
                     op = op_map.get(op_type)
                     if not op:
                         raise NotImplementedError(f"Comparison operator not supported: {op_type.__name__}")
-                    comp_bytes = create_inline_call(op, [left_bytes, right_bytes], self.bc)
-
-                # Store each comparison separately
+                    comp_bytes = create_inline_call(op, [left_t, right_t], self.bc)
                 comparisons.append(self._hoist(comp_bytes))
-                left = right
 
-            # (and comp1 comp2 ...)
-            return create_inline_call('and', comparisons, self.bc)
+            and_chain = create_inline_call('and', comparisons, self.bc)
+            if not wrap_params:
+                return and_chain
+            lambda_ref = self._emit_lambda(wrap_params, and_chain)
+            return create_inline_call(lambda_ref, wrap_args, self.bc)
 
     def translate_boolop(self, node: ast.BoolOp) -> bytes:
         """Translate boolean operation: a and b -> (and a b). Complex operands stored separately."""
@@ -1368,113 +1227,67 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
             [encode_symbol(exc_name, self.bc), handler_ref, body_ref],
             self.bc)
 
+    def _translate_loop_body(self, body_stmts: List[ast.stmt]) -> bytes:
+        """Translate `body_stmts` as a loop body: bumps `_loop_depth`
+        so `break`/`continue` can identify themselves as in-loop, then
+        wraps the result in a continue-guard. Caller still installs
+        the surrounding break-guard around the whole loop."""
+        self._loop_depth += 1
+        try:
+            body_bytes = self.translate_block(body_stmts)
+        finally:
+            self._loop_depth -= 1
+        return self._wrap_with_sentinel_guard(
+            body_bytes, self.CONTINUE_SENTINEL)
+
     def translate_for(self, node: ast.For) -> bytes:
+        """Translate `for x in iterable: body` to
+        `(for_each (lambda (x) body) iterable)` and similarly for
+        tuple-unpacking targets, with surrounding break/continue
+        guards so the loop-control sentinels exit cleanly.
         """
-        Translate for loop: for x in iterable: body -> (for-each (lambda (x) body) iterable).
+        body_bytes = self._translate_loop_body(node.body)
 
-        Supports tuple unpacking:
-        for x, y in pairs: body -> (for-each (lambda (pair) (let ((x (car pair)) (y (cdr pair))) body)) pairs)
-
-        Lambda body stored separately and referenced.
-        """
-        # Handle simple variable target
         if isinstance(node.target, ast.Name):
-            param = node.target.id
-            safe_param = self.get_safe_name(param)
-
-            self._loop_depth += 1
-            try:
-                body_bytes = self.translate_block(node.body)
-            finally:
-                self._loop_depth -= 1
-
-            # Wrap each iteration's body so `continue` returns from the
-            # body lambda without escaping for_each.
-            body_bytes = self._wrap_with_sentinel_guard(
-                body_bytes, self.CONTINUE_SENTINEL)
-
-            # Store body as separate expression
-            body_ref = self._hoist(body_bytes)
-
-            # Create lambda for loop body with body reference
-            bind_bytes = create_bind_form([safe_param], body_ref, self.bc)
-            lambda_id = self.bc.add_expression(bind_bytes)
-            lambda_bytes = encode_form_lambda(lambda_id)
-
-            # Translate iterable
-            iterable_bytes = self.translate_expr_with_ref(node.iter)
-
-            # (for-each lambda iterable)
-            for_each_call = create_inline_call(
-                'for_each', [lambda_bytes, iterable_bytes], self.bc)
-            # Wrap the whole loop so `break` exits it without
-            # propagating further.
-            return self._wrap_with_sentinel_guard(
-                for_each_call, self.BREAK_SENTINEL)
-
-        # Handle tuple unpacking: for x, y in pairs
+            safe_param = self.get_safe_name(node.target.id)
+            body_lambda = self._emit_lambda(
+                [safe_param], self._hoist(body_bytes))
         elif isinstance(node.target, ast.Tuple):
-            # Extract target variable names
             if not all(isinstance(elt, ast.Name) for elt in node.target.elts):
-                raise NotImplementedError("For loop tuple unpacking only supports simple variable names")
-
+                raise NotImplementedError(
+                    "For loop tuple unpacking only supports simple variable names")
             target_names = [self.get_safe_name(elt.id) for elt in node.target.elts]
 
-            # Use nested lambda approach:
-            # (for-each (lambda (item)
-            #             ((lambda (x y) body) (list-ref item 0) (list-ref item 1)))
-            #           iterable)
-            # This ensures list-ref calls are evaluated before binding to lambda parameters
-
-            # Create a temp parameter for the outer lambda (the list item)
+            # Nested-lambda shape:
+            #   (for_each (lambda (_item)
+            #               ((lambda (x y ...) body)
+            #                (list_ref _item 0) (list_ref _item 1) ...))
+            #             iterable)
+            # The inner call evaluates the list_refs before binding to
+            # the unpacked parameters.
             item_param = self.bc.get_unique_var_name("_item")
-
-            # Translate the loop body
-            self._loop_depth += 1
-            try:
-                body_bytes = self.translate_block(node.body)
-            finally:
-                self._loop_depth -= 1
-            body_bytes = self._wrap_with_sentinel_guard(
-                body_bytes, self.CONTINUE_SENTINEL)
-
-            # Create inner lambda that takes unpacked variables as parameters
-            # (lambda (x y) body)
-            inner_lambda_bytes = create_bind_form(target_names, body_bytes, self.bc)
-            inner_lambda_id = self.bc.add_expression(inner_lambda_bytes)
-            inner_lambda_ref = encode_form_lambda(inner_lambda_id)
-
-            # Create list-ref calls for each position
-            # (list-ref item 0), (list-ref item 1), ...
-            list_ref_calls = []
-            for i in range(len(target_names)):
-                index_bytes = encode_integer(i)
-                list_ref_call = create_inline_call('list_ref',
-                                                   [encode_symbol(item_param, self.bc), index_bytes],
-                                                   self.bc)
-                list_ref_calls.append(list_ref_call)
-
-            # Call inner lambda with list-ref expressions
-            # (inner_lambda (list-ref item 0) (list-ref item 1))
-            inner_call = create_inline_call(inner_lambda_ref, list_ref_calls, self.bc)
-            inner_call_ref = self._hoist(inner_call)
-
-            # Create outer lambda: (lambda (item) inner_call_ref)
-            outer_lambda_bytes = create_bind_form([item_param], inner_call_ref, self.bc)
-            outer_lambda_id = self.bc.add_expression(outer_lambda_bytes)
-            outer_lambda_ref = encode_form_lambda(outer_lambda_id)
-
-            # Translate iterable
-            iterable_bytes = self.translate_expr_with_ref(node.iter)
-
-            # (for-each outer_lambda iterable)
-            for_each_call = create_inline_call(
-                'for_each', [outer_lambda_ref, iterable_bytes], self.bc)
-            return self._wrap_with_sentinel_guard(
-                for_each_call, self.BREAK_SENTINEL)
-
+            inner_lambda = self._emit_lambda(target_names, body_bytes)
+            list_refs = [
+                create_inline_call(
+                    'list_ref',
+                    [encode_symbol(item_param, self.bc), encode_integer(i)],
+                    self.bc)
+                for i in range(len(target_names))
+            ]
+            inner_call_ref = self._hoist(
+                create_inline_call(inner_lambda, list_refs, self.bc))
+            body_lambda = self._emit_lambda([item_param], inner_call_ref)
         else:
-            raise NotImplementedError(f"For loop target type not supported: {type(node.target).__name__}")
+            raise NotImplementedError(
+                f"For loop target type not supported: "
+                f"{type(node.target).__name__}")
+
+        # (for_each <body_lambda> <iterable>) wrapped in break-guard.
+        iterable_bytes = self.translate_expr_with_ref(node.iter)
+        for_each_call = create_inline_call(
+            'for_each', [body_lambda, iterable_bytes], self.bc)
+        return self._wrap_with_sentinel_guard(
+            for_each_call, self.BREAK_SENTINEL)
 
     def translate_while(self, node: ast.While) -> bytes:
         """
@@ -1497,18 +1310,11 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
         # This ensures it's evaluated in the closure's context
         test_bytes = self.translate_expr(node.test)
 
-        # Translate loop body (which may contain set! for variables)
-        self._loop_depth += 1
-        try:
-            body_bytes = self.translate_block(node.body)
-        finally:
-            self._loop_depth -= 1
-
-        # `continue` raises a sentinel that this guard swallows, so the
-        # body lambda returns #f and the recursive call below fires the
-        # next iteration.
-        body_bytes = self._wrap_with_sentinel_guard(
-            body_bytes, self.CONTINUE_SENTINEL)
+        # Translate loop body — bumps loop depth so break/continue
+        # know they're inside a loop, then wraps in a continue-guard
+        # so a `continue` raises out of the body and lets the
+        # recursive call below fire the next iteration.
+        body_bytes = self._translate_loop_body(node.body)
 
         # Create recursive call with NO arguments (closure captures variables)
         recurse_bytes = create_inline_call(loop_name, [], self.bc)
@@ -1521,9 +1327,7 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
 
         # Create lambda with NO parameters: (lambda () if-bytes)
         # INLINE the body, don't use form ref - this preserves variable capture
-        lambda_bind = create_bind_form([], if_bytes, self.bc)
-        lambda_id = self.bc.add_expression(lambda_bind)
-        lambda_bytes = encode_form_lambda(lambda_id)
+        lambda_bytes = self._emit_lambda([], if_bytes)
 
         # Define the loop function: (define loop (lambda () ...))
         define_bytes = create_inline_call('define', [encode_symbol(loop_name, self.bc), lambda_bytes], self.bc)
@@ -1537,9 +1341,7 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
         wrapper_body_begin = create_inline_call('begin', [define_bytes, call_bytes], self.bc)
 
         # Create wrapper bind with the begin form as body
-        wrapper_bind = create_bind_form([], wrapper_body_begin, self.bc)
-        wrapper_id = self.bc.add_expression(wrapper_bind)
-        wrapper_lambda = encode_form_lambda(wrapper_id)
+        wrapper_lambda = self._emit_lambda([], wrapper_body_begin)
 
         # Call the wrapper lambda: ((lambda () (define loop ...) (loop)))
         loop_call = create_inline_call(wrapper_lambda, [], self.bc)
@@ -1844,9 +1646,7 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
 
             # Create bind form for the let-lambda: (bind x y ... body)
             # Use inner_body_bytes directly WITHOUT storing as form ref first
-            let_bind = create_bind_form(local_var_list, inner_body_bytes, self.bc)
-            let_lambda_id = self.bc.add_expression(let_bind)
-            let_lambda_bytes = encode_form_lambda(let_lambda_id)
+            let_lambda_bytes = self._emit_lambda(local_var_list, inner_body_bytes)
 
             # Create arguments: #f for each local variable
             false_args = [encode_boolean(False) for _ in local_var_list]

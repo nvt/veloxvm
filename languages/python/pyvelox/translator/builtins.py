@@ -40,8 +40,7 @@ import ast
 from typing import Callable, Dict, List, Optional, Set
 from ..encoder import (
     encode_integer, encode_boolean, encode_string, encode_symbol,
-    encode_character, encode_form_ref, encode_form_lambda,
-    create_inline_call, create_bind_form,
+    encode_character, encode_form_ref, create_inline_call,
 )
 
 
@@ -215,11 +214,8 @@ class _BuiltinHandlers:
 
         loop_body = create_inline_call(
             'if', [done_test, rev_acc, recurse], self.bc)
-        loop_bind = create_bind_form(
-            ['i', 'stop', 'step', 'acc'], loop_body, self.bc,
-            is_function=True)
-        loop_lambda_id = self.bc.add_expression(loop_bind)
-        loop_lambda_ref = encode_form_lambda(loop_lambda_id)
+        loop_lambda_ref = self._emit_lambda(
+            ['i', 'stop', 'step', 'acc'], loop_body, is_function=True)
         define_loop = create_inline_call(
             'define',
             [encode_symbol('_pyvelox_range_loop', self.bc),
@@ -231,11 +227,8 @@ class _BuiltinHandlers:
             [sym_start(), sym_stop(), sym_step(),
              create_inline_call('list', [], self.bc)],
             self.bc)
-        outer_bind = create_bind_form(
-            ['start', 'stop', 'step'], outer_call, self.bc,
-            is_function=True)
-        outer_lambda_id = self.bc.add_expression(outer_bind)
-        outer_lambda_ref = encode_form_lambda(outer_lambda_id)
+        outer_lambda_ref = self._emit_lambda(
+            ['start', 'stop', 'step'], outer_call, is_function=True)
         define_outer = create_inline_call(
             'define',
             [encode_symbol('_pyvelox_range', self.bc), outer_lambda_ref],
@@ -280,30 +273,21 @@ class _BuiltinHandlers:
             # Other constants (None, floats) fall through to runtime.
 
         def build(arg_token: bytes) -> bytes:
-            # (if x 1 0) — booleans and any truthy value, degrades
-            # gracefully for unsupported types.
-            bool_branch = self._hoist(create_inline_call(
-                'if', [arg_token, encode_integer(1), encode_integer(0)],
-                self.bc))
-            # (string-to-number x)
-            str_branch = self._hoist(create_inline_call(
-                'string_to_number', [arg_token], self.bc))
-            # (stringp x)
-            str_test = self._hoist(create_inline_call(
-                'stringp', [arg_token], self.bc))
-            # (if (stringp x) (string-to-number x) bool_branch)
-            inner_if = self._hoist(create_inline_call(
-                'if', [str_test, str_branch, bool_branch], self.bc))
-            # (numberp x)
-            num_test = self._hoist(create_inline_call(
-                'numberp', [arg_token], self.bc))
-            # (if (numberp x) x inner_if)
-            return create_inline_call(
-                'if', [num_test, arg_token, inner_if], self.bc)
+            # (numberp x) -> x ;; already a number
+            # (stringp x) -> (string-to-number x)
+            # (else)      -> (if x 1 0) ;; booleans + truthy fallback
+            return self._emit_type_dispatch(
+                arg_token,
+                [('numberp', arg_token),
+                 ('stringp', create_inline_call(
+                     'string_to_number', [arg_token], self.bc))],
+                create_inline_call(
+                    'if',
+                    [arg_token, encode_integer(1), encode_integer(0)],
+                    self.bc))
 
-        # Evaluate `arg` exactly once before the dispatch reads it
-        # five times — otherwise side effects in the argument would
-        # fire repeatedly.
+        # Evaluate `arg` once before the dispatch reads it from
+        # multiple branches.
         return self._evaluate_once(arg, build)
 
     def translate_str(self, args: List[ast.expr]) -> bytes:
@@ -347,32 +331,23 @@ class _BuiltinHandlers:
             # Other constant types fall through to the runtime path.
 
         def build(arg_token: bytes) -> bytes:
-            # (if x "True" "False") — booleans
-            bool_branch = self._hoist(create_inline_call(
-                'if',
-                [arg_token,
-                 encode_string("True", self.bc),
-                 encode_string("False", self.bc)],
-                self.bc))
-            # (number-to-string x)
-            num_branch = self._hoist(create_inline_call(
-                'number_to_string', [arg_token], self.bc))
-            # (booleanp x)
-            bool_test = self._hoist(create_inline_call(
-                'booleanp', [arg_token], self.bc))
-            # (if (booleanp x) bool_branch num_branch)
-            inner_if = self._hoist(create_inline_call(
-                'if', [bool_test, bool_branch, num_branch], self.bc))
-            # (stringp x)
-            str_test = self._hoist(create_inline_call(
-                'stringp', [arg_token], self.bc))
-            # (if (stringp x) x inner_if)
-            return create_inline_call(
-                'if', [str_test, arg_token, inner_if], self.bc)
+            # (stringp x)  -> x ;; already a string
+            # (booleanp x) -> (if x "True" "False")
+            # (else)       -> (number-to-string x)
+            return self._emit_type_dispatch(
+                arg_token,
+                [('stringp', arg_token),
+                 ('booleanp', create_inline_call(
+                     'if',
+                     [arg_token,
+                      encode_string("True", self.bc),
+                      encode_string("False", self.bc)],
+                     self.bc))],
+                create_inline_call(
+                    'number_to_string', [arg_token], self.bc))
 
-        # Evaluate `arg` exactly once — the dispatch reads it from
-        # multiple branches and we don't want side effects to fire
-        # more than once.
+        # Evaluate `arg` once — the dispatch reads it from multiple
+        # branches.
         return self._evaluate_once(arg, build)
 
     def translate_abs(self, args: List[ast.expr]) -> bytes:
@@ -410,9 +385,7 @@ class _BuiltinHandlers:
         cmp_ref = self._hoist(cmp_call)
 
         if_form = create_inline_call('if', [cmp_ref, a_sym, b_sym], self.bc)
-        lambda_bind = create_bind_form(['a', 'b'], if_form, self.bc)
-        lambda_id = self.bc.add_expression(lambda_bind)
-        lambda_bytes = encode_form_lambda(lambda_id)
+        lambda_bytes = self._emit_lambda(['a', 'b'], if_form)
 
         return create_inline_call('reduce', [lambda_bytes, list_bytes], self.bc)
 
@@ -569,9 +542,7 @@ class _BuiltinHandlers:
             encode_symbol('a', self.bc),
             encode_symbol('b', self.bc)
         ], self.bc)
-        lambda_bind = create_bind_form(['a', 'b'], and_call, self.bc)
-        lambda_id = self.bc.add_expression(lambda_bind)
-        lambda_bytes = encode_form_lambda(lambda_id)
+        lambda_bytes = self._emit_lambda(['a', 'b'], and_call)
 
         # (reduce lambda iterable #t)
         return create_inline_call('reduce', [
@@ -600,9 +571,7 @@ class _BuiltinHandlers:
             encode_symbol('a', self.bc),
             encode_symbol('b', self.bc)
         ], self.bc)
-        lambda_bind = create_bind_form(['a', 'b'], or_call, self.bc)
-        lambda_id = self.bc.add_expression(lambda_bind)
-        lambda_bytes = encode_form_lambda(lambda_id)
+        lambda_bytes = self._emit_lambda(['a', 'b'], or_call)
 
         # (reduce lambda iterable #f)
         return create_inline_call('reduce', [
@@ -703,9 +672,7 @@ class _BuiltinHandlers:
             for filter_expr in gen.ifs:
                 # Create filter lambda: (lambda (var) filter_expr)
                 filter_body = self.translate_expr(filter_expr)
-                filter_bind = create_bind_form([safe_var], filter_body, self.bc)
-                filter_lambda_id = self.bc.add_expression(filter_bind)
-                filter_lambda_bytes = encode_form_lambda(filter_lambda_id)
+                filter_lambda_bytes = self._emit_lambda([safe_var], filter_body)
 
                 # Apply filter: (filter lambda iter)
                 filtered = create_inline_call('filter', [filter_lambda_bytes, result_iter], self.bc)
@@ -713,9 +680,7 @@ class _BuiltinHandlers:
 
             # Create map lambda: (lambda (var) elt)
             elt_body = self.translate_expr(node.elt)
-            map_bind = create_bind_form([safe_var], elt_body, self.bc)
-            map_lambda_id = self.bc.add_expression(map_bind)
-            map_lambda_bytes = encode_form_lambda(map_lambda_id)
+            map_lambda_bytes = self._emit_lambda([safe_var], elt_body)
 
             # Apply map: (map lambda filtered_iter)
             return create_inline_call('map', [map_lambda_bytes, result_iter], self.bc)
@@ -748,18 +713,14 @@ class _BuiltinHandlers:
                     filtered_iter = iter_bytes
                     for filter_expr in gen.ifs:
                         filter_body = self.translate_expr(filter_expr)
-                        filter_bind = create_bind_form([safe_var], filter_body, self.bc)
-                        filter_lambda_id = self.bc.add_expression(filter_bind)
-                        filter_lambda_bytes = encode_form_lambda(filter_lambda_id)
+                        filter_lambda_bytes = self._emit_lambda([safe_var], filter_body)
 
                         filtered = create_inline_call('filter', [filter_lambda_bytes, filtered_iter], self.bc)
                         filtered_iter = self._hoist(filtered)
 
                     # Create list of singleton tuples
                     singleton_body = create_inline_call('list', [encode_symbol(safe_var, self.bc)], self.bc)
-                    singleton_bind = create_bind_form([safe_var], singleton_body, self.bc)
-                    singleton_lambda_id = self.bc.add_expression(singleton_bind)
-                    singleton_lambda = encode_form_lambda(singleton_lambda_id)
+                    singleton_lambda = self._emit_lambda([safe_var], singleton_body)
 
                     result = self._hoist(create_inline_call(
                         'map', [singleton_lambda, filtered_iter], self.bc))
