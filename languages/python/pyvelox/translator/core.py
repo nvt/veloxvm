@@ -35,6 +35,7 @@ different Python constructs.
 """
 
 import ast
+import contextlib
 import functools
 import sys
 from typing import Callable, Dict, List, Optional, Set
@@ -741,6 +742,36 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
         """
         return encode_form_ref(self.bc.add_expression(call_bytes))
 
+    @contextlib.contextmanager
+    def _function_scope(self, local_set: Set[str],
+                        body_stmts: List[ast.stmt]):
+        """Enter a fresh function-level scope to translate `body_stmts`.
+
+        Runs the closure/box analysis (`_analyze_body`) and yields
+        `(captures, boxed_names)` for the body builder to use. Pushes
+        scope_stack and boxed_stack, zeros out _loop_depth (loops
+        don't cross function boundaries), and unwinds all of that
+        when the context exits.
+
+        Used by translate_function_def and translate_lambda to share
+        their identical setup/teardown.
+        """
+        outer_env: Set[str] = (set().union(*self.scope_stack[1:])
+                               if len(self.scope_stack) > 1 else set())
+        captures, boxed_names = self._analyze_body(
+            body_stmts, local_set, outer_env)
+
+        self.scope_stack.append(local_set)
+        self.boxed_stack.append(boxed_names)
+        saved_loop_depth = self._loop_depth
+        self._loop_depth = 0
+        try:
+            yield captures, boxed_names
+        finally:
+            self.scope_stack.pop()
+            self.boxed_stack.pop()
+            self._loop_depth = saved_loop_depth
+
     def _emit_lambda(self, params: List[str], body: bytes, *,
                      is_function: bool = False,
                      captures: Optional[List[str]] = None) -> bytes:
@@ -879,130 +910,68 @@ class PythonTranslator(_BuiltinHandlers, _MethodHandlers):
         return assigned - nonlocal_names - global_names
 
     def translate_function_def(self, node: ast.FunctionDef) -> bytes:
-        """
-        Translate function definition:
-        def f(a, b): return a + b
-        ->
-        (define f (lambda (a b) (+ a b)))
+        """Translate `def f(a, b): ...` to `(define f (lambda (a b) ...))`.
 
-        Python has function-level scoping, so we hoist all variable
-        definitions to the top of the function, then use set! for all assignments.
+        Python has function-level scoping, so all variables assigned
+        in the body are hoisted to the top of the lambda via the
+        let-expansion in `translate_function_body`; subsequent
+        assignments use `set!`.
         """
-        func_name = node.name
-        safe_func_name = self.get_safe_name(func_name)
-        params = [arg.arg for arg in node.args.args]
-        safe_params = [self.get_safe_name(p) for p in params]
+        safe_func_name = self.get_safe_name(node.name)
+        safe_params = [self.get_safe_name(a.arg) for a in node.args.args]
 
-        # Encode the function name symbol FIRST, before compiling the body
-        # This ensures function names appear before local variables in the symbol table
+        # Encode the function name symbol FIRST so it appears in the
+        # symbol table before any of its locals.
         func_name_symbol = encode_symbol(safe_func_name, self.bc)
 
-        # Collect all variables assigned in the function body (for hoisting)
-        assigned_vars = self.collect_assigned_vars(node.body)
-        # Remove parameters - they're already defined by the bind form
-        # NOTE: We compare SAFE names here because collect_assigned_vars returns safe names
-        local_vars = assigned_vars - set(safe_params)
-
-        # Free-variable analysis: capture names referenced by the body that
-        # come from an enclosing function's scope. The global scope (index 0)
-        # is excluded because top-level names resolve through program-wide
-        # symbol bindings rather than via captures.
+        # Body's local vars get hoisted by the let-expansion in
+        # translate_function_body — drop the params, which are already
+        # bound by the lambda's bind form.
+        local_vars = (self.collect_assigned_vars(node.body)
+                      - set(safe_params))
         local_set = set(safe_params) | local_vars
         is_nested = len(self.scope_stack) > 1
-        outer_env: Set[str] = set().union(*self.scope_stack[1:]) \
-            if is_nested else set()
-        # Single AST walk that returns both the body's free-variable
-        # captures and the locals that must live in heap boxes
-        # (captured by an inner closure AND mutated). Computed before
-        # we push scope/box state so it sees only THIS function's
-        # body shape.
-        captures, boxed_names = self._analyze_body(
-            node.body, local_set, outer_env)
 
-        # Push a new scope for the function body
-        # Include both params AND local vars so they're all treated as "already defined"
-        # NOTE: Store SAFE names in scope_stack
-        self.scope_stack.append(local_set)
-        self.boxed_stack.append(boxed_names)
-        # Loops don't cross function boundaries: a function defined
-        # inside a loop has its own break/continue scope (which is
-        # empty until the function itself contains a loop).
-        saved_loop_depth = self._loop_depth
-        self._loop_depth = 0
-
-        try:
-            # Compile body with granular expression storage (like Racket compiler)
-            # Each statement is stored as a separate expression, then referenced in a begin form
+        with self._function_scope(local_set, node.body) as (captures, boxed_names):
             body_bytes = self.translate_function_body(
                 node.body, local_vars, box_inits=boxed_names)
-
-            # `is_function=True` marks the lambda as a Python function
-            # boundary so the `return` primitive knows what to unwind to.
+            # is_function=True marks this as a Python function boundary
+            # so the `return` primitive knows what to unwind to.
             lambda_bytes = self._emit_lambda(
                 safe_params, body_bytes,
                 is_function=True, captures=captures)
 
-            # Top-level defs become global bindings via 'define'. Defs nested
-            # inside another function bind into the enclosing function's
-            # let-expansion local (collect_assigned_vars hoists the name),
-            # so we emit 'set!' instead. set!'s mid-arg evaluation gives the
-            # scheduler a chance to materialize a closure when the lambda
-            # has free-variable captures.
-            op = 'set' if is_nested else 'define'
-            return create_inline_call(op, [func_name_symbol, lambda_bytes], self.bc)
-        finally:
-            # Pop the function scope
-            self.scope_stack.pop()
-            self.boxed_stack.pop()
-            self._loop_depth = saved_loop_depth
+        # Top-level defs become global bindings via `define`. Nested
+        # defs bind into the enclosing function's let-expansion local
+        # (collect_assigned_vars hoists the name), so we emit `set!`
+        # instead. set!'s mid-arg evaluation gives the scheduler a
+        # chance to materialize a closure for a lambda with free
+        # variables.
+        op = 'set' if is_nested else 'define'
+        return create_inline_call(op, [func_name_symbol, lambda_bytes], self.bc)
 
     def translate_lambda(self, node: ast.Lambda) -> bytes:
+        """Translate `lambda x: expr` — Python lambdas are real
+        functions (like `def`), so they get `bind_function`. Unlike
+        `def`, no variable hoisting — the body is a single expression.
         """
-        Translate lambda expression.
+        safe_params = [self.get_safe_name(a.arg) for a in node.args.args]
+        # _analyze_body takes a statement list; wrap the body in an
+        # Expr so the same analyser handles lambdas and defs.
+        body_stmts = [ast.Expr(value=node.body)]
 
-        Lambda expressions in Python are true functions (like def), so we use
-        bind_function to mark them as function boundaries for proper call semantics.
-
-        Unlike def, lambda has no variable hoisting - it's a single expression.
-        """
-        params = [arg.arg for arg in node.args.args]
-        safe_params = [self.get_safe_name(p) for p in params]
-
-        # Free-variable + box analysis in one pass. Lambda bodies are
-        # single expressions but can still close over enclosing
-        # locals; their own params can still be captured + mutated by
-        # an inner closure that uses nonlocal. _analyze_body expects a
-        # statement list, so wrap the body in an Expr.
-        local_set = set(safe_params)
-        outer_env: Set[str] = set().union(*self.scope_stack[1:]) \
-            if len(self.scope_stack) > 1 else set()
-        captures, boxed_names = self._analyze_body(
-            [ast.Expr(value=node.body)], local_set, outer_env)
-
-        # Lambdas don't currently hoist locals, so the new scope is just the
-        # parameters. Pushing it makes inner lambdas/defs see them as outer.
-        self.scope_stack.append(local_set)
-        self.boxed_stack.append(boxed_names)
-        saved_loop_depth = self._loop_depth
-        self._loop_depth = 0
-        try:
-            # Translate body directly - lambdas are single expressions.
+        with self._function_scope(set(safe_params), body_stmts) as (captures, boxed_names):
             body_bytes = self.translate_expr(node.body)
             if boxed_names:
-                # Prepend (set! p (box p)) wraps for each boxed param. We
-                # build (begin wrap1 ... wrapN body) and use that as the
-                # bind body.
-                wraps = [self._make_box_init_bytes(name) for name in sorted(boxed_names)]
-                body_bytes = create_inline_call('begin', wraps + [body_bytes], self.bc)
-
-            # Lambdas are real functions, so is_function=True.
+                # Prepend (set! p (box p)) wraps for each boxed param,
+                # joining them with the body in a begin form.
+                wraps = [self._make_box_init_bytes(n)
+                         for n in sorted(boxed_names)]
+                body_bytes = create_inline_call(
+                    'begin', wraps + [body_bytes], self.bc)
             return self._emit_lambda(
                 safe_params, body_bytes,
                 is_function=True, captures=captures)
-        finally:
-            self.scope_stack.pop()
-            self.boxed_stack.pop()
-            self._loop_depth = saved_loop_depth
 
     def translate_return(self, node: ast.Return) -> bytes:
         """Translate `return value` to `(return value)`.
