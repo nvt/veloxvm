@@ -69,6 +69,7 @@ int vm_mempool_is_stored(vm_mempool_t *, void *);
 void *vm_mempool_alloc(vm_mempool_t *);
 void vm_mempool_free(vm_mempool_t *, void *);
 int vm_mempool_mark(vm_mempool_t *, void *);
+int vm_mempool_is_marked(const vm_mempool_t *, void *);
 int vm_mempool_gc(vm_mempool_t *);
 int vm_mempool_gc_force(vm_mempool_t *);
 void vm_mempool_get_stats(const vm_mempool_t *, vm_mempool_stats_t *);

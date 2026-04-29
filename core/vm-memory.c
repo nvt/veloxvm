@@ -115,6 +115,14 @@ memory_is_marked(void *ptr)
   int r;
   vm_hash_value_t value;
 
+  /* Pool-resident objects are tracked via the pool's ref bitmap, not the
+     heap allocations hash. Cyclic structures such as a recursive closure
+     capturing itself rely on this check returning true to terminate the
+     mark walk. */
+  if(vm_mempool_is_marked(&object_pool, ptr)) {
+    return 1;
+  }
+
   r = vm_hash_lookup(&allocations, ptr, &value);
   return r && value > 0;
 }

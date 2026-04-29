@@ -254,6 +254,24 @@ vm_mempool_mark(vm_mempool_t *pool, void *obj)
   return 1;
 }
 
+int
+vm_mempool_is_marked(const vm_mempool_t *pool, void *obj)
+{
+  vm_mempool_index_t index;
+  unsigned byte;
+  unsigned bit;
+
+  if(!vm_mempool_is_stored((vm_mempool_t *)pool, obj)) {
+    return 0;
+  }
+
+  index = ((char *)obj - (char *)pool->heap) / pool->obj_size;
+  byte = index / BITNUM;
+  bit = 1U << (index % BITNUM);
+
+  return VM_IS_SET(pool->ref_bitmap[byte], bit) != 0;
+}
+
 static int
 mempool_gc(vm_mempool_t *pool, int force)
 {
