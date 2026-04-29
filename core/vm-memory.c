@@ -173,7 +173,13 @@ mark_object(vm_obj_t *obj)
     break;
   case VM_TYPE_STRING:
     if(!memory_is_marked(obj->value.string)) {
-      if(VM_IS_SET(obj->value.string->flags, VM_STRING_FLAG_RESOLVED)) {
+      /* Only the heap-owned buffer needs marking. A string loaded from
+         the program's string table has FLAG_ID set after resolution; its
+         ->str points into program data, not into vm_alloc'd memory, and
+         marking it would insert a non-heap pointer into the allocations
+         table that the next sweep would then try to free. */
+      if(VM_IS_SET(obj->value.string->flags, VM_STRING_FLAG_RESOLVED) &&
+         VM_IS_CLEAR(obj->value.string->flags, VM_STRING_FLAG_ID)) {
         mark_memory(obj->value.string->str);
       }
       mark_memory(obj->value.string);
