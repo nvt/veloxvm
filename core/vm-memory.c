@@ -266,6 +266,13 @@ mark_thread_references(vm_thread_t *thread)
   }
 
   mark_object(&thread->result);
+  /* error.error_obj holds the most recent thrown/raised value, populated
+     by vm_set_error_string / vm_set_error_object; specific_obj is the
+     SRFI-18-style thread-local cell read by (thread-specific). Both can
+     point at heap-allocated strings or vectors that no other root
+     references. */
+  mark_object(&thread->error.error_obj);
+  mark_object(&thread->specific_obj);
 }
 
 void *
