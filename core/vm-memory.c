@@ -427,9 +427,13 @@ do_gc(int force)
 
   mem_stats.gc_invocations++;
 
-  /* Mark phase: mark all objects that have been allocated by the threads. */
+  /* Mark phase: mark all objects that have been allocated by the threads.
+     Iterate the thread table by index, not by vm_thread_get(): the latter
+     decodes a vm_id_t (which carries a nonce) and would silently return
+     NULL for every loop counter, leaving everything unmarked and making a
+     forced sweep free live state. */
   for(i = 0; i < VM_THREAD_AMOUNT; i++) {
-    thread = vm_thread_get(i);
+    thread = vm_thread_get_by_index(i);
     if(thread != NULL) {
       mark_thread_references(thread);
     }
