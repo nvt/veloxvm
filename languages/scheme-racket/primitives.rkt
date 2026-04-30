@@ -91,7 +91,8 @@
     construct-packet deconstruct-packet
     symbol?
     symbol->string
-    box box-ref box-set!))
+    box box-ref box-set!
+    bind_function_rest))
 
 ;; Check if symbol is a VM primitive
 (define (vm-primitive? sym)

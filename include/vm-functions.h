@@ -89,6 +89,7 @@ VM_DECLARE_FUNCTION(zerop);
 /* Primitive functions. */
 VM_DECLARE_FUNCTION(bind);
 VM_DECLARE_FUNCTION(bind_function);
+VM_DECLARE_FUNCTION(bind_function_rest);
 VM_DECLARE_FUNCTION(return);
 VM_DECLARE_FUNCTION(begin);
 VM_DECLARE_FUNCTION(if);

@@ -222,3 +222,4 @@ code writes.
 | 203 | `box` | `box` |
 | 204 | `box_ref` | `box-ref` |
 | 205 | `box_set` | `box-set!` |
+| 206 | `bind_function_rest` | `bind_function_rest` |
