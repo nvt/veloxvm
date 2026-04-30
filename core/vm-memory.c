@@ -99,6 +99,16 @@ static int gc_disabled = 0;
  */
 static vm_ext_object_t *ext_object_list_head = NULL;
 
+/*
+ * Singly-linked list of every heap-allocated vm_port_t registered via
+ * vm_port_register. The GC walks this list before the heap sweep and
+ * calls io->close on any unmarked port that is still flagged OPEN, so
+ * the underlying fd / opaque_desc is released before the heap sweep
+ * frees the port struct itself. Static port singletons (stdin/stdout
+ * in vm-native.c) are not on the list.
+ */
+static vm_port_t *port_list_head = NULL;
+
 static void
 free_vm_memory(void *ptr)
 {
@@ -377,6 +387,7 @@ vm_free_all(void)
   unsigned i;
   unsigned deallocated;
   vm_ext_object_t *box;
+  vm_port_t *port;
   vm_obj_t obj;
 
   /* Finalize every remaining ext-object so each type's deallocate
@@ -387,6 +398,16 @@ vm_free_all(void)
       obj.type = VM_TYPE_EXTERNAL;
       obj.value.ext_object = box;
       box->type->deallocate(&obj);
+    }
+  }
+
+  /* Close every still-open heap-allocated port for the same reason. */
+  while((port = port_list_head) != NULL) {
+    port_list_head = port->next;
+    if(VM_IS_SET(port->flags, VM_PORT_FLAG_OPEN) &&
+       port->io != NULL && port->io->close != NULL) {
+      port->io->close(port);
+      VM_CLEAR_FLAG(port->flags, VM_PORT_FLAG_OPEN);
     }
   }
 
@@ -452,6 +473,46 @@ finalize_unmarked_ext_objects(void)
   }
 }
 
+/*
+ * Walk the heap-allocated-ports list and close any port that the mark
+ * phase did not reach. The io->close callback releases the underlying
+ * fd / opaque_desc; without it the heap sweep would free the port
+ * struct without ever closing the resource it owns.
+ *
+ * As with finalize_unmarked_ext_objects, we unlink the port here but
+ * leave the memory free to the heap sweep that runs next.
+ */
+static void
+finalize_unmarked_ports(void)
+{
+  vm_port_t **link;
+  vm_port_t *port;
+
+  link = &port_list_head;
+  while((port = *link) != NULL) {
+    if(memory_is_marked(port)) {
+      link = &port->next;
+      continue;
+    }
+    if(VM_IS_SET(port->flags, VM_PORT_FLAG_OPEN) &&
+       port->io != NULL && port->io->close != NULL) {
+      port->io->close(port);
+      VM_CLEAR_FLAG(port->flags, VM_PORT_FLAG_OPEN);
+    }
+    *link = port->next;
+  }
+}
+
+void
+vm_port_register(vm_port_t *port)
+{
+  if(port == NULL) {
+    return;
+  }
+  port->next = port_list_head;
+  port_list_head = port;
+}
+
 static void
 do_gc(int force)
 {
@@ -490,6 +551,11 @@ do_gc(int force)
      type->deallocate callback can free its opaque_data backing while
      the box is still valid. */
   finalize_unmarked_ext_objects();
+
+  /* Close any port whose only references are gone. The heap sweep
+     would otherwise free the port struct without releasing the
+     underlying fd / opaque_desc. */
+  finalize_unmarked_ports();
 
   /* Sweep phase: deallocate all unreferenced objects allocated on the heap. */
   for(i = deallocated = 0; i < allocations.size; i++) {

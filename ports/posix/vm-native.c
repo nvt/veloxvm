@@ -520,6 +520,7 @@ vm_native_open_client(vm_thread_t *thread, vm_socket_type_t socket_type,
   if(port == NULL) {
     return NULL;
   }
+  vm_port_register(port);
 
   memset(&sa, 0, sizeof(struct sockaddr_in));
   sa.sin_family = AF_INET;
@@ -580,6 +581,7 @@ vm_native_open_server(vm_thread_t *thread,
   if(port == NULL) {
     return NULL;
   }
+  vm_port_register(port);
 
   port->thread = thread;
   port->io = &device_fs;
@@ -689,6 +691,7 @@ vm_native_accept_client(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
   if(new_port == NULL) {
     return;
   }
+  vm_port_register(new_port);
 
   new_port->thread = thread;
   new_port->io = &device_fs;
@@ -752,6 +755,7 @@ vm_native_open_file(vm_thread_t *thread, const char *filename, int direction)
   if(port == NULL) {
     return NULL;
   }
+  vm_port_register(port);
 
   device = vm_device_lookup(filename);
   if(device == NULL) {

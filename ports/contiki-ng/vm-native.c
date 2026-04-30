@@ -414,6 +414,7 @@ vm_native_open_client(vm_thread_t *thread, vm_socket_type_t socket_type,
     free_socket(sock);
     return NULL;
   }
+  vm_port_register(port);
 
   port->thread = thread;
   port->flags = VM_PORT_FLAG_OPEN | VM_PORT_FLAG_SOCKET |
@@ -554,6 +555,7 @@ vm_native_open_file(vm_thread_t *thread, const char *filename, int direction)
   if(port == NULL) {
     return NULL;
   }
+  vm_port_register(port);
 
   port->thread = thread;
 

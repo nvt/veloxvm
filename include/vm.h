@@ -306,6 +306,14 @@ vm_ext_object_t *vm_ext_object_create(vm_obj_t *dst,
                                        vm_ext_type_t *type,
                                        void *opaque_data);
 
+/* Register a heap-allocated vm_port_t with the GC's port list. The GC
+   walks the list at sweep time and calls io->close on any unmarked
+   open port so the underlying fd / opaque_desc is released before the
+   memory is reclaimed. Native code should call this immediately after
+   vm_alloc(sizeof(vm_port_t)). Static port singletons (e.g. stdin /
+   stdout) must not be registered. */
+void vm_port_register(vm_port_t *port);
+
 /* Thread functions. (vm-thread.c) */
 int vm_thread_init(void);
 void thread_obj_create(vm_obj_t *, vm_thread_t *);
