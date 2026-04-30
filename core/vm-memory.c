@@ -140,23 +140,16 @@ memory_is_marked(void *ptr)
 static void
 mark_memory(void *ptr)
 {
-  vm_hash_value_t existing;
-
   if(vm_mempool_mark(&object_pool, ptr)) {
     return;
   }
 
-  /*
-   * Update the existing hash entry rather than letting vm_hash_update
-   * insert a new one. The mark walk can land on pointers the GC does
-   * not own -- statically allocated ports, buffers in the program's
-   * string table, or any other vm_obj_t value that happens to look
-   * like a heap address. Inserting such a pointer would put a
-   * non-heap address in the allocations table, and the next sweep
-   * would then call free() on it.
-   */
-  if(vm_hash_lookup(&allocations, ptr, &existing)) {
-    vm_hash_update(&allocations, ptr, 1);
+  /* Pure update -- vm_hash_set returns 0 for unknown keys. The mark
+     walk can land on pointers the GC does not own (statically
+     allocated ports, buffers in the program's string table, ...);
+     those are silently skipped instead of being registered as if
+     they were heap allocations. */
+  if(vm_hash_set(&allocations, ptr, 1)) {
     VM_DEBUG(VM_DEBUG_HIGH, "GC: Mark pointer %p", ptr);
   } else {
     VM_DEBUG(VM_DEBUG_MEDIUM, "GC: Skip mark of untracked pointer %p", ptr);
@@ -341,7 +334,7 @@ vm_alloc(unsigned size)
   }
 
   if(put_in_hash) {
-    if(!vm_hash_update(&allocations, ptr, 0)) {
+    if(!vm_hash_insert(&allocations, ptr, 0)) {
       free_vm_memory(ptr);
       return NULL;
     }
