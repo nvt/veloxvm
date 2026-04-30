@@ -55,6 +55,7 @@
 #include "vm-macros.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 extern struct process vm_process;
@@ -96,6 +97,29 @@ find_program_arg(shell_output_func output, char *args)
     SHELL_OUTPUT(output, "No such program: %s\n", args);
   }
   return p;
+}
+/*---------------------------------------------------------------------------*/
+/* Parse a decimal thread ID from args. Returns 1 on success and writes the
+   parsed value to *id, or 0 on failure (with an error printed). The full
+   vm_id_t value is required; thread IDs include a nonce, so users copy them
+   verbatim from vm-ps/vm-threads. */
+static int
+parse_thread_id(shell_output_func output, char *args, vm_id_t *id)
+{
+  char *end;
+  long v;
+
+  if(args == NULL || *args == '\0') {
+    SHELL_OUTPUT(output, "Missing thread ID\n");
+    return 0;
+  }
+  v = strtol(args, &end, 10);
+  if(end == args || (*end != '\0' && *end != ' ')) {
+    SHELL_OUTPUT(output, "Bad thread ID: %s\n", args);
+    return 0;
+  }
+  *id = (vm_id_t)v;
+  return 1;
 }
 
 /*---------------------------------------------------------------------------*/
@@ -268,6 +292,139 @@ PT_THREAD(cmd_vm_threads(struct pt *pt, shell_output_func output, char *args))
 }
 /*---------------------------------------------------------------------------*/
 static
+PT_THREAD(cmd_vm_kill(struct pt *pt, shell_output_func output, char *args))
+{
+  vm_id_t id;
+  char *next_args;
+
+  PT_BEGIN(pt);
+
+  SHELL_ARGS_INIT(args, next_args);
+  SHELL_ARGS_NEXT(args, next_args);
+  if(!parse_thread_id(output, args, &id)) {
+    PT_EXIT(pt);
+  }
+
+  if(vm_thread_kill(id) == 0) {
+    SHELL_OUTPUT(output, "No such thread: %ld\n", (long)id);
+  } else {
+    SHELL_OUTPUT(output, "Killed thread %ld\n", (long)id);
+  }
+
+  PT_END(pt);
+}
+/*---------------------------------------------------------------------------*/
+static
+PT_THREAD(cmd_vm_stack(struct pt *pt, shell_output_func output, char *args))
+{
+  vm_id_t id;
+  vm_thread_t *t;
+  char *next_args;
+
+  PT_BEGIN(pt);
+
+  SHELL_ARGS_INIT(args, next_args);
+  SHELL_ARGS_NEXT(args, next_args);
+  if(!parse_thread_id(output, args, &id)) {
+    PT_EXIT(pt);
+  }
+  t = vm_thread_get(id);
+  if(t == NULL) {
+    SHELL_OUTPUT(output, "No such thread: %ld\n", (long)id);
+    PT_EXIT(pt);
+  }
+
+  /* vm_print_stack_trace writes via VM_PRINTF (stdout). On Contiki-NG
+     stdout is the same UART as the shell, so the trace is interleaved
+     with shell output. A future port that decouples them will need a
+     shell-output-aware variant. */
+  vm_print_stack_trace(t);
+
+  PT_END(pt);
+}
+/*---------------------------------------------------------------------------*/
+static
+PT_THREAD(cmd_vm_policy(struct pt *pt, shell_output_func output, char *args))
+{
+  vm_program_t *p;
+  char *next_args;
+
+  PT_BEGIN(pt);
+
+  SHELL_ARGS_INIT(args, next_args);
+  SHELL_ARGS_NEXT(args, next_args);
+  p = find_program_arg(output, args);
+  if(p == NULL) {
+    PT_EXIT(pt);
+  }
+  if(p->policy == NULL) {
+    SHELL_OUTPUT(output, "%s has no policy attached\n", p->name);
+    PT_EXIT(pt);
+  }
+
+  SHELL_OUTPUT(output, "Policy for %s:\n", p->name);
+  /* Goes to VM_PRINTF -- see note in cmd_vm_stack. */
+  vm_policy_print(p->policy);
+
+  PT_END(pt);
+}
+/*---------------------------------------------------------------------------*/
+static
+PT_THREAD(cmd_vm_gc(struct pt *pt, shell_output_func output, char *args))
+{
+  vm_memory_stats_t before;
+  vm_memory_stats_t after;
+
+  PT_BEGIN(pt);
+
+  vm_memory_get_stats(&before);
+  vm_gc_force();
+  vm_memory_get_stats(&after);
+
+  SHELL_OUTPUT(output, "GC forced:\n");
+  SHELL_OUTPUT(output, "-- invocations:  %lu -> %lu\n",
+               (unsigned long)before.gc_invocations,
+               (unsigned long)after.gc_invocations);
+  SHELL_OUTPUT(output, "-- deallocs:     %lu -> %lu (delta %lu)\n",
+               (unsigned long)before.gc_deallocations,
+               (unsigned long)after.gc_deallocations,
+               (unsigned long)(after.gc_deallocations -
+                               before.gc_deallocations));
+  SHELL_OUTPUT(output, "-- peak heap:    %lu\n",
+               (unsigned long)after.peak_heap_allocations);
+
+  PT_END(pt);
+}
+/*---------------------------------------------------------------------------*/
+static
+PT_THREAD(cmd_vm_devices(struct pt *pt, shell_output_func output, char *args))
+{
+  vm_device_t *d;
+  char io[4];
+
+  PT_BEGIN(pt);
+
+  SHELL_OUTPUT(output, "FLG  IO   NAME\n");
+  for(d = vm_device_get_all(); d != NULL; d = d->next) {
+    int n = 0;
+    if(d->flags & VM_PORT_FLAG_INPUT) {
+      io[n++] = 'r';
+    }
+    if(d->flags & VM_PORT_FLAG_OUTPUT) {
+      io[n++] = 'w';
+    }
+    if(n == 0) {
+      io[n++] = '-';
+    }
+    io[n] = '\0';
+    SHELL_OUTPUT(output, "0x%02x %-4s %s\n",
+                 d->flags, io, d->name ? d->name : "(anon)");
+  }
+
+  PT_END(pt);
+}
+/*---------------------------------------------------------------------------*/
+static
 PT_THREAD(cmd_vm_version(struct pt *pt, shell_output_func output, char *args))
 {
   PT_BEGIN(pt);
@@ -300,6 +457,16 @@ static const struct shell_command_t vm_shell_commands[] = {
     "'> vm-unload <name>': Unload a running program" },
   { "vm-threads", cmd_vm_threads,
     "'> vm-threads <name>': Show VM threads for a program" },
+  { "vm-kill",    cmd_vm_kill,
+    "'> vm-kill <id>': Kill a single VM thread by ID" },
+  { "vm-stack",   cmd_vm_stack,
+    "'> vm-stack <id>': Print stack trace for a VM thread" },
+  { "vm-policy",  cmd_vm_policy,
+    "'> vm-policy <name>': Show the security policy for a program" },
+  { "vm-gc",      cmd_vm_gc,
+    "'> vm-gc': Force a garbage collection cycle and report stats" },
+  { "vm-devices", cmd_vm_devices,
+    "'> vm-devices': List devices the VM has registered" },
   { "vm-version", cmd_vm_version,
     "'> vm-version': Show VM version, port, and build flags" },
   { NULL, NULL, NULL },
