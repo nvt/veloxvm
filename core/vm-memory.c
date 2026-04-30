@@ -239,6 +239,24 @@ mark_thread_references(vm_thread_t *thread)
     mark_object(&thread->program->symbol_bindings[i]);
   }
 
+  /* Mark the per-program captures metadata. The captures pointer array
+     itself is VM_MALLOC'd and so is invisible to the GC, but each
+     vm_captures_t and its symbols array come from vm_alloc and would
+     otherwise be swept -- losing the symbol_ids that the closure-bind
+     primitive needs to instantiate a closure. memory_is_marked makes
+     this idempotent across threads that share a program. */
+  if(thread->program->captures != NULL) {
+    for(i = 0; i < thread->program->captures_size; i++) {
+      vm_captures_t *cap = thread->program->captures[i];
+      if(cap != NULL && !memory_is_marked(cap)) {
+        mark_memory(cap);
+        if(cap->symbols != NULL) {
+          mark_memory(cap->symbols);
+        }
+      }
+    }
+  }
+
   mark_object(&thread->result);
 }
 
