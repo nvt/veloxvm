@@ -401,6 +401,57 @@
                  (,loop-name ,@var-steps)))))
        (,loop-name ,@var-inits))))
 
+;; Per-expansion counter to give nested dynamic-winds unique formal
+;; names. Plain string-based names instead of gensym to keep the
+;; symbols interned through the bytecode pipeline.
+(define dw-counter (box 0))
+(define (dw-fresh prefix)
+  (let ([n (unbox dw-counter)])
+    (set-box! dw-counter (+ n 1))
+    (string->symbol (string-append prefix (number->string n)))))
+
+;; dynamic-wind: rewrite to a sequenced before/thunk/after expansion.
+;;
+;; Expansion:
+;;   (dynamic-wind before thunk after)
+;;     ↦
+;;   (let* ((b before) (t thunk) (a after))
+;;     (b)
+;;     (let ((r (t)))
+;;       (a)
+;;       r))
+;;
+;; Limitation: the after-thunk runs only on normal return. If the
+;; thunk raises, the after-thunk is not invoked. This is enough for
+;; most parameterize use cases where the dynamic extent does not
+;; raise. Full R5RS semantics (after on every non-local exit) require
+;; either a guard-wrapped expansion that interacts with the compiler
+;; in a way that currently triggers a let-binding scope bug for
+;; nested forms, or VM-level wind-chain machinery in
+;; vm_raise_exception. Both are tracked as future work.
+;;
+;; The primitive at ID 191 stays as a dead handler; the rewriter
+;; consumes the form before encode-symbol ever sees it.
+(define-rewriter (dynamic-wind expr)
+  (unless (= (length expr) 4)
+    (error 'dynamic-wind
+           "expects exactly 3 arguments (before thunk after); got: ~a"
+           expr))
+  (let ([before (cadr expr)]
+        [thunk (caddr expr)]
+        [after (cadddr expr)]
+        [b-name (dw-fresh "dw-before-")]
+        [t-name (dw-fresh "dw-thunk-")]
+        [a-name (dw-fresh "dw-after-")]
+        [r-name (dw-fresh "dw-result-")])
+    `(let* ((,b-name ,before)
+            (,t-name ,thunk)
+            (,a-name ,after))
+       (,b-name)
+       (let ((,r-name (,t-name)))
+         (,a-name)
+         ,r-name))))
+
 ;; case-lambda: R7RS variable-arity dispatch (R7RS §4.2.9).
 ;; Syntax:
 ;;   (case-lambda (formals1 body1) (formals2 body2) ...)
