@@ -271,6 +271,187 @@ VM_FUNCTION(bind_function)
   }
 }
 
+VM_FUNCTION(bind_function_rest)
+{
+  /* Like bind_function, but the last formal is a rest parameter that
+     receives a list of actuals beyond the fixed formals.
+     argv layout (handler view, operator already stripped):
+       0..argc-3  fixed formal symbols (count F = argc - 2)
+       argc-2     rest formal symbol
+       argc-1     body
+     Caller must provide at least F actuals; any extras are packed
+     into a list and bound to the rest formal. */
+  vm_expr_t *calling_expr;
+  int i;
+
+  if(thread->expr->eval_completed == 1) {
+    calling_expr = (thread->exprc >= 2) ?
+                   thread->exprv[thread->exprc - 2] : NULL;
+
+    if(argc < 2) {
+      /* Need at least a rest formal and a body. */
+      vm_signal_error(thread, VM_ERROR_BYTECODE);
+      return;
+    }
+    if(calling_expr == NULL) {
+      vm_signal_error(thread, VM_ERROR_BYTECODE);
+      return;
+    }
+
+    /* Mirror bind_function's relation between calling_expr->argc and
+       thread->expr->argc but require >= rather than ==. The exact-arity
+       check there is `calling_expr->argc + 1 != thread->expr->argc`,
+       which decodes to "actuals == formals". For variadic we accept
+       "actuals >= fixed formals", with fixed = (handler argc - 2) and
+       thread->expr->argc - 1 = handler argc, so the inequality is
+       calling_expr->argc + 1 < thread->expr->argc - 1, i.e.
+       calling_expr->argc + 2 < thread->expr->argc. */
+    if(calling_expr->argc + 2 < thread->expr->argc) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_COUNT);
+      return;
+    }
+
+    {
+      unsigned fixed_formals = (unsigned)(argc - 2);
+      unsigned actuals = (calling_expr->argc > 0)
+                         ? (unsigned)(calling_expr->argc - 1) : 0;
+      unsigned bind_capacity = (unsigned)(argc - 1);
+      unsigned k;
+
+      if(calling_expr->argv[0].type == VM_TYPE_CLOSURE) {
+        bind_capacity +=
+          calling_expr->argv[0].value.closure->capture_count;
+      }
+      if(bind_capacity > 0) {
+        thread->expr->bindv =
+          VM_MALLOC(sizeof(vm_symbol_bind_t) * bind_capacity);
+        if(thread->expr->bindv == NULL) {
+          vm_signal_error(thread, VM_ERROR_HEAP);
+          return;
+        }
+      }
+
+      /* Bind the fixed formals to the corresponding actuals. */
+      for(i = 0; i < (int)fixed_formals; i++) {
+        if(argv[i].type != VM_TYPE_SYMBOL) {
+          vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+          return;
+        }
+        vm_symbol_bind(thread, &argv[i].value.symbol_ref,
+                       &calling_expr->argv[i + 1]);
+        if(thread->status == VM_THREAD_ERROR) {
+          return;
+        }
+      }
+
+      /* Build a list of the remaining actuals and bind it to the rest
+         formal at argv[argc - 2]. */
+      if(argv[argc - 2].type != VM_TYPE_SYMBOL) {
+        vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+        return;
+      }
+      {
+        vm_obj_t rest_obj;
+        vm_list_t *list = vm_alloc(sizeof(vm_list_t));
+        if(list == NULL) {
+          vm_signal_error(thread, VM_ERROR_HEAP);
+          return;
+        }
+        list->head = NULL;
+        list->tail = NULL;
+        list->length = 0;
+
+        for(k = 0; k < actuals - fixed_formals; k++) {
+          vm_list_item_t *item = vm_alloc(sizeof(vm_list_item_t));
+          if(item == NULL) {
+            vm_signal_error(thread, VM_ERROR_HEAP);
+            return;
+          }
+          memcpy(&item->obj,
+                 &calling_expr->argv[1 + fixed_formals + k],
+                 sizeof(vm_obj_t));
+          item->next = NULL;
+          if(list->head == NULL) {
+            list->head = item;
+            list->tail = item;
+          } else {
+            list->tail->next = item;
+            list->tail = item;
+          }
+          list->length++;
+        }
+
+        rest_obj.type = VM_TYPE_LIST;
+        rest_obj.value.list = list;
+        vm_symbol_bind(thread, &argv[argc - 2].value.symbol_ref,
+                       &rest_obj);
+        if(thread->status == VM_THREAD_ERROR) {
+          return;
+        }
+      }
+    }
+
+    /* Bind captures from the closure (same as bind_function). */
+    if(calling_expr->argv[0].type == VM_TYPE_CLOSURE) {
+      vm_closure_t *closure = calling_expr->argv[0].value.closure;
+      if(thread->program->captures != NULL &&
+         closure->form_id < thread->program->captures_size &&
+         thread->program->captures[closure->form_id] != NULL) {
+        vm_captures_t *cap =
+          thread->program->captures[closure->form_id];
+        uint8_t k;
+        for(k = 0; k < cap->count && k < closure->capture_count; k++) {
+          vm_symbol_ref_t ref;
+          ref.scope = VM_SYMBOL_SCOPE_APP;
+          ref.symbol_id = cap->symbols[k];
+          vm_symbol_bind(thread, &ref, &closure->captures[k]);
+          if(thread->status == VM_THREAD_ERROR) {
+            return;
+          }
+        }
+      }
+    }
+
+    VM_EVAL_ARG(thread, argc - 1);
+    VM_SET_FLAG(thread->expr->flags, VM_EXPR_TAIL_CALL);
+  } else {
+    /* Body finished -- same closure-materialization logic as
+       bind_function. */
+    VM_EVAL_STOP(thread);
+    if(argv[argc - 1].type == VM_TYPE_FORM &&
+       argv[argc - 1].value.form.type == VM_FORM_LAMBDA &&
+       thread->program->captures != NULL &&
+       argv[argc - 1].value.form.id < thread->program->captures_size &&
+       thread->program->captures[argv[argc - 1].value.form.id] != NULL) {
+      vm_captures_t *cap =
+        thread->program->captures[argv[argc - 1].value.form.id];
+      vm_expr_id_t form_id = argv[argc - 1].value.form.id;
+      vm_obj_t closure_obj;
+      vm_closure_t *closure;
+      uint8_t k;
+
+      closure = vm_closure_create(&closure_obj, form_id, 0, cap->count);
+      if(closure == NULL) {
+        vm_signal_error(thread, VM_ERROR_HEAP);
+        return;
+      }
+      for(k = 0; k < cap->count; k++) {
+        vm_symbol_ref_t ref;
+        vm_obj_t *bound;
+        ref.scope = VM_SYMBOL_SCOPE_APP;
+        ref.symbol_id = cap->symbols[k];
+        bound = vm_symbol_resolve(thread, &ref);
+        if(bound != NULL) {
+          memcpy(&closure->captures[k], bound, sizeof(vm_obj_t));
+        }
+      }
+      VM_PUSH(&closure_obj);
+    } else {
+      VM_PUSH(&argv[argc - 1]);
+    }
+  }
+}
+
 VM_FUNCTION(return)
 {
   /* Push the return value to thread->result before unwinding.

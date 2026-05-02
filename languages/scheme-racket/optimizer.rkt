@@ -94,6 +94,22 @@
     ;; constant folding or any other optimizations on quoted data.
     [`(quote ,datum) expr]  ; Return as-is, don't recurse into datum
 
+    ;; lambda: the formal-parameter spec is metadata, not code, and may
+    ;; be a dotted-pair list or bare symbol for variadic lambdas. Walk
+    ;; the body, leave the formals untouched.
+    [(? (lambda (e)
+          (and (pair? e) (eq? (car e) 'lambda) (>= (length e) 3))) expr)
+     `(lambda ,(cadr expr)
+        ,@(map optimize-basic (cddr expr)))]
+
+    ;; (define (name . rest-or-formals) body...): function-shorthand
+    ;; define carries the formal-parameter spec in (cadr expr), which
+    ;; like lambda's may be improper. Skip it and walk the body only.
+    [(? (lambda (e)
+          (and (pair? e) (eq? (car e) 'define) (pair? (cadr e)))) expr)
+     `(define ,(cadr expr)
+        ,@(map optimize-basic (cddr expr)))]
+
     ;; Recursively optimize sub-expressions
     [(cons head tail)
      (cons (optimize-basic head) (map optimize-basic tail))]

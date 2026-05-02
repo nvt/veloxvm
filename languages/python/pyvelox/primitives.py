@@ -132,6 +132,10 @@ VM_PRIMITIVES = [
 
     # Box operations (compiler-emitted for closure mutable captures)
     'box', 'box_ref', 'box_set',
+
+    # Variadic-lambda binding (compiler-emitted; mirrors bind_function but
+    # the last formal soaks up extras as a list)
+    'bind_function_rest',
 ]
 
 # Create reverse lookup dictionary (name -> ID)

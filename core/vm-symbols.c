@@ -160,7 +160,11 @@ static vm_symbol_t symbol_map[] = {
   SYM("symbol->string"),
 
   /* Box operations (compiler-emitted for closure mutable captures). */
-  SYM("box"), SYM("box-ref"), SYM("box-set!")
+  SYM("box"), SYM("box-ref"), SYM("box-set!"),
+
+  /* Variadic-lambda binding (compiler-emitted; mirrors bind_function
+     but the last formal soaks up extras as a list). */
+  SYM("bind_function_rest")
 };
 
 #define CORE_SYMBOL_COUNT VM_ARRAY_SIZE(symbol_map)
