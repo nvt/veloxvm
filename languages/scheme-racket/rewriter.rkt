@@ -410,28 +410,21 @@
     (set-box! dw-counter (+ n 1))
     (string->symbol (string-append prefix (number->string n)))))
 
-;; dynamic-wind: rewrite to a sequenced before/thunk/after expansion.
+;; dynamic-wind: wrap the body in a guard so the after-thunk runs on
+;; both normal return and exception unwinding.
 ;;
 ;; Expansion:
 ;;   (dynamic-wind before thunk after)
 ;;     ↦
 ;;   (let* ((b before) (t thunk) (a after))
 ;;     (b)
-;;     (let ((r (t)))
-;;       (a)
-;;       r))
+;;     (guard (exc (else (a) (raise exc)))
+;;       (let ((r (t)))
+;;         (a)
+;;         r)))
 ;;
-;; Limitation: the after-thunk runs only on normal return. If the
-;; thunk raises, the after-thunk is not invoked. This is enough for
-;; most parameterize use cases where the dynamic extent does not
-;; raise. Full R5RS semantics (after on every non-local exit) require
-;; either a guard-wrapped expansion that interacts with the compiler
-;; in a way that currently triggers a let-binding scope bug for
-;; nested forms, or VM-level wind-chain machinery in
-;; vm_raise_exception. Both are tracked as future work.
-;;
-;; The primitive at ID 191 stays as a dead handler; the rewriter
-;; consumes the form before encode-symbol ever sees it.
+;; The primitive at ID 191 is unused; the rewriter consumes the form
+;; before encode-symbol reaches it.
 (define-rewriter (dynamic-wind expr)
   (unless (= (length expr) 4)
     (error 'dynamic-wind
@@ -443,14 +436,53 @@
         [b-name (dw-fresh "dw-before-")]
         [t-name (dw-fresh "dw-thunk-")]
         [a-name (dw-fresh "dw-after-")]
-        [r-name (dw-fresh "dw-result-")])
+        [r-name (dw-fresh "dw-result-")]
+        [e-name (dw-fresh "dw-exc-")])
     `(let* ((,b-name ,before)
             (,t-name ,thunk)
             (,a-name ,after))
        (,b-name)
-       (let ((,r-name (,t-name)))
-         (,a-name)
-         ,r-name))))
+       (guard (,e-name (else (,a-name) (raise ,e-name)))
+         (let ((,r-name (,t-name)))
+           (,a-name)
+           ,r-name)))))
+
+;; parameterize: dynamic binding of parameter procedures.
+;;
+;; Expansion:
+;;   (parameterize ((p1 v1) (p2 v2) ...) body...)
+;;     ↦
+;;   (let* ((p1' p1) (v1' v1) ... (old1 (p1')) ...)
+;;     (dynamic-wind
+;;       (lambda () (p1' v1') ...)
+;;       (lambda () body...)
+;;       (lambda () (p1' old1) ...)))
+;;
+;; Each parameter is read once via let* into a per-binding name, the
+;; new values are installed before the body, and the old values are
+;; restored on exit. The dynamic-wind wrapper carries restoration
+;; through both normal return and exception unwinding.
+(define-rewriter (parameterize expr)
+  (let* ([bindings (cadr expr)]
+         [body (cddr expr)]
+         [params (map car bindings)]
+         [vals (map cadr bindings)]
+         [param-names (map (lambda (_) (dw-fresh "param-")) params)]
+         [val-names   (map (lambda (_) (dw-fresh "val-"))   vals)]
+         [old-names   (map (lambda (_) (dw-fresh "old-"))   params)]
+         [param-bindings (map list param-names params)]
+         [val-bindings   (map list val-names vals)]
+         [old-bindings
+           (map (lambda (o p) (list o (list p))) old-names param-names)]
+         [install-calls
+           (map (lambda (p v) (list p v)) param-names val-names)]
+         [restore-calls
+           (map (lambda (p o) (list p o)) param-names old-names)])
+    `(let* ,(append param-bindings val-bindings old-bindings)
+       (dynamic-wind
+         (lambda () ,@install-calls)
+         (lambda () ,@body)
+         (lambda () ,@restore-calls)))))
 
 ;; case-lambda: R7RS variable-arity dispatch (R7RS §4.2.9).
 ;; Syntax:
