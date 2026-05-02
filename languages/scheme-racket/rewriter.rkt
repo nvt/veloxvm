@@ -401,6 +401,73 @@
                  (,loop-name ,@var-steps)))))
        (,loop-name ,@var-inits))))
 
+;; define-record-type: R7RS records (R7RS §5.5).
+;; Syntax:
+;;   (define-record-type <type-name>
+;;     (<constructor> <param>...)
+;;     <predicate>
+;;     (<field> <accessor> [<mutator>])...)
+;;
+;; Expands to a (begin) of top-level definitions: a tag symbol bound
+;; to the type-name, the constructor (a vector with the tag in slot 0
+;; and field values starting at slot 1), the predicate (vector? +
+;; tag-eq?), and one accessor (and optional mutator) per declared
+;; field. Field-slot order follows declaration order in the
+;; field-spec list. Constructor params that do not appear among the
+;; field-names are rejected; fields not mentioned in the constructor
+;; receive an unspecified initial value (encoded as #f, matching
+;; pyvelox's None convention) and are typically set via the field's
+;; mutator before first read.
+(define-rewriter (define-record-type expr)
+  (let* ([type-name (cadr expr)]
+         [constructor-spec (caddr expr)]
+         [constructor-name (car constructor-spec)]
+         [constructor-params (cdr constructor-spec)]
+         [predicate-name (cadddr expr)]
+         [field-specs (cddddr expr)]
+         [field-names (map car field-specs)]
+         [tag-name (string->symbol
+                    (string-append "*record-tag-"
+                                   (symbol->string type-name)
+                                   "*"))])
+    ;; Reject constructor params that name nonexistent fields.
+    (for ([p (in-list constructor-params)])
+      (unless (member p field-names)
+        (error 'define-record-type
+               "constructor parameter ~a is not a declared field of ~a"
+               p type-name)))
+    ;; For each field-name, the constructor body picks either the
+    ;; matching param or #f if the field isn't in the constructor.
+    (let* ([slot-values
+             (map (lambda (f)
+                    (if (member f constructor-params) f #f))
+                  field-names)]
+           [accessor-mutator-defs
+             (apply append
+               (map (lambda (spec idx)
+                      (let ([accessor-name (cadr spec)]
+                            [mutator-name
+                              (if (null? (cddr spec))
+                                  #f
+                                  (caddr spec))])
+                        (if mutator-name
+                            (list
+                              `(define (,accessor-name r) (vector-ref r ,idx))
+                              `(define (,mutator-name r v)
+                                 (vector-set! r ,idx v)))
+                            (list
+                              `(define (,accessor-name r) (vector-ref r ,idx))))))
+                    field-specs
+                    (build-list (length field-specs) (lambda (i) (+ i 1)))))])
+      `(begin
+         (define ,tag-name ',type-name)
+         (define (,constructor-name ,@constructor-params)
+           (vector ,tag-name ,@slot-values))
+         (define (,predicate-name obj)
+           (and (vector? obj)
+                (eq? (vector-ref obj 0) ,tag-name)))
+         ,@accessor-mutator-defs))))
+
 ;; when: (when test expr...) => (if test (begin expr...))
 (define-rewriter (when expr)
   (let ([test (cadr expr)]
