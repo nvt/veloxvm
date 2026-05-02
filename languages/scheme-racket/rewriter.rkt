@@ -401,6 +401,117 @@
                  (,loop-name ,@var-steps)))))
        (,loop-name ,@var-inits))))
 
+;; case-lambda: R7RS variable-arity dispatch (R7RS §4.2.9).
+;; Syntax:
+;;   (case-lambda (formals1 body1) (formals2 body2) ...)
+;; Returns a procedure that dispatches to the first clause whose
+;; formals shape matches the actual argument count. Each clause has
+;; the same formal-spec syntax as lambda: a proper list of symbols, a
+;; dotted-pair (fixed + rest), or a bare symbol (all-args catch-all).
+;;
+;; Expansion strategy: build one outer (lambda args ...) that captures
+;; all actuals into a list, then chain a sequence of `if` checks over
+;; the clauses. Each clause emits an arity test and a body wrapped in
+;; a let-binding that pulls per-formal values out of the args list.
+(define-rewriter (case-lambda expr)
+  (let ([clauses (cdr expr)])
+    (when (null? clauses)
+      (error 'case-lambda "case-lambda requires at least one clause"))
+    (let ([dispatch
+           (let recur ([cs clauses])
+             (if (null? cs)
+                 ;; All clauses missed: signal a runtime error so the
+                 ;; caller sees a clear failure rather than #<unspecified>.
+                 `(error "case-lambda: no clause matches argument count")
+                 (let* ([clause (car cs)]
+                        [formals (car clause)]
+                        [body (cdr clause)])
+                   (case-lambda-clause formals body (recur (cdr cs))))))])
+      `(lambda args ,dispatch))))
+
+;; Build one branch for a single case-lambda clause. Returns an
+;; expression that either evaluates the clause body (when the arity
+;; matches) or evaluates `else-expr` (the chained dispatch for
+;; subsequent clauses).
+(define (case-lambda-clause formals body else-expr)
+  (cond
+    ;; Bare symbol: catch-all that binds the entire args list.
+    [(symbol? formals)
+     `(let ((,formals args)) ,@body)]
+    ;; Proper list: arity must match exactly.
+    [(case-lambda-proper-list? formals)
+     (let* ([n (length formals)]
+            [bindings (case-lambda-proper-bindings formals 0)])
+       `(if (= (length args) ,n)
+            (let ,bindings ,@body)
+            ,else-expr))]
+    ;; Dotted-pair: at least M fixed args, rest gets the tail.
+    [(pair? formals)
+     (let* ([fixed (case-lambda-fixed-formals formals)]
+            [rest (case-lambda-rest-formal formals)]
+            [m (length fixed)]
+            [fixed-bindings (case-lambda-proper-bindings fixed 0)]
+            [rest-binding `(,rest ,(case-lambda-drop-expr 'args m))])
+       `(if (>= (length args) ,m)
+            (let ,(append fixed-bindings (list rest-binding))
+              ,@body)
+            ,else-expr))]
+    [else
+     (error 'case-lambda
+            "malformed formal-parameter list: ~a" formals)]))
+
+;; True iff `xs` is a proper list of symbols.
+(define (case-lambda-proper-list? xs)
+  (cond
+    [(null? xs) #t]
+    [(pair? xs)
+     (and (symbol? (car xs))
+          (case-lambda-proper-list? (cdr xs)))]
+    [else #f]))
+
+;; Returns a list of let-bindings for each formal, pulling the i-th
+;; element out of the `args` list via car/cdr composition starting at
+;; offset.
+(define (case-lambda-proper-bindings formals offset)
+  (if (null? formals)
+      '()
+      (cons `(,(car formals) ,(case-lambda-nth-expr 'args offset))
+            (case-lambda-proper-bindings (cdr formals) (+ offset 1)))))
+
+;; (case-lambda-nth-expr 'args 0) => (car args)
+;; (case-lambda-nth-expr 'args 1) => (car (cdr args))
+;; (case-lambda-nth-expr 'args n) => (car (cdr ... (cdr args)))
+(define (case-lambda-nth-expr lst n)
+  (if (= n 0)
+      `(car ,lst)
+      `(car ,(case-lambda-drop-expr lst n))))
+
+;; (case-lambda-drop-expr 'args 0) => args
+;; (case-lambda-drop-expr 'args n) => (cdr (cdr ... (cdr args)))
+(define (case-lambda-drop-expr lst n)
+  (if (= n 0)
+      lst
+      `(cdr ,(case-lambda-drop-expr lst (- n 1)))))
+
+;; Walk a dotted-pair formal-spec and return the proper-list prefix.
+(define (case-lambda-fixed-formals formals)
+  (cond
+    [(null? formals) '()]
+    [(symbol? formals) '()]
+    [(pair? formals)
+     (cons (car formals) (case-lambda-fixed-formals (cdr formals)))]
+    [else
+     (error 'case-lambda
+            "malformed formal-parameter list: ~a" formals)]))
+
+;; Walk a dotted-pair formal-spec and return the rest-symbol tail.
+(define (case-lambda-rest-formal formals)
+  (cond
+    [(null? formals) #f]
+    [(symbol? formals) formals]
+    [(pair? formals) (case-lambda-rest-formal (cdr formals))]
+    [else #f]))
+
 ;; define-record-type: R7RS records (R7RS §5.5).
 ;; Syntax:
 ;;   (define-record-type <type-name>
