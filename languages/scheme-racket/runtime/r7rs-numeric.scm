@@ -6,7 +6,7 @@
 ;;; top of quotient, remainder, modulo, integer?, exact?.
 ;;;
 ;;; The `include` directive currently has issues in nested scopes; copy
-;;; these definitions into your program (see scheme-r5rs-compliance.md).
+;;; these definitions directly into your program.
 ;;; ============================================================================
 
 ;; square: (square x) => (* x x). R7RS §6.2.6.

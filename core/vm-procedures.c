@@ -422,6 +422,8 @@ static const vm_procedure_t operators[] = {
   VM_OPERATOR(box_ref, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 1, 1),
   VM_OPERATOR(box_set, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 2, 2),
   VM_OPERATOR(bind_function_rest, VM_TYPE_FLAG_ANY, 0, -1, -1),
+  VM_OPERATOR(string_to_symbol, VM_TYPE_FLAG(VM_TYPE_STRING),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
 };
 
 #define MAX_COMMON_SYMBOL_ID 127

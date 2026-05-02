@@ -2,15 +2,14 @@
 ;;; VeloxVM R7RS List Helpers Runtime Library
 ;;; Copyright (c) 2026, RISE Research Institutes of Sweden AB
 ;;;
-;;; R7RS-small list helpers that don't require rest arguments. The
+;;; R7RS-small list helpers that don't shadow VM primitives. The
 ;;; comparator-aware variants of assoc and member specified by R7RS
-;;; (third argument optional) are deferred: VeloxVM's bind_function
-;;; requires exact arity, so variadic lambdas are rejected by the
-;;; compiler (languages/scheme-racket/compiler.rkt:160). Adding them
-;;; needs rest-argument support in the VM and compiler.
+;;; (third argument optional) require user-defined top-level names
+;;; to override same-named primitives, which the compiler's symbol
+;;; resolution does not currently do.
 ;;;
 ;;; The `include` directive currently has issues in nested scopes; copy
-;;; these definitions into your program (see scheme-r5rs-compliance.md).
+;;; these definitions directly into your program.
 ;;; ============================================================================
 
 ;; list-copy: shallow copy of a list (R7RS §6.4).

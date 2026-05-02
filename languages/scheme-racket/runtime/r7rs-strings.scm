@@ -7,7 +7,7 @@
 ;;; revision can add).
 ;;;
 ;;; The `include` directive currently has issues in nested scopes; copy
-;;; these definitions into your program (see scheme-r5rs-compliance.md).
+;;; these definitions directly into your program.
 ;;; ============================================================================
 
 ;; string-map: apply proc to each character of str, collect results into

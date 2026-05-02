@@ -11,7 +11,7 @@
 ;;; hyphenated to match R7RS conventions.
 ;;;
 ;;; The `include` directive currently has issues in nested scopes; copy
-;;; this definition into your program (see scheme-r5rs-compliance.md).
+;;; this definition directly into your program.
 ;;; ============================================================================
 
 (define (features)
