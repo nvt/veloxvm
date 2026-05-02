@@ -53,7 +53,13 @@ vm_eval_object(vm_thread_t *thread, vm_obj_t *obj)
     resolved_obj = vm_symbol_resolve(thread, &obj->value.symbol_ref);
     if(resolved_obj == NULL) {
       vm_signal_error(thread, VM_ERROR_SYMBOL_ID);
-    } else if(resolved_obj->type == VM_TYPE_NONE) {
+    } else if(resolved_obj->type == VM_TYPE_NONE &&
+              obj->value.symbol_ref.scope == VM_SYMBOL_SCOPE_APP &&
+              resolved_obj ==
+                &thread->program->symbol_bindings[obj->value.symbol_ref.symbol_id]) {
+      /* The pointer-identity check restricts the undefined-symbol error
+         to program-level bindings; a stack frame's bindv slot holding
+         VM_TYPE_NONE is treated as the unspecified value. */
       vm_signal_error(thread, VM_ERROR_SYMBOL_UNDEFINED);
       vm_set_error_object(thread, obj);
     } else {
