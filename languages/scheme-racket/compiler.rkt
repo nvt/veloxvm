@@ -149,47 +149,84 @@
                                (expr-encoding-data datum-enc))])
        (expr-encoding 'form all-bytes))]))
 
+;; Flatten a lambda's formal-parameter spec into a proper list of symbols.
+;; Accepts the same three R5RS shapes split-formals does: a proper list, a
+;; dotted-pair tail, or a bare symbol. Used wherever an analyser walks
+;; nested lambdas and needs to add the inner formals to the local-name
+;; set; without flattening, member/append on a dotted-pair formal-list
+;; misbehaves.
+(define (formals->list args)
+  (cond
+    [(null? args) '()]
+    [(symbol? args) (list args)]
+    [(pair? args) (cons (car args) (formals->list (cdr args)))]
+    [else (error 'formals->list "malformed formal-parameter list: ~a" args)]))
+
+;; Split a lambda's formal-parameter spec into (values fixed-list rest-or-#f).
+;; Accepts three R5RS shapes:
+;;   - proper list of symbols  (a b c)         => '(a b c) / #f
+;;   - dotted-pair list        (a b . rest)    => '(a b)   / 'rest
+;;   - bare symbol             args            => '()      / 'args
+(define (split-formals args)
+  (cond
+    [(null? args) (values '() #f)]
+    [(symbol? args) (values '() args)]
+    [(pair? args)
+     (let loop ([fixed '()] [rest args])
+       (cond
+         [(null? rest) (values (reverse fixed) #f)]
+         [(symbol? rest) (values (reverse fixed) rest)]
+         [(pair? rest)
+          (unless (symbol? (car rest))
+            (error 'compile-lambda
+                   "non-symbol in formal parameter list: ~a" args))
+          (loop (cons (car rest) fixed) (cdr rest))]
+         [else
+          (error 'compile-lambda
+                 "malformed formal parameter list: ~a" args)]))]
+    [else
+     (error 'compile-lambda
+            "malformed formal parameter list: ~a" args)]))
+
 (define (compile-lambda args body bc [env '()])
-  ;; (lambda (args...) body...)
-  ;; Compile as: (bind_function args... (begin body...)) or (bind_function args... body)
-  ;; Use bind_function to mark actual function boundaries (enables proper return unwinding)
-  ;; Store in expression table and return a lambda form reference
-  ;; Extend env with lambda parameters when compiling body
-  ;; The VM's bind_function requires exact arity matching (see
-  ;; core/expr-primitives.c:bind_function), so R5RS variadic parameter
-  ;; lists — (lambda args body) and (lambda (a . rest) body) — are rejected.
-  (unless (and (list? args) (andmap symbol? args))
+  ;; (lambda formals body...)
+  ;; formals is one of:
+  ;;   - proper list of symbols                (lambda (a b) ...)
+  ;;   - dotted-pair list with a rest tail     (lambda (a . rest) ...)
+  ;;   - bare symbol that names the rest list  (lambda args ...)
+  ;;
+  ;; Non-variadic compiles to (bind_function arg... body) with exact
+  ;; arity. Variadic compiles to
+  ;; (bind_function_rest fixed... rest-name body), where the rest
+  ;; formal soaks up actuals beyond the fixed count as a fresh list at
+  ;; runtime (see core/expr-primitives.c:bind_function_rest).
+  (define-values (fixed-formals rest-formal) (split-formals args))
+  (define all-formals
+    (if rest-formal
+        (append fixed-formals (list rest-formal))
+        fixed-formals))
+  (unless (andmap symbol? all-formals)
     (error 'compile-lambda
-           "variadic lambda parameters not supported by the VM: ~a"
-           args))
-  (let* ([extended-env (append args env)]  ; Add lambda parameters to env
+           "non-symbol in formal parameter list: ~a" args))
+  (let* ([extended-env (append all-formals env)]
          ;; Box-rewrite: any param that is both captured by an inner lambda
          ;; AND mutated via set! must live in shared (heap-allocated) storage
          ;; so writes through one alias are visible through all aliases.
-         ;; rewrite-body wraps each such param at function entry with
-         ;; (set! p (box p)) and rewrites reads/writes in the rest of the
-         ;; body to go through box-ref / box-set!. Plain reads of non-boxed
-         ;; params are untouched.
-         [boxed-params (params-needing-box body args)]
+         [boxed-params (params-needing-box body all-formals)]
          [body (box-rewrite body boxed-params)]
+         [bind-prim (if rest-formal 'bind_function_rest 'bind_function)]
          [bind-expr (if (> (length body) 1)
                         ;; Multiple body expressions: wrap in begin
-                        `(bind_function ,@args (begin ,@body))
+                        `(,bind-prim ,@all-formals (begin ,@body))
                         ;; Single body expression
-                        `(bind_function ,@args ,@body))]
-         ;; Compile the bind expression directly into main bc with extended env
-         ;; This ensures all form references are correct from the start
+                        `(,bind-prim ,@all-formals ,@body))]
          [bind-enc (compile-expr bind-expr bc extended-env)]
-         ;; Add to main bc and get its index
          [expr-id (bytecode-expression-count bc)]
          [_ (add-expr bc bind-enc)]
-         ;; Free-variable analysis: identify names referenced in the body
-         ;; that come from an outer lambda's scope (env) but aren't bound
-         ;; by this lambda's own params. These are the captures the
-         ;; runtime needs to snapshot when this lambda is evaluated.
-         [captures (lambda-captures body args env)])
+         ;; Free-variable analysis treats every formal (including the
+         ;; rest formal) as bound by this lambda.
+         [captures (lambda-captures body all-formals env)])
     (record-captures! bc expr-id captures)
-    ;; Return lambda form referencing the bind expression
     (encode-form-lambda expr-id)))
 
 ;; ============================================================================
@@ -225,7 +262,7 @@
     [(eq? (car expr) 'quote) '()]
     [(eq? (car expr) 'lambda)
      ;; (lambda (inner-params...) inner-body...) -- inner-params shadow outer
-     (let ([inner-params (cadr expr)]
+     (let ([inner-params (formals->list (cadr expr))]
            [inner-body (cddr expr)])
        (apply append
               (map (lambda (e) (free-symbols e (append inner-params local)))
@@ -276,7 +313,7 @@
       [(not (pair? expr)) (void)]
       [(eq? (car expr) 'quote) (void)]
       [(eq? (car expr) 'lambda)
-       (let ([inner-params (cadr expr)]
+       (let ([inner-params (formals->list (cadr expr))]
              [inner-body (cddr expr)])
          (for-each (lambda (e) (walk e #t (append inner-params local)))
                    inner-body))]
@@ -307,7 +344,7 @@
       [(not (pair? expr)) (void)]
       [(eq? (car expr) 'quote) (void)]
       [(eq? (car expr) 'lambda)
-       (let ([inner-params (cadr expr)]
+       (let ([inner-params (formals->list (cadr expr))]
              [inner-body (cddr expr)])
          (for-each (lambda (e) (walk e (append inner-params local)))
                    inner-body))]
@@ -352,9 +389,13 @@
     [(eq? (car expr) 'quote) expr]
     [(eq? (car expr) 'lambda)
      ;; Inner lambda: drop any boxed names that the inner params shadow.
+     ;; The shadow check needs a flat list; the produced lambda keeps
+     ;; the original formal-spec shape (which may be dotted-pair or a
+     ;; bare symbol for variadic lambdas).
      (let* ([inner-params (cadr expr)]
             [inner-body (cddr expr)]
-            [active (filter (lambda (b) (not (member b inner-params))) boxed)])
+            [inner-flat (formals->list inner-params)]
+            [active (filter (lambda (b) (not (member b inner-flat))) boxed)])
        `(lambda ,inner-params
           ,@(map (lambda (e) (box-rewrite-expr e active)) inner-body)))]
     [(eq? (car expr) 'set!)
