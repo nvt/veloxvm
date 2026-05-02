@@ -2,11 +2,11 @@
 ;;; VeloxVM R7RS List Helpers Runtime Library
 ;;; Copyright (c) 2026, RISE Research Institutes of Sweden AB
 ;;;
-;;; R7RS-small list helpers that don't shadow VM primitives. The
-;;; comparator-aware variants of assoc and member specified by R7RS
-;;; (third argument optional) require user-defined top-level names
-;;; to override same-named primitives, which the compiler's symbol
-;;; resolution does not currently do.
+;;; R7RS-small list helpers and the comparator-aware variants of
+;;; assoc and member. The latter two redefine names that exist as VM
+;;; primitives; the compiler's top-level shadowing pass routes call
+;;; sites to the user binding so the optional third-argument form
+;;; works.
 ;;;
 ;;; The `include` directive currently has issues in nested scopes; copy
 ;;; these definitions directly into your program.
@@ -25,5 +25,23 @@
     (if (= i n)
         (reverse acc)
         (loop (+ i 1) (cons (proc i) acc)))))
+
+;; assoc with optional comparator (R7RS §6.4). Default is equal?.
+;; Shadows the 2-arg primitive at top-level scope.
+(define (assoc obj alist . rest)
+  (let ((cmp (if (null? rest) equal? (car rest))))
+    (let loop ((l alist))
+      (cond ((null? l) #f)
+            ((cmp obj (car (car l))) (car l))
+            (else (loop (cdr l)))))))
+
+;; member with optional comparator (R7RS §6.4). Default is equal?.
+;; Shadows the 2-arg primitive at top-level scope.
+(define (member obj lst . rest)
+  (let ((cmp (if (null? rest) equal? (car rest))))
+    (let loop ((l lst))
+      (cond ((null? l) #f)
+            ((cmp obj (car l)) l)
+            (else (loop (cdr l)))))))
 
 ;;; End of r7rs-lists.scm
