@@ -138,6 +138,11 @@ typedef struct vm_port {
   const struct vm_port_io *io;
   void *opaque_desc;
   struct vm_thread *thread;
+  /* Linkage for the global heap-allocated-ports list maintained in
+     vm-memory.c. Statically allocated ports (e.g. stdin/stdout
+     singletons) are not on the list and have next == NULL. Internal to
+     the runtime; do not access from outside core/vm-memory.c. */
+  struct vm_port *next;
   int fd;
   uint8_t flags;
 } vm_port_t;

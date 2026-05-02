@@ -58,21 +58,30 @@ vm_string_create(vm_obj_t *obj, vm_integer_t length, const char *str)
     return NULL;
   }
 
+  /* Disable GC across the multi-step setup so a sweep from inside the
+     second vm_alloc cannot observe the string with RESOLVED set but
+     ->str still uninitialized. */
+  vm_gc_disable();
+
   obj->type = VM_TYPE_STRING;
   obj->value.string = vm_alloc_at(sizeof(vm_string_t),
                                   VM_ALLOC_SITE_STRING_HEADER);
   if(obj->value.string == NULL) {
+    vm_gc_enable();
     return NULL;
   }
   string = obj->value.string;
   string->flags = VM_STRING_FLAG_RESOLVED;
+  string->str = NULL;
   final_length = length < 0 ? strlen(str) : (size_t)length;
   if(final_length > VM_STRING_MAX_LENGTH) {
+    vm_gc_enable();
     return NULL;
   }
   string->length = final_length;
   string->str = vm_alloc_at(final_length + 1, VM_ALLOC_SITE_STRING_BUFFER);
   if(string->str == NULL) {
+    vm_gc_enable();
     return NULL;
   }
 
@@ -83,6 +92,7 @@ vm_string_create(vm_obj_t *obj, vm_integer_t length, const char *str)
     string->str[0] = '\0';
   }
 
+  vm_gc_enable();
   return string;
 }
 
@@ -118,37 +128,47 @@ vm_vector_create(vm_obj_t *obj, vm_integer_t length, vm_vector_flags_t flags)
     return 0;
   }
 
+  /* Disable GC across the multi-step setup so a sweep from inside the
+     second vm_alloc cannot observe the vector header with garbage
+     ->bytes / ->elements pointers. */
+  vm_gc_disable();
+
   obj->type = VM_TYPE_VECTOR;
   obj->value.vector = vm_alloc_at(sizeof(vm_vector_t),
                                   VM_ALLOC_SITE_VECTOR_HEADER);
   if(obj->value.vector == NULL) {
+    vm_gc_enable();
     return NULL;
   }
   vector = obj->value.vector;
   vector->flags = flags;
   vector->length = length;
+  vector->elements = NULL;
+  vector->bytes = NULL;
 
   if(length == 0) {
     /* Zero-length vector: no elements/bytes to allocate */
-    vector->elements = NULL;
-    vector->bytes = NULL;
   } else if(VM_IS_SET(vector->flags, VM_VECTOR_FLAG_BUFFER)) {
     vector->bytes = vm_alloc_at(sizeof(uint8_t) * vector->length,
                                 VM_ALLOC_SITE_VECTOR_BYTES);
     if(vector->bytes == NULL) {
+      vm_gc_enable();
       return NULL;
     }
     memset(vector->bytes, 0, vector->length);
-    vector->elements = NULL;
   } else {
     vector->elements = vm_alloc_at(sizeof(vm_obj_t) * vector->length,
                                    VM_ALLOC_SITE_VECTOR_ELEMENTS);
     if(vector->elements == NULL) {
+      vm_gc_enable();
       return NULL;
     }
-    vector->bytes = NULL;
+    /* Zero so the GC sees well-formed (boolean #f) cells if it walks
+       the vector before the caller has populated the slots. */
+    memset(vector->elements, 0, sizeof(vm_obj_t) * vector->length);
   }
 
+  vm_gc_enable();
   return vector;
 }
 
@@ -203,25 +223,33 @@ vm_closure_create(vm_obj_t *obj, vm_expr_id_t form_id, uint8_t argc,
   vm_closure_t *closure;
   uint8_t i;
 
+  /* Disable GC across the multi-step setup so a sweep from inside the
+     captures alloc cannot observe the closure with a garbage ->captures
+     pointer. */
+  vm_gc_disable();
+
   obj->type = VM_TYPE_CLOSURE;
   obj->value.closure = vm_alloc(sizeof(vm_closure_t));
   if(obj->value.closure == NULL) {
+    vm_gc_enable();
     return NULL;
   }
   closure = obj->value.closure;
   closure->form_id = form_id;
   closure->argc = argc;
   closure->capture_count = capture_count;
-  if(capture_count == 0) {
-    closure->captures = NULL;
-  } else {
+  closure->captures = NULL;
+  if(capture_count > 0) {
     closure->captures = vm_alloc(sizeof(vm_obj_t) * capture_count);
     if(closure->captures == NULL) {
+      vm_gc_enable();
       return NULL;
     }
     for(i = 0; i < capture_count; i++) {
       closure->captures[i].type = VM_TYPE_NONE;
     }
   }
+
+  vm_gc_enable();
   return closure;
 }

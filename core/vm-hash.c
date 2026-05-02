@@ -125,7 +125,7 @@ get_index(vm_hash_table_t *table, vm_hash_key_t key, vm_hash_index_t *index)
 }
 
 int
-vm_hash_update(vm_hash_table_t *table, vm_hash_key_t key, vm_hash_value_t value)
+vm_hash_insert(vm_hash_table_t *table, vm_hash_key_t key, vm_hash_value_t value)
 {
   vm_hash_index_t index;
 
@@ -136,18 +136,35 @@ vm_hash_update(vm_hash_table_t *table, vm_hash_key_t key, vm_hash_value_t value)
     return 0;
   }
 
-  /* Determine whether we need to allocate a new slot. */
-  if(!VM_HASH_SLOT_USED(table, index)) {
-    if(VM_HASH_IS_FULL(table)) {
-      VM_DEBUG(VM_DEBUG_LOW, "A hash table is full! Items = %lu",
-	     (unsigned long)table->items);
-      return 0;
-    }
-
-    VM_HASH_SLOT_SET_USED(table, index);
+  if(VM_HASH_SLOT_USED(table, index)) {
+    /* The caller asked to insert a fresh key, so a hit here is a
+       duplicate registration -- refuse it rather than silently
+       overwriting the prior value. */
+    VM_DEBUG(VM_DEBUG_LOW, "Duplicate hash insert for key %p", key);
+    return 0;
   }
 
+  if(VM_HASH_IS_FULL(table)) {
+    VM_DEBUG(VM_DEBUG_LOW, "A hash table is full! Items = %lu",
+	   (unsigned long)table->items);
+    return 0;
+  }
+
+  VM_HASH_SLOT_SET_USED(table, index);
   table->pairs[index].key = key;
+  table->pairs[index].value = value;
+  return 1;
+}
+
+int
+vm_hash_set(vm_hash_table_t *table, vm_hash_key_t key, vm_hash_value_t value)
+{
+  vm_hash_index_t index;
+
+  if(!get_index(table, key, &index) || !VM_HASH_SLOT_USED(table, index)) {
+    return 0;
+  }
+
   table->pairs[index].value = value;
   return 1;
 }

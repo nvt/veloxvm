@@ -75,7 +75,16 @@ typedef struct vm_hash_table {
   static vm_hash_pair_t name_##pairs[((size) * 4) / 3]; \
   static vm_hash_table_t name = {0, ((size) * 4) / 3, name_##used, name_##pairs}
 
-int vm_hash_update(vm_hash_table_t *, vm_hash_key_t, vm_hash_value_t);
+/* Insert a new key->value mapping. Returns 0 if the key is already
+   present, the table is full, or the probe limit was hit. The caller
+   is expected to know that the key is fresh -- a duplicate insertion
+   is treated as a programmer error and rejected, not silently merged. */
+int vm_hash_insert(vm_hash_table_t *, vm_hash_key_t, vm_hash_value_t);
+
+/* Update the value of an existing entry. Returns 0 if the key is not
+   present; the table is left unchanged. */
+int vm_hash_set(vm_hash_table_t *, vm_hash_key_t, vm_hash_value_t);
+
 int vm_hash_delete(vm_hash_table_t *, vm_hash_key_t);
 int vm_hash_lookup(vm_hash_table_t *, vm_hash_key_t, vm_hash_value_t *);
 

@@ -254,6 +254,24 @@ vm_mempool_mark(vm_mempool_t *pool, void *obj)
   return 1;
 }
 
+int
+vm_mempool_is_marked(const vm_mempool_t *pool, void *obj)
+{
+  vm_mempool_index_t index;
+  unsigned byte;
+  unsigned bit;
+
+  if(!vm_mempool_is_stored((vm_mempool_t *)pool, obj)) {
+    return 0;
+  }
+
+  index = ((char *)obj - (char *)pool->heap) / pool->obj_size;
+  byte = index / BITNUM;
+  bit = 1U << (index % BITNUM);
+
+  return VM_IS_SET(pool->ref_bitmap[byte], bit) != 0;
+}
+
 static int
 mempool_gc(vm_mempool_t *pool, int force)
 {
@@ -261,13 +279,15 @@ mempool_gc(vm_mempool_t *pool, int force)
   unsigned byte;
   unsigned bit;
   int released_objects;
+  int do_sweep;
 
-  /* Avoid scanning the memory pool if the number of allocated objects
-     is less than two thirds of the capacity, unless the caller is
-     forcing a sweep (e.g. for accurate live-memory reporting). */
-  if(!force && pool->items < (2 * pool->capacity) / 3) {
-    return 0;
-  }
+  /* Always clear the ref bitmap so the next mark phase starts clean.
+     Skipping the bitmap reset on a sub-threshold pass would leave
+     pool-resident parents looking marked across passes, and the
+     mark walk's "if not marked, recurse" short-circuit would then
+     stop descending into heap-tracked children that do need to be
+     re-marked every pass. */
+  do_sweep = force || pool->items >= (2 * pool->capacity) / 3;
 
   released_objects = 0;
 
@@ -275,7 +295,8 @@ mempool_gc(vm_mempool_t *pool, int force)
     byte = index / BITNUM;
     bit = 1U << (index % BITNUM);
 
-    if(VM_IS_SET(pool->alloc_bitmap[byte], bit) &&
+    if(do_sweep &&
+       VM_IS_SET(pool->alloc_bitmap[byte], bit) &&
        VM_IS_CLEAR(pool->ref_bitmap[byte], bit)) {
       VM_CLEAR_FLAG(pool->alloc_bitmap[byte], bit);
       pool->items--;

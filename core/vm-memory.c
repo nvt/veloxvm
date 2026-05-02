@@ -99,6 +99,16 @@ static int gc_disabled = 0;
  */
 static vm_ext_object_t *ext_object_list_head = NULL;
 
+/*
+ * Singly-linked list of every heap-allocated vm_port_t registered via
+ * vm_port_register. The GC walks this list before the heap sweep and
+ * calls io->close on any unmarked port that is still flagged OPEN, so
+ * the underlying fd / opaque_desc is released before the heap sweep
+ * frees the port struct itself. Static port singletons (stdin/stdout
+ * in vm-native.c) are not on the list.
+ */
+static vm_port_t *port_list_head = NULL;
+
 static void
 free_vm_memory(void *ptr)
 {
@@ -115,6 +125,14 @@ memory_is_marked(void *ptr)
   int r;
   vm_hash_value_t value;
 
+  /* Pool-resident objects are tracked via the pool's ref bitmap, not the
+     heap allocations hash. Cyclic structures such as a recursive closure
+     capturing itself rely on this check returning true to terminate the
+     mark walk. */
+  if(vm_mempool_is_marked(&object_pool, ptr)) {
+    return 1;
+  }
+
   r = vm_hash_lookup(&allocations, ptr, &value);
   return r && value > 0;
 }
@@ -122,18 +140,19 @@ memory_is_marked(void *ptr)
 static void
 mark_memory(void *ptr)
 {
-  if(!vm_mempool_mark(&object_pool, ptr)) {
-    /*
-     * If the memory pool could not mark the object, it has been
-     * allocated through the heap allocator and the references are
-     * stored in the hash table.
-     */
-    if(vm_hash_update(&allocations, ptr, 1)) {
-      VM_DEBUG(VM_DEBUG_HIGH, "GC: Mark pointer %p", ptr);
-    } else {
-      VM_DEBUG(VM_DEBUG_HIGH, "GC: Attempting to mark unknown pointer %p!",
-	       ptr);
-    }
+  if(vm_mempool_mark(&object_pool, ptr)) {
+    return;
+  }
+
+  /* Pure update -- vm_hash_set returns 0 for unknown keys. The mark
+     walk can land on pointers the GC does not own (statically
+     allocated ports, buffers in the program's string table, ...);
+     those are silently skipped instead of being registered as if
+     they were heap allocations. */
+  if(vm_hash_set(&allocations, ptr, 1)) {
+    VM_DEBUG(VM_DEBUG_HIGH, "GC: Mark pointer %p", ptr);
+  } else {
+    VM_DEBUG(VM_DEBUG_MEDIUM, "GC: Skip mark of untracked pointer %p", ptr);
   }
 }
 
@@ -165,7 +184,13 @@ mark_object(vm_obj_t *obj)
     break;
   case VM_TYPE_STRING:
     if(!memory_is_marked(obj->value.string)) {
-      if(VM_IS_SET(obj->value.string->flags, VM_STRING_FLAG_RESOLVED)) {
+      /* Only the heap-owned buffer needs marking. A string loaded from
+         the program's string table has FLAG_ID set after resolution; its
+         ->str points into program data, not into vm_alloc'd memory, and
+         marking it would insert a non-heap pointer into the allocations
+         table that the next sweep would then try to free. */
+      if(VM_IS_SET(obj->value.string->flags, VM_STRING_FLAG_RESOLVED) &&
+         VM_IS_CLEAR(obj->value.string->flags, VM_STRING_FLAG_ID)) {
         mark_memory(obj->value.string->str);
       }
       mark_memory(obj->value.string);
@@ -258,6 +283,13 @@ mark_thread_references(vm_thread_t *thread)
   }
 
   mark_object(&thread->result);
+  /* error.error_obj holds the most recent thrown/raised value, populated
+     by vm_set_error_string / vm_set_error_object; specific_obj is the
+     SRFI-18-style thread-local cell read by (thread-specific). Both can
+     point at heap-allocated strings or vectors that no other root
+     references. */
+  mark_object(&thread->error.error_obj);
+  mark_object(&thread->specific_obj);
 }
 
 void *
@@ -302,7 +334,7 @@ vm_alloc(unsigned size)
   }
 
   if(put_in_hash) {
-    if(!vm_hash_update(&allocations, ptr, 0)) {
+    if(!vm_hash_insert(&allocations, ptr, 0)) {
       free_vm_memory(ptr);
       return NULL;
     }
@@ -348,6 +380,7 @@ vm_free_all(void)
   unsigned i;
   unsigned deallocated;
   vm_ext_object_t *box;
+  vm_port_t *port;
   vm_obj_t obj;
 
   /* Finalize every remaining ext-object so each type's deallocate
@@ -358,6 +391,16 @@ vm_free_all(void)
       obj.type = VM_TYPE_EXTERNAL;
       obj.value.ext_object = box;
       box->type->deallocate(&obj);
+    }
+  }
+
+  /* Close every still-open heap-allocated port for the same reason. */
+  while((port = port_list_head) != NULL) {
+    port_list_head = port->next;
+    if(VM_IS_SET(port->flags, VM_PORT_FLAG_OPEN) &&
+       port->io != NULL && port->io->close != NULL) {
+      port->io->close(port);
+      VM_CLEAR_FLAG(port->flags, VM_PORT_FLAG_OPEN);
     }
   }
 
@@ -423,6 +466,46 @@ finalize_unmarked_ext_objects(void)
   }
 }
 
+/*
+ * Walk the heap-allocated-ports list and close any port that the mark
+ * phase did not reach. The io->close callback releases the underlying
+ * fd / opaque_desc; without it the heap sweep would free the port
+ * struct without ever closing the resource it owns.
+ *
+ * As with finalize_unmarked_ext_objects, we unlink the port here but
+ * leave the memory free to the heap sweep that runs next.
+ */
+static void
+finalize_unmarked_ports(void)
+{
+  vm_port_t **link;
+  vm_port_t *port;
+
+  link = &port_list_head;
+  while((port = *link) != NULL) {
+    if(memory_is_marked(port)) {
+      link = &port->next;
+      continue;
+    }
+    if(VM_IS_SET(port->flags, VM_PORT_FLAG_OPEN) &&
+       port->io != NULL && port->io->close != NULL) {
+      port->io->close(port);
+      VM_CLEAR_FLAG(port->flags, VM_PORT_FLAG_OPEN);
+    }
+    *link = port->next;
+  }
+}
+
+void
+vm_port_register(vm_port_t *port)
+{
+  if(port == NULL) {
+    return;
+  }
+  port->next = port_list_head;
+  port_list_head = port;
+}
+
 static void
 do_gc(int force)
 {
@@ -461,6 +544,11 @@ do_gc(int force)
      type->deallocate callback can free its opaque_data backing while
      the box is still valid. */
   finalize_unmarked_ext_objects();
+
+  /* Close any port whose only references are gone. The heap sweep
+     would otherwise free the port struct without releasing the
+     underlying fd / opaque_desc. */
+  finalize_unmarked_ports();
 
   /* Sweep phase: deallocate all unreferenced objects allocated on the heap. */
   for(i = deallocated = 0; i < allocations.size; i++) {

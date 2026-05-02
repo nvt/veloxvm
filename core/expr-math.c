@@ -189,7 +189,7 @@ generate_result(vm_thread_t *thread, vm_rational_t r)
   if(r.numerator == 0 || r.denominator == 1) {
     VM_PUSH_INTEGER(r.numerator);
   } else {
-    rp = VM_MALLOC(sizeof(vm_rational_t));
+    rp = vm_alloc_at(sizeof(vm_rational_t), VM_ALLOC_SITE_RATIONAL);
     if(rp == NULL) {
       vm_signal_error(thread, VM_ERROR_HEAP);
     } else {
