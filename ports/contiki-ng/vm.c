@@ -69,7 +69,9 @@ PROCESS_THREAD(vm_process, ev, data)
   vm_lib_register(&vm_lib_crypto);
   vm_lib_register(&vm_lib_sensors);
 
+#if VM_PERFMON_ENABLE
   process_start(&vm_perfmon_process, NULL);
+#endif
   serial_shell_init();
   vm_shell_init();
 

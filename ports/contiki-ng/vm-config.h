@@ -69,6 +69,16 @@
 #define VM_PROFILER_ENABLE 0
 #endif
 
+/* Run the periodic performance-monitor process that emits VPM/SPM
+   lines (CPU, power, bandwidth, policy) every VM_PERF_MONITOR_INTERVAL
+   seconds. Off by default because the lines are noisy on the console
+   and aren't useful for most interactive sessions; enable when you
+   actually want the periodic stream of metrics. The same numbers
+   remain queryable on demand via vm-shell. */
+#ifndef VM_PERFMON_ENABLE
+#define VM_PERFMON_ENABLE 0
+#endif
+
 /* Emit periodic memory-pool utilisation lines from the performance monitor.
    Counters read are maintained on the hot path anyway, so the only cost is
    a few extra prints per monitor tick. */
