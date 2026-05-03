@@ -331,4 +331,4 @@ def get_primitive_name(symbol_id: int) -> str:
 
 
 # The primitive count must match core/vm-procedures.c exactly.
-assert len(VM_PRIMITIVES) == 206, f"Expected 206 primitives, got {len(VM_PRIMITIVES)}"
+assert len(VM_PRIMITIVES) == 208, f"Expected 208 primitives, got {len(VM_PRIMITIVES)}"
