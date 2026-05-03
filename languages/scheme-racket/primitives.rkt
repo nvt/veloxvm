@@ -92,7 +92,8 @@
     symbol?
     symbol->string
     box box-ref box-set!
-    bind_function_rest))
+    bind_function_rest
+    string->symbol))
 
 ;; Check if symbol is a VM primitive
 (define (vm-primitive? sym)

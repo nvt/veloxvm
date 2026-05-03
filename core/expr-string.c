@@ -705,3 +705,38 @@ VM_FUNCTION(symbol_to_string)
     return;
   }
 }
+
+VM_FUNCTION(string_to_symbol)
+{
+  /* Looks up the string in the program's symbol table (populated at
+     load time) and returns the corresponding symbol. Names not
+     already in the table raise VM_ERROR_SYMBOL_UNDEFINED.
+
+     The full R7RS semantics require runtime extension of the symbol
+     table and the symbol_bindings array, with GC integration; the
+     symbol-table machinery in vm-table.c has no resize operation
+     today, so that path is not implemented. */
+  char *str;
+  vm_symbol_ref_t ref;
+  vm_obj_t result;
+
+  if(argv[0].type != VM_TYPE_STRING) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+
+  str = vm_string_resolve(thread, argv[0].value.string);
+  if(str == NULL) {
+    vm_signal_error(thread, VM_ERROR_STRING_ID);
+    return;
+  }
+
+  if(!vm_symbol_get_ref(thread, str, &ref)) {
+    vm_signal_error(thread, VM_ERROR_SYMBOL_UNDEFINED);
+    return;
+  }
+
+  result.type = VM_TYPE_SYMBOL;
+  memcpy(&result.value.symbol_ref, &ref, sizeof(vm_symbol_ref_t));
+  VM_PUSH(&result);
+}

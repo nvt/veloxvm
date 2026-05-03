@@ -41,7 +41,7 @@ the document breaks down each R5RS section. Section references (e.g.
 | Numbers | 6.2 | Partial | Integers and reals only; no complex numbers, no `rationalize` |
 | Booleans | 6.3.1 | Supported | |
 | Pairs & lists | 6.3.2 | Supported | All composite `cXXXr` forms (up to 4 levels) included |
-| Symbols | 6.3.3 | Not exposed to programs | `symbol?`, `symbol->string`, `string->symbol` not available at runtime |
+| Symbols | 6.3.3 | Supported | `symbol?` (primitive 201), `symbol->string` (primitive 202), `string->symbol` (restricted form: succeeds only for names already in the program's symbol table) |
 | Characters | 6.3.4 | Supported | |
 | Strings | 6.3.5 | Supported | |
 | Vectors | 6.3.6 | Supported | |
@@ -58,9 +58,6 @@ The following are not available in VeloxVM Scheme. In most cases the reason
 is a VM architecture decision (to save code size on constrained devices).
 
 - **Lazy evaluation**: `delay`, `force`. The VM does not implement promises.
-- **Runtime symbol manipulation**: `symbol?`, `symbol->string`,
-  `string->symbol`. Symbols exist inside the VM for procedure lookup but are
-  not exposed to programs. Use strings for dynamic identifiers.
 - **Environment reification**: `scheme-report-environment`,
   `null-environment`, `interaction-environment`. VeloxVM has a single global
   environment.
@@ -267,11 +264,21 @@ rewriter.
 ## Symbols
 
 R5RS §6.3.3 describes symbols as first-class objects that can be compared
-with `eqv?` and converted to/from strings. In VeloxVM Scheme, runtime
-symbol manipulation is **not supported**: `symbol?`, `symbol->string`, and
-`string->symbol` are not exposed to programs. Symbols exist inside the VM
-for procedure dispatch but are not first-class at the Scheme level. Use
-strings if you need to build identifiers dynamically.
+with `eqv?` and converted to/from strings. VeloxVM Scheme exposes the full
+trio of symbol operations:
+
+- `symbol?` (primitive 201) and `symbol->string` (primitive 202) work as
+  R5RS specifies.
+- `string->symbol` (primitive 207) is restricted: it succeeds for names
+  that already exist in the program's symbol table at load time and
+  raises `VM_ERROR_SYMBOL_UNDEFINED` otherwise. The unrestricted form
+  requires runtime extension of `program->symbols` and
+  `program->symbol_bindings`, which is deferred — see
+  `doc/r7rs-implementation-plan.md` §"Out of scope".
+
+For typical use (`(string->symbol (symbol->string 'foo))` round-tripping a
+known name, or interning a name that appears as a literal symbol elsewhere
+in the program), the restriction is invisible.
 
 ## Characters
 

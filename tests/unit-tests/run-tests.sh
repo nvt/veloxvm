@@ -44,7 +44,7 @@ BUILD_DIR="tests/unit-tests/build"
 mkdir -p "$BUILD_DIR"
 
 # Find all test files in subdirectories (r5rs, r6rs, vm-specific)
-TEST_FILES=$(find tests/unit-tests/r5rs tests/unit-tests/r6rs tests/unit-tests/vm-specific -name "test-*.scm" -type f 2>/dev/null | sort)
+TEST_FILES=$(find tests/unit-tests/r5rs tests/unit-tests/r6rs tests/unit-tests/r7rs tests/unit-tests/vm-specific -name "test-*.scm" -type f 2>/dev/null | sort)
 
 if [ -z "$TEST_FILES" ]; then
     echo "No test files found!"

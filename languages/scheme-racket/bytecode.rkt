@@ -32,7 +32,9 @@
          encode-nil
          encode-form-inline
          encode-form-lambda
-         encode-form-ref)
+         encode-form-ref
+         current-shadowed-primitives
+         get-primitive-id)
 
 ;; ============================================================================
 ;; Data Structures
@@ -73,7 +75,7 @@
 ;; Create new bytecode container
 (define (make-bytecode)
   (bytecode #x5EB5        ; Magic number
-            3             ; Version
+            4             ; Version
             '()           ; strings-rev
             (make-hash)   ; strings-index
             '()           ; symbols-rev
@@ -255,18 +257,26 @@
 (define (get-primitive-id sym)
   (hash-ref primitive-id-table sym #f))
 
+;; Names that the program defines at top level and that also happen to
+;; be VM primitives. encode-symbol consults this set to route call sites
+;; to the user's binding rather than the primitive ID. Populated by
+;; main.rkt's compile-string before the per-expression compile loop.
+(define current-shadowed-primitives (make-parameter '()))
+
 (define (encode-symbol sym bc [env '()])
-  ;; Check if this is a lambda parameter, VM primitive (core scope), or user symbol (app scope)
-  ;; Check environment FIRST to handle cases where parameter names shadow primitives
+  ;; Resolution order:
+  ;; 1. Lambda parameter from `env` (lexical local).
+  ;; 2. VM primitive, unless it is shadowed by a top-level user define.
+  ;; 3. App-scope user symbol.
   (cond
     ;; Lambda parameter - add-symbol handles dedup via its hash index.
     [(member sym env)
      (encode-symbol-with-id (add-symbol bc sym) 1)]  ; scope=1 (app)
-    ;; VM primitive - use core scope
-    [(get-primitive-id sym)
-     => (lambda (prim-id)
-          (encode-symbol-with-id prim-id 0))]  ; scope=0 (core)
-    ;; User symbol - use app scope
+    ;; VM primitive that the program has not redefined at top level.
+    [(and (get-primitive-id sym)
+          (not (member sym (current-shadowed-primitives))))
+     (encode-symbol-with-id (get-primitive-id sym) 0)]  ; scope=0 (core)
+    ;; User symbol (or a primitive that the program shadows): app scope.
     [else
      (encode-symbol-with-id (add-symbol bc sym) 1)]))
 

@@ -27,7 +27,7 @@ compiling Cyclus scripts, they get translated to Scheme as an
 intermediary step.
 
 The applications are compiled to a custom bytecode format with
-high-level instructions. The instruction set contains 199
+high-level instructions. The instruction set contains 208
 instructions, and is designed to make IoT apps efficient to express in
 bytecode. A compact bytecode makes software updates fast and
 energy-efficient to send over radio, and to store on the

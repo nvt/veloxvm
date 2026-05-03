@@ -136,6 +136,9 @@ VM_PRIMITIVES = [
     # Variadic-lambda binding (compiler-emitted; mirrors bind_function but
     # the last formal soaks up extras as a list)
     'bind_function_rest',
+
+    # R7RS string->symbol (restricted form; looks up existing symbols only)
+    'string_to_symbol',
 ]
 
 # Create reverse lookup dictionary (name -> ID)
@@ -328,4 +331,4 @@ def get_primitive_name(symbol_id: int) -> str:
 
 
 # The primitive count must match core/vm-procedures.c exactly.
-assert len(VM_PRIMITIVES) == 206, f"Expected 206 primitives, got {len(VM_PRIMITIVES)}"
+assert len(VM_PRIMITIVES) == 208, f"Expected 208 primitives, got {len(VM_PRIMITIVES)}"

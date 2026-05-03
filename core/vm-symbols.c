@@ -164,7 +164,11 @@ static vm_symbol_t symbol_map[] = {
 
   /* Variadic-lambda binding (compiler-emitted; mirrors bind_function
      but the last formal soaks up extras as a list). */
-  SYM("bind_function_rest")
+  SYM("bind_function_rest"),
+
+  /* R7RS string->symbol (restricted form: looks up names already in
+     the program's symbol table; raises if not found). */
+  SYM("string->symbol")
 };
 
 #define CORE_SYMBOL_COUNT VM_ARRAY_SIZE(symbol_map)

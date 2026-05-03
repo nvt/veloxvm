@@ -67,7 +67,7 @@
     system-info load-program import get-devices print random time
     get-programs program-info exit
 ;; List functions.
-    list cons push pop car cdr list-ref list-tail append remove reverse
+    list cons push pop car cdr list-ref list-tail slice append remove reverse
     length null? list? pair? set-car! set-cdr! memq memv member
     assq assv assoc
     list-enumerate list-zip list-index
@@ -117,7 +117,13 @@
     symbol?
     symbol->string
 ;; Box functions (compiler-emitted for closure mutable captures).
-    box box-ref box-set!))
+    box box-ref box-set!
+;; Variadic-lambda binding (compiler-emitted; mirrors bind_function but
+;; the last formal soaks up extras as a list).
+    bind_function_rest
+;; R7RS string->symbol (restricted form: looks up names already in the
+;; program's symbol table; raises if not found).
+    string->symbol))
 
 ;; The following values are stored in the first two bytes of a VM app
 ;; to be able to identify the app.

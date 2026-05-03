@@ -401,6 +401,267 @@
                  (,loop-name ,@var-steps)))))
        (,loop-name ,@var-inits))))
 
+;; Per-expansion counter to give nested dynamic-winds unique formal
+;; names. Plain string-based names instead of gensym to keep the
+;; symbols interned through the bytecode pipeline.
+(define dw-counter (box 0))
+(define (dw-fresh prefix)
+  (let ([n (unbox dw-counter)])
+    (set-box! dw-counter (+ n 1))
+    (string->symbol (string-append prefix (number->string n)))))
+
+;; dynamic-wind: wrap the body in a guard so the after-thunk runs on
+;; both normal return and exception unwinding.
+;;
+;; Expansion:
+;;   (dynamic-wind before thunk after)
+;;     ↦
+;;   (let* ((b before) (t thunk) (a after))
+;;     (b)
+;;     (guard (exc (else (a) (raise exc)))
+;;       (let ((r (t)))
+;;         (a)
+;;         r)))
+;;
+;; The primitive at ID 191 is unused; the rewriter consumes the form
+;; before encode-symbol reaches it.
+(define-rewriter (dynamic-wind expr)
+  (unless (= (length expr) 4)
+    (error 'dynamic-wind
+           "expects exactly 3 arguments (before thunk after); got: ~a"
+           expr))
+  (let ([before (cadr expr)]
+        [thunk (caddr expr)]
+        [after (cadddr expr)]
+        [b-name (dw-fresh "dw-before-")]
+        [t-name (dw-fresh "dw-thunk-")]
+        [a-name (dw-fresh "dw-after-")]
+        [r-name (dw-fresh "dw-result-")]
+        [e-name (dw-fresh "dw-exc-")])
+    `(let* ((,b-name ,before)
+            (,t-name ,thunk)
+            (,a-name ,after))
+       (,b-name)
+       (guard (,e-name (else (,a-name) (raise ,e-name)))
+         (let ((,r-name (,t-name)))
+           (,a-name)
+           ,r-name)))))
+
+;; parameterize: dynamic binding of parameter procedures.
+;;
+;; Expansion:
+;;   (parameterize ((p1 v1) (p2 v2) ...) body...)
+;;     ↦
+;;   (let* ((p1' p1) (v1' v1) ... (old1 (p1')) ...)
+;;     (dynamic-wind
+;;       (lambda () (p1' v1') ...)
+;;       (lambda () body...)
+;;       (lambda () (p1' old1) ...)))
+;;
+;; Each parameter is read once via let* into a per-binding name, the
+;; new values are installed before the body, and the old values are
+;; restored on exit. The dynamic-wind wrapper carries restoration
+;; through both normal return and exception unwinding.
+(define-rewriter (parameterize expr)
+  (let* ([bindings (cadr expr)]
+         [body (cddr expr)]
+         [params (map car bindings)]
+         [vals (map cadr bindings)]
+         [param-names (map (lambda (_) (dw-fresh "param-")) params)]
+         [val-names   (map (lambda (_) (dw-fresh "val-"))   vals)]
+         [old-names   (map (lambda (_) (dw-fresh "old-"))   params)]
+         [param-bindings (map list param-names params)]
+         [val-bindings   (map list val-names vals)]
+         [old-bindings
+           (map (lambda (o p) (list o (list p))) old-names param-names)]
+         [install-calls
+           (map (lambda (p v) (list p v)) param-names val-names)]
+         [restore-calls
+           (map (lambda (p o) (list p o)) param-names old-names)])
+    `(let* ,(append param-bindings val-bindings old-bindings)
+       (dynamic-wind
+         (lambda () ,@install-calls)
+         (lambda () ,@body)
+         (lambda () ,@restore-calls)))))
+
+;; case-lambda: R7RS variable-arity dispatch (R7RS §4.2.9).
+;; Syntax:
+;;   (case-lambda (formals1 body1) (formals2 body2) ...)
+;; Returns a procedure that dispatches to the first clause whose
+;; formals shape matches the actual argument count. Each clause has
+;; the same formal-spec syntax as lambda: a proper list of symbols, a
+;; dotted-pair (fixed + rest), or a bare symbol (all-args catch-all).
+;;
+;; Expansion strategy: build one outer (lambda args ...) that captures
+;; all actuals into a list, then chain a sequence of `if` checks over
+;; the clauses. Each clause emits an arity test and a body wrapped in
+;; a let-binding that pulls per-formal values out of the args list.
+(define-rewriter (case-lambda expr)
+  (let ([clauses (cdr expr)])
+    (when (null? clauses)
+      (error 'case-lambda "case-lambda requires at least one clause"))
+    (let ([dispatch
+           (let recur ([cs clauses])
+             (if (null? cs)
+                 ;; All clauses missed: signal a runtime error so the
+                 ;; caller sees a clear failure rather than #<unspecified>.
+                 `(error "case-lambda: no clause matches argument count")
+                 (let* ([clause (car cs)]
+                        [formals (car clause)]
+                        [body (cdr clause)])
+                   (case-lambda-clause formals body (recur (cdr cs))))))])
+      `(lambda args ,dispatch))))
+
+;; Build one branch for a single case-lambda clause. Returns an
+;; expression that either evaluates the clause body (when the arity
+;; matches) or evaluates `else-expr` (the chained dispatch for
+;; subsequent clauses).
+(define (case-lambda-clause formals body else-expr)
+  (cond
+    ;; Bare symbol: catch-all that binds the entire args list.
+    [(symbol? formals)
+     `(let ((,formals args)) ,@body)]
+    ;; Proper list: arity must match exactly.
+    [(case-lambda-proper-list? formals)
+     (let* ([n (length formals)]
+            [bindings (case-lambda-proper-bindings formals 0)])
+       `(if (= (length args) ,n)
+            (let ,bindings ,@body)
+            ,else-expr))]
+    ;; Dotted-pair: at least M fixed args, rest gets the tail.
+    [(pair? formals)
+     (let* ([fixed (case-lambda-fixed-formals formals)]
+            [rest (case-lambda-rest-formal formals)]
+            [m (length fixed)]
+            [fixed-bindings (case-lambda-proper-bindings fixed 0)]
+            [rest-binding `(,rest ,(case-lambda-drop-expr 'args m))])
+       `(if (>= (length args) ,m)
+            (let ,(append fixed-bindings (list rest-binding))
+              ,@body)
+            ,else-expr))]
+    [else
+     (error 'case-lambda
+            "malformed formal-parameter list: ~a" formals)]))
+
+;; True iff `xs` is a proper list of symbols.
+(define (case-lambda-proper-list? xs)
+  (cond
+    [(null? xs) #t]
+    [(pair? xs)
+     (and (symbol? (car xs))
+          (case-lambda-proper-list? (cdr xs)))]
+    [else #f]))
+
+;; Returns a list of let-bindings for each formal, pulling the i-th
+;; element out of the `args` list via car/cdr composition starting at
+;; offset.
+(define (case-lambda-proper-bindings formals offset)
+  (if (null? formals)
+      '()
+      (cons `(,(car formals) ,(case-lambda-nth-expr 'args offset))
+            (case-lambda-proper-bindings (cdr formals) (+ offset 1)))))
+
+;; (case-lambda-nth-expr 'args 0) => (car args)
+;; (case-lambda-nth-expr 'args 1) => (car (cdr args))
+;; (case-lambda-nth-expr 'args n) => (car (cdr ... (cdr args)))
+(define (case-lambda-nth-expr lst n)
+  (if (= n 0)
+      `(car ,lst)
+      `(car ,(case-lambda-drop-expr lst n))))
+
+;; (case-lambda-drop-expr 'args 0) => args
+;; (case-lambda-drop-expr 'args n) => (cdr (cdr ... (cdr args)))
+(define (case-lambda-drop-expr lst n)
+  (if (= n 0)
+      lst
+      `(cdr ,(case-lambda-drop-expr lst (- n 1)))))
+
+;; Walk a dotted-pair formal-spec and return the proper-list prefix.
+(define (case-lambda-fixed-formals formals)
+  (cond
+    [(null? formals) '()]
+    [(symbol? formals) '()]
+    [(pair? formals)
+     (cons (car formals) (case-lambda-fixed-formals (cdr formals)))]
+    [else
+     (error 'case-lambda
+            "malformed formal-parameter list: ~a" formals)]))
+
+;; Walk a dotted-pair formal-spec and return the rest-symbol tail.
+(define (case-lambda-rest-formal formals)
+  (cond
+    [(null? formals) #f]
+    [(symbol? formals) formals]
+    [(pair? formals) (case-lambda-rest-formal (cdr formals))]
+    [else #f]))
+
+;; define-record-type: R7RS records (R7RS §5.5).
+;; Syntax:
+;;   (define-record-type <type-name>
+;;     (<constructor> <param>...)
+;;     <predicate>
+;;     (<field> <accessor> [<mutator>])...)
+;;
+;; Expands to a (begin) of top-level definitions: a tag symbol bound
+;; to the type-name, the constructor (a vector with the tag in slot 0
+;; and field values starting at slot 1), the predicate (vector? +
+;; tag-eq?), and one accessor (and optional mutator) per declared
+;; field. Field-slot order follows declaration order in the
+;; field-spec list. Constructor params that do not appear among the
+;; field-names are rejected; fields not mentioned in the constructor
+;; receive an unspecified initial value (encoded as #f, matching
+;; pyvelox's None convention) and are typically set via the field's
+;; mutator before first read.
+(define-rewriter (define-record-type expr)
+  (let* ([type-name (cadr expr)]
+         [constructor-spec (caddr expr)]
+         [constructor-name (car constructor-spec)]
+         [constructor-params (cdr constructor-spec)]
+         [predicate-name (cadddr expr)]
+         [field-specs (cddddr expr)]
+         [field-names (map car field-specs)]
+         [tag-name (string->symbol
+                    (string-append "*record-tag-"
+                                   (symbol->string type-name)
+                                   "*"))])
+    ;; Reject constructor params that name nonexistent fields.
+    (for ([p (in-list constructor-params)])
+      (unless (member p field-names)
+        (error 'define-record-type
+               "constructor parameter ~a is not a declared field of ~a"
+               p type-name)))
+    ;; For each field-name, the constructor body picks either the
+    ;; matching param or #f if the field isn't in the constructor.
+    (let* ([slot-values
+             (map (lambda (f)
+                    (if (member f constructor-params) f #f))
+                  field-names)]
+           [accessor-mutator-defs
+             (apply append
+               (map (lambda (spec idx)
+                      (let ([accessor-name (cadr spec)]
+                            [mutator-name
+                              (if (null? (cddr spec))
+                                  #f
+                                  (caddr spec))])
+                        (if mutator-name
+                            (list
+                              `(define (,accessor-name r) (vector-ref r ,idx))
+                              `(define (,mutator-name r v)
+                                 (vector-set! r ,idx v)))
+                            (list
+                              `(define (,accessor-name r) (vector-ref r ,idx))))))
+                    field-specs
+                    (build-list (length field-specs) (lambda (i) (+ i 1)))))])
+      `(begin
+         (define ,tag-name ',type-name)
+         (define (,constructor-name ,@constructor-params)
+           (vector ,tag-name ,@slot-values))
+         (define (,predicate-name obj)
+           (and (vector? obj)
+                (eq? (vector-ref obj 0) ,tag-name)))
+         ,@accessor-mutator-defs))))
+
 ;; when: (when test expr...) => (if test (begin expr...))
 (define-rewriter (when expr)
   (let ([test (cadr expr)]

@@ -108,7 +108,7 @@ class Bytecode:
     def __init__(self):
         # File header
         self.magic = 0x5EB5  # 0x5E, 0xB5 in little-endian
-        self.version = 3  # VM_BYTECODE_VERSION from include/vm-bytecode.h
+        self.version = 4  # VM_BYTECODE_VERSION from include/vm-bytecode.h
 
         # Symbol table management
         self.symbol_table = SymbolTable()

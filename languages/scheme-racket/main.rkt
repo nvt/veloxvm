@@ -42,6 +42,11 @@
          [finalized (map finalize-guard rewritten)]
          ;; Optimize expressions (constant folding, etc.)
          [optimized (map optimize-expr finalized)]
+         ;; Collect top-level user (define name ...) names that also
+         ;; happen to be VM primitives. encode-symbol will route call
+         ;; sites of these names to the user binding rather than the
+         ;; primitive ID.
+         [shadowed (collect-shadowed-primitives optimized)]
          ;; Create main bytecode with pre-allocated expression 0
          [bc (make-bytecode)]
          ;; Pre-allocate expression 0 as empty placeholder (will be replaced)
@@ -50,6 +55,7 @@
     ;; CL-Style: Accumulate bytes from each top-level expression into expression 0
     ;; Don't wrap in begin - compile each expression and concatenate their bytes
     ;; Compile directly into bc (not temp-bc) so nested expressions get correct IDs!
+    (parameterize ([current-shadowed-primitives shadowed])
     (let* ([accumulated-bytes
             (apply append
               (for/list ([expr optimized])
@@ -69,8 +75,27 @@
               [expr (bytecode-expressions bc)])
           (printf "DEBUG: Expression ~a: ~a bytes\n" i (length (expr-encoding-data expr))))))
 
+    ) ; close parameterize
+
     ;; Return the bytecode - no reversal, no form reference fixing!
     bc))
+
+;; Walk top-level expressions collecting names that are both
+;; user-defined via (define name ...) or (define (name . _) ...) AND
+;; are VM primitives. encode-symbol uses this set to skip primitive
+;; resolution when the user has provided their own binding.
+(define (collect-shadowed-primitives exprs)
+  (define seen (make-hash))
+  (for ([e (in-list exprs)])
+    (when (and (pair? e) (eq? (car e) 'define) (pair? (cdr e)))
+      (let* ([target (cadr e)]
+             [name (cond
+                     [(symbol? target) target]
+                     [(pair? target) (car target)]
+                     [else #f])])
+        (when (and (symbol? name) (get-primitive-id name))
+          (hash-set! seen name #t)))))
+  (hash-keys seen))
 
 ;; Command-line interface
 (module+ main
