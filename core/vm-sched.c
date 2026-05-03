@@ -151,10 +151,14 @@ cut_tail_call_frames(vm_thread_t *thread)
         VM_FREE(saved_bindings);
       }
 
-      /* Reset execution state for tail-optimized frame.
-       * When reusing a frame for tail recursion, we reset its state to force
-       * re-reading bytecode from the expression table. */
-      VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_HAVE_OBJECTS);
+      /* Reset execution state for tail-optimized frame. The merged frame
+         is about to re-execute its call-site bytecode from scratch; the
+         LAMBDA marker reflects the prior dispatch and must be cleared so
+         that init_lambda_execution can re-engage for direct calls and so
+         that primitive-headed call sites (e.g. apply) finish their
+         eval-arg processing instead of exiting the dispatch loop early. */
+      VM_CLEAR_FLAG(thread->expr->flags,
+                    VM_EXPR_HAVE_OBJECTS | VM_EXPR_LAMBDA);
       thread->expr->eval_completed = 0;
       thread->expr->eval_requested = 0;
       thread->expr->ip = VM_TABLE_GET(thread->program->exprv, thread->expr->expr_id);
@@ -255,10 +259,7 @@ vm_sched_thread(vm_thread_t *thread)
     /* Make the requested evaluations of arguments. */
     for(i = 0; i < expr->argc; i++) {
       if(VM_EVAL_REQUESTED(thread, i) && !VM_EVAL_COMPLETED(thread, i)) {
-        /* Don't overwrite sentinel value 255 used for lambda frames */
-        if(expr->eval_arg != 255) {
-          expr->eval_arg = i;
-        }
+        expr->eval_arg = i;
         if(expr->argv[i].type == VM_TYPE_FORM ||
            expr->argv[i].type == VM_TYPE_CLOSURE) {
           if(i > 0 &&
@@ -346,6 +347,12 @@ vm_sched_thread(vm_thread_t *thread)
     /* Stack tail optimization. */
     if(VM_IS_SET(expr->flags, VM_EXPR_LAMBDA)) {
       cut_tail_call_frames(thread);
+      if(VM_IS_CLEAR(thread->expr->flags, VM_EXPR_HAVE_OBJECTS)) {
+        /* The cut collapsed frames and reset the surviving frame so it
+           re-reads its call-site bytecode. Return to the scheduler so the
+           next dispatch enters that frame fresh through the load path. */
+        return;
+      }
     }
 
     if(expr->expr_id == 0) {
