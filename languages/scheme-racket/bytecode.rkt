@@ -75,7 +75,7 @@
 ;; Create new bytecode container
 (define (make-bytecode)
   (bytecode #x5EB5        ; Magic number
-            3             ; Version
+            4             ; Version
             '()           ; strings-rev
             (make-hash)   ; strings-index
             '()           ; symbols-rev
