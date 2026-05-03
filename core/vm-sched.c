@@ -259,10 +259,7 @@ vm_sched_thread(vm_thread_t *thread)
     /* Make the requested evaluations of arguments. */
     for(i = 0; i < expr->argc; i++) {
       if(VM_EVAL_REQUESTED(thread, i) && !VM_EVAL_COMPLETED(thread, i)) {
-        /* Don't overwrite sentinel value 255 used for lambda frames */
-        if(expr->eval_arg != 255) {
-          expr->eval_arg = i;
-        }
+        expr->eval_arg = i;
         if(expr->argv[i].type == VM_TYPE_FORM ||
            expr->argv[i].type == VM_TYPE_CLOSURE) {
           if(i > 0 &&
