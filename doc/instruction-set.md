@@ -2,7 +2,7 @@
 
 ## Overview
 
-VeloxVM provides 203 core instructions (procedures/operators) that implement a Scheme-based runtime for IoT applications. Instructions are organized into functional categories and follow Scheme R5RS naming conventions with extensions for IoT-specific operations.
+VeloxVM provides 208 core instructions (procedures/operators) that implement a Scheme-based runtime for IoT applications. Instructions are organized into functional categories and follow Scheme R5RS naming conventions with extensions for IoT-specific operations. `doc/primitives.md` is the canonical ID-to-name table; this document is a categorised reference and the per-section counts below may lag a few primitives behind the canonical table.
 
 All instructions are implemented as procedures in the operators table defined in `core/vm-procedures.c`. Additional platform-specific instructions are available through loadable libraries on Contiki/Contiki-NG ports.
 
@@ -15,7 +15,7 @@ Each instruction is defined with the following properties:
 - **Argument Count**: Minimum and maximum number of arguments (-1 = variadic)
 - **Flags**: VM_PROCEDURE_EVAL_ARGS (arguments evaluated before call) or 0 (special form)
 
-## Core Instruction Set (199 Instructions)
+## Core Instruction Set (208 Instructions)
 
 ### Arithmetic Operations (11 instructions)
 
