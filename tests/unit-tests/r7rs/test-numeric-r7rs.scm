@@ -24,6 +24,15 @@
 
 (define (floor-remainder n m) (modulo n m))
 
+(define (exact-integer-sqrt n)
+  (if (< n 2)
+      (list n 0)
+      (let loop ((x n))
+        (let ((y (quotient (+ x (quotient n x)) 2)))
+          (if (>= y x)
+              (list x (- n (* x x)))
+              (loop y))))))
+
 (test-suite "R7RS numeric helpers")
 
 ;; square
@@ -66,5 +75,15 @@
 (assert-equal 2  (floor-remainder -10 3)  "floor-remainder -10/3")
 (assert-equal -1 (floor-remainder -10 -3) "floor-remainder -10/-3")
 (assert-equal 0  (floor-remainder 25 5)   "floor-remainder when exact")
+
+;; exact-integer-sqrt: returns (s r) with s = floor(sqrt(n)), r = n - s*s
+(assert-equal '(0 0)  (exact-integer-sqrt 0)    "exact-integer-sqrt of 0")
+(assert-equal '(1 0)  (exact-integer-sqrt 1)    "exact-integer-sqrt of 1")
+(assert-equal '(1 1)  (exact-integer-sqrt 2)    "exact-integer-sqrt of 2")
+(assert-equal '(1 2)  (exact-integer-sqrt 3)    "exact-integer-sqrt of 3")
+(assert-equal '(2 0)  (exact-integer-sqrt 4)    "exact-integer-sqrt of perfect 4")
+(assert-equal '(3 1)  (exact-integer-sqrt 10)   "exact-integer-sqrt of 10")
+(assert-equal '(10 0) (exact-integer-sqrt 100)  "exact-integer-sqrt of perfect 100")
+(assert-equal '(31 39) (exact-integer-sqrt 1000) "exact-integer-sqrt of 1000")
 
 (test-summary)

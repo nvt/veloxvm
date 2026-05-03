@@ -10,6 +10,9 @@
 (define (string-for-each proc str)
   (for-each proc (string->list str)))
 
+(define (char-foldcase ch) (char-downcase ch))
+(define (string-foldcase str) (string-map char-downcase str))
+
 (test-suite "R7RS string higher-order")
 
 ;; string-map: identity transform
@@ -57,5 +60,17 @@
   "veloxvm")
 (assert-equal 7 char-count
               "string-for-each visits every char exactly once")
+
+;; char-foldcase: ASCII fold matches downcase
+(assert-equal #\a (char-foldcase #\A)  "char-foldcase of uppercase ASCII")
+(assert-equal #\a (char-foldcase #\a)  "char-foldcase of lowercase ASCII")
+(assert-equal #\1 (char-foldcase #\1)  "char-foldcase of digit unchanged")
+(assert-equal #\space (char-foldcase #\space) "char-foldcase of space unchanged")
+
+;; string-foldcase: ASCII fold across the whole string
+(assert-equal "hello"        (string-foldcase "HELLO")        "string-foldcase upper-only")
+(assert-equal "hello, world!" (string-foldcase "Hello, World!") "string-foldcase mixed case preserves punctuation")
+(assert-equal ""             (string-foldcase "")             "string-foldcase of empty string")
+(assert-equal "abc123"       (string-foldcase "ABC123")       "string-foldcase preserves digits")
 
 (test-summary)

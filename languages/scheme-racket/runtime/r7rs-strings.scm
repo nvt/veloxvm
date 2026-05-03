@@ -20,4 +20,12 @@
 (define (string-for-each proc str)
   (for-each proc (string->list str)))
 
+;; char-foldcase / string-foldcase: ASCII-only fold to lowercase. R7RS
+;; defines fold-case in Unicode terms (e.g. ß folds to ss); for the
+;; ASCII subset the operation is identical to char-downcase /
+;; string-downcase. Programs that need full Unicode folding will need
+;; replacements when wider character support lands.
+(define (char-foldcase ch) (char-downcase ch))
+(define (string-foldcase str) (string-map char-downcase str))
+
 ;;; End of r7rs-strings.scm

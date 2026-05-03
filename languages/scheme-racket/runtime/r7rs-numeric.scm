@@ -36,4 +36,18 @@
 
 (define (floor-remainder n m) (modulo n m))
 
+;; exact-integer-sqrt: returns (s r) where s = floor(sqrt(n)) and
+;; r = n - s*s, for non-negative integer n. R7RS §6.2.6 specifies two
+;; return values; this VM has no multiple-value return, so the result
+;; is packed as a 2-element list. Newton's method on integers; converges
+;; in O(log n) iterations.
+(define (exact-integer-sqrt n)
+  (if (< n 2)
+      (list n 0)
+      (let loop ((x n))
+        (let ((y (quotient (+ x (quotient n x)) 2)))
+          (if (>= y x)
+              (list x (- n (* x x)))
+              (loop y))))))
+
 ;;; End of r7rs-numeric.scm
