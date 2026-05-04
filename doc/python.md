@@ -47,7 +47,7 @@ source line; the CLI prints the same and exits non-zero.
 | `*args` (receive and forward) | Yes | `def f(*args)` and `lambda *args:` lower to `bind_function_rest`; trailing actuals arrive as a list bound to `args`. `f(*xs)` and `f(prefix, *xs)` at call sites lower to `(apply f arg-list)`. Combining `*args` with default arguments is refused, as are: multiple `*` arguments at one call site, positionals after `*`, and `*` arguments to built-ins or method calls. |
 | `**kwargs`, keyword-only, positional-only | No | Refused at compile time. |
 | `nonlocal`, `global` | Yes | Recognised by the scope analyser. |
-| `try` / `except` / `raise` | Partial | Single bare `except:` or `except Exception:`; typed handlers and multiple `except` clauses refused. `raise X(args...)` lowers as instance construction when `X` is a defined class (or `Exception` itself, which is auto-injected); otherwise as a tagged 3-vector `#(py-exception "TYPE" args-list)`. Handlers can read `e.type` (a string), `e.args` (a list), and `str(e)` / `f"{e}"` (returns `args[0]` or `""` for empty args) on the bound exception via `except Exception as e:`, and the access path is the same regardless of which shape was raised. `raise e` on a bound name re-raises the caught object unchanged. |
+| `try` / `except` / `raise` | Yes | Multiple `except` clauses with type filters: `except SomeClass as e:` matches if `_pyvelox_isinstance(e, SomeClass)`. `except:` and `except Exception:` are catch-all aliases that absorb both the pyinstance and the legacy `#(py-exception ...)` shape. The class named in a typed clause must be defined earlier in the module; tuple filters (`except (A, B):`) aren't yet supported, and a catch-all clause that shadows later typed clauses is refused so unreachable code doesn't sneak in. `raise X(args...)` lowers as instance construction when `X` is a defined class (or `Exception` itself, which is auto-injected); otherwise as a tagged 3-vector. Handlers read `e.type`, `e.args`, `str(e)`, `f"{e}"` the same way regardless of which shape was raised. `raise e` on a bound name re-raises the caught object unchanged. |
 | `with` (context managers) | No | |
 | `class` | Partial | `class Foo: def __init__/methods` and `class Bar(Foo): ...` lower to tagged class vectors. Instance construction `Foo(args)` runs `__init__`; classes without `__init__` (in their own body or any ancestor) still construct. `self.x = v` / `self.x` / `obj.method(args)` work. `super().method(args)` walks from the enclosing class's parent. `isinstance(obj, Cls)` walks the class chain. Refused: multiple inheritance, forward-reference base classes, `@classmethod` / `@staticmethod` / `@property` / decorators, class-level attributes, nested classes, dunder operator overloading (`__add__` etc.), `__getattr__` / `__setattr__` / descriptors, metaclasses, bare `super()` standalone, `super(Class, self)` 2-arg form, `isinstance` with a tuple second arg. Method names that collide with `_METHOD_HANDLERS` (`get`, `append`, `upper`, etc.) are shadowed by the builtin handler. |
 | Comparison ops (`<`, `<=`, `>`, `>=`) | Yes | Numeric only. |
@@ -183,9 +183,13 @@ handler sees. Handler-side `e.args`, `e.type`, `str(e)`, and
 
 `isinstance(e, MyError)` walks the class chain, so the usual
 "check the kind" pattern works inside an except handler. Typed
-exception handlers (`except MyError as e:`) are still refused at
-compile time -- the user needs a single `except Exception as e:`
-plus an isinstance check inside the body.
+exception handlers (`except MyError as e:`) are also supported
+directly: each clause's type filter lowers to an
+`_pyvelox_isinstance` check, and clauses chain via nested ifs that
+fall through to a re-raise when nothing matches. Tuple filters
+(`except (A, B):`) aren't yet supported; expand them into separate
+clauses or use an `except Exception:` plus `if isinstance(e, ...)`
+inside the body.
 
 What's deferred to later steps: multiple inheritance + MRO,
 `@classmethod` / `@staticmethod` / `@property`, dunder operator

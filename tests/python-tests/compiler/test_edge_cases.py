@@ -1620,5 +1620,99 @@ class TestCasefoldAndIsqrt(unittest.TestCase):
             encode_symbol('_pyvelox_isqrt', bc), all_bytes)
 
 
+class TestTypedExceptHandlers(unittest.TestCase):
+    """Multi-clause `except` with type filters. Typed clauses lower
+    to _pyvelox_isinstance checks chained as nested ifs; bare
+    `except:` and `except Exception:` are catch-all aliases."""
+
+    def _compile_collect(self, source):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol, encode_string
+        bc = compile_string(source)
+        all_bytes = b''.join(bc.expressions)
+        return bc, all_bytes, encode_symbol, encode_string
+
+    def test_typed_handler_uses_isinstance(self):
+        # `except MyError as e:` lowers through _pyvelox_isinstance
+        # against the named class; isinstance helper must be in the
+        # bytecode.
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'class MyError(Exception):\n    pass\n'
+            'try:\n'
+            '    raise MyError("oops")\n'
+            'except MyError as e:\n'
+            '    x = e.args\n')
+        self.assertIn(encode_symbol('_pyvelox_isinstance', bc), all_bytes)
+
+    def test_multiple_clauses_compile(self):
+        # Multiple clauses are now allowed; the dispatch chain
+        # nests `if`s and ends in a re-raise.
+        from pyvelox.compiler import compile_string
+        compile_string(
+            'class A(Exception):\n    pass\n'
+            'class B(Exception):\n    pass\n'
+            'try:\n'
+            '    raise A("oops")\n'
+            'except A as e:\n'
+            '    x = 1\n'
+            'except B as e:\n'
+            '    x = 2\n'
+            'except Exception as e:\n'
+            '    x = 3\n')
+
+    def test_undefined_class_in_except_is_compile_error(self):
+        # `except SomethingNotAClass:` fails at compile time --
+        # otherwise the user might think the legacy `raise
+        # UnboundName(...)` would be filtered by name.
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'try:\n'
+                '    x = 1\n'
+                'except UndefinedClass as e:\n'
+                '    pass\n')
+        self.assertIn("UndefinedClass", ctx.exception.raw_message)
+        self.assertIn("class defined", ctx.exception.raw_message)
+
+    def test_tuple_type_filter_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'class A(Exception):\n    pass\n'
+                'class B(Exception):\n    pass\n'
+                'try:\n'
+                '    x = 1\n'
+                'except (A, B) as e:\n'
+                '    pass\n')
+        self.assertIn("tuple", ctx.exception.raw_message)
+
+    def test_catch_all_before_typed_clause_is_compile_error(self):
+        # An `except:` (or `except Exception:`) earlier in the chain
+        # would shadow later typed clauses. Refuse so the user
+        # notices the unreachable code.
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'class A(Exception):\n    pass\n'
+                'try:\n'
+                '    x = 1\n'
+                'except Exception as e:\n'
+                '    pass\n'
+                'except A as e:\n'
+                '    pass\n')
+        self.assertIn("unreachable", ctx.exception.raw_message)
+
+    def test_bare_except_compiles(self):
+        # The bare `except:` form (no type filter) should still
+        # compile -- it's the catch-all that pre-dated typed
+        # handlers.
+        from pyvelox.compiler import compile_string
+        compile_string(
+            'try:\n'
+            '    raise UnboundName("legacy")\n'
+            'except:\n'
+            '    x = 1\n')
+
+
 if __name__ == '__main__':
     unittest.main()

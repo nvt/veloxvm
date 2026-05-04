@@ -2608,77 +2608,186 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         return self._wrap_with_sentinel_guard(
             loop_call, self.BREAK_SENTINEL)
 
+    # Synthetic name bound by the VM's `guard` to the caught
+    # exception. User-named `as e:` clauses introduce their own
+    # let-style scope around the handler body so the user's name
+    # binds to this same value.
+    _GUARD_EXC_VAR = '_exc'
+
     def translate_try(self, node: ast.Try) -> bytes:
         """
-        Translate try/except:
-        try: body except Exception as e: handler
-        ->
-        (guard exc handler body)
+        Translate try/except, including typed handlers and multiple
+        clauses:
 
-        VeloxVM's `guard` takes exactly three arguments — the bound
-        exception variable, the handler, and the body — and runs the
-        handler on every exception. Only a single bare `except:` or
-        `except Exception:` is currently implementable; typed handlers
-        (`except KeyError:`) and multiple handlers would silently
-        become catch-alls if we translated them, so we refuse them at
-        compile time instead.
+            try:
+                body
+            except SomeError as e:
+                clause1
+            except (Other1, Other2):    # tuple form -- not supported yet
+                clause2
+            except Exception:
+                catch_all
+
+        lowers to a single guard whose handler body chains
+        type-check `if`s, falling through to a re-raise when no
+        clause matches:
+
+            (guard _exc
+              (if <type-check-1>
+                  ((lambda (e) clause1) _exc)
+                  (if <type-check-2>
+                      clause2
+                      (if <type-check-3>
+                          catch_all
+                          (raise _exc))))
+              body)
+
+        Type-check rules per clause:
+
+        - No type, or `except Exception:` -- always matches. Treated
+          as a catch-all alias so the existing `except Exception:`
+          shape keeps absorbing both pyinstance exceptions and the
+          legacy py-exception tagged-vector form.
+        - `except SomeClass:` where SomeClass is a known class
+          (registered in self._defined_classes) -- emits
+          `(_pyvelox_isinstance _exc SomeClass)`.
+        - Anything else (tuples, attribute access, undefined names)
+          is refused at compile time.
+
+        Each clause's `as e:` binding is local to that clause's
+        body via an immediate-lambda wrapping. _exception_handler_vars
+        is pushed/popped per clause so translate_raise's
+        re-raise-passthrough finds the right name.
+
+        Loop-sentinel filter is applied once, at the guard level,
+        before any user clause runs -- a break/continue sentinel
+        re-raises immediately rather than threading through every
+        type check.
         """
         body_bytes = self.translate_block(node.body)
 
         if not node.handlers:
-            # No handlers, just execute body
             return body_bytes
 
-        if len(node.handlers) > 1:
-            raise NotImplementedError(
-                "pyvelox does not yet support multiple except clauses; use a "
-                "single bare `except:` or `except Exception:` handler."
-            )
+        guard_var = self._GUARD_EXC_VAR
 
-        handler = node.handlers[0]
-        if handler.type is not None and not (
-            isinstance(handler.type, ast.Name) and handler.type.id == 'Exception'
-        ):
-            raise NotImplementedError(
-                f"pyvelox does not yet filter on exception types "
-                f"(`except {ast.unparse(handler.type)}:`). Every handler "
-                f"currently catches every exception, so typed handlers would "
-                f"be misleading. Use a bare `except:` for now."
-            )
-        exc_var = handler.name if handler.name else 'obj'
+        # Build the dispatch chain bottom-up so each `if` has the
+        # next clause (or the final re-raise) as its `else` branch.
+        chain = create_inline_call(
+            'raise', [encode_symbol(guard_var, self.bc)], self.bc)
 
-        # Push the bound name so translate_raise / translate_attribute
-        # inside the handler body can recognise references to the
-        # caught exception. Only `as e:` introduces a real Python
-        # binding; the synthetic 'obj' default is still pushed so
-        # raise-passthrough on it works in the legacy
-        # except-without-as case.
-        self._exception_handler_vars.append(exc_var)
-        try:
-            # Handler body
-            handler_bytes = self.translate_block(handler.body)
-        finally:
-            self._exception_handler_vars.pop()
+        # Track whether we've seen a catch-all -- subsequent clauses
+        # would be unreachable. Refuse like CPython does.
+        seen_catch_all = False
+        for handler in reversed(node.handlers):
+            if seen_catch_all:
+                # Working bottom-up means the catch-all is *later* in
+                # source order than this clause; clauses *after* a
+                # catch-all are unreachable. Detect via a forward
+                # pass instead of bottom-up. Pre-pass below handles
+                # this; nothing to do here.
+                pass
+            check = self._build_except_type_check(
+                handler.type, guard_var)
+            body = self._build_except_handler_body(
+                handler, guard_var)
+            chain = create_inline_call(
+                'if', [check, body, chain], self.bc)
 
-        # Inside a loop, an `except:` written by the user shouldn't
-        # accidentally swallow our break/continue sentinels. Prepend a
-        # filter that re-raises if the bound exception is one of those
-        # sentinels:
-        #   (if (or (eqp exc 'break) (eqp exc 'continue)) (raise exc) <user-handler>)
+        # Pre-pass already done: now check forward order for an
+        # earlier catch-all that hides later clauses.
+        for i, handler in enumerate(node.handlers[:-1]):
+            if self._is_catch_all_handler_type(handler.type):
+                raise NotImplementedError(
+                    f"`except:` / `except Exception:` clause at "
+                    f"position {i + 1} catches everything; later "
+                    f"`except` clauses are unreachable.")
+
+        # Loop-sentinel filter wraps the whole dispatch so a
+        # break/continue sentinel re-raises before any user clause
+        # gets a chance to absorb it.
         if self._loop_depth > 0:
-            handler_bytes = self._filter_loop_sentinels(exc_var, handler_bytes)
+            chain = self._filter_loop_sentinels(guard_var, chain)
 
-        # Store body and handler as separate expressions
         body_ref = self._hoist(body_bytes)
-
-        handler_ref = self._hoist(handler_bytes)
-
-        # (guard exc_var handler body) — guard's min/max argc is 3.
+        chain_ref = self._hoist(chain)
         return create_inline_call('guard', [
-            encode_symbol(exc_var, self.bc),
-            handler_ref,
+            encode_symbol(guard_var, self.bc),
+            chain_ref,
             body_ref
         ], self.bc)
+
+    def _is_catch_all_handler_type(self, type_node) -> bool:
+        """True for `except:` (no type) and `except Exception:`
+        (the catch-all alias). Used by translate_try to detect a
+        catch-all that would shadow later clauses."""
+        if type_node is None:
+            return True
+        return (isinstance(type_node, ast.Name)
+                and type_node.id == 'Exception')
+
+    def _build_except_type_check(self, type_node,
+                                 guard_var: str) -> bytes:
+        """Return the bytecode for the type-check predicate of a
+        single except clause. See translate_try docstring for the
+        rules."""
+        if self._is_catch_all_handler_type(type_node):
+            return encode_boolean(True)
+        if isinstance(type_node, ast.Name):
+            class_name = type_node.id
+            safe = self.get_safe_name(class_name)
+            if safe not in self._defined_classes:
+                raise NotImplementedError(
+                    f"`except {class_name}:` requires {class_name} to "
+                    f"be a class defined earlier in the same module. "
+                    f"Use `except Exception:` to catch the legacy "
+                    f"`raise UnknownName(...)` shape.")
+            self._emit_oop_helpers()
+            return create_inline_call(
+                '_pyvelox_isinstance',
+                [encode_symbol(guard_var, self.bc),
+                 encode_symbol(safe, self.bc)],
+                self.bc)
+        if isinstance(type_node, ast.Tuple):
+            raise NotImplementedError(
+                "`except (A, B):` (tuple of exception types) is not "
+                "yet supported. Use one `except` clause per type, or "
+                "an `except Exception:` plus `if isinstance(e, ...)` "
+                "inside the body.")
+        raise NotImplementedError(
+            f"Unsupported `except` type filter: "
+            f"{type(type_node).__name__}.")
+
+    def _build_except_handler_body(self, handler,
+                                   guard_var: str) -> bytes:
+        """Translate a single except clause's body. If the handler
+        has an `as <name>` binding, wrap the body in
+        `((lambda (<name>) body) <guard-var>)` so the name is bound
+        per-clause without conflicting across multiple clauses (each
+        clause's `as` introduces its own scope)."""
+        bound_name = handler.name
+        # Use the user's name when present; otherwise push a
+        # synthetic 'obj' marker so translate_raise's re-raise-
+        # passthrough behaves consistently with pre-typed-handler
+        # versions of the compiler. The synthetic name isn't
+        # actually written into a let (no AST reference exists for
+        # it).
+        push_name = bound_name if bound_name else 'obj'
+        self._exception_handler_vars.append(push_name)
+        try:
+            body_bytes = self.translate_block(handler.body)
+        finally:
+            self._exception_handler_vars.pop()
+        if bound_name is None:
+            return body_bytes
+        # Wrap in immediate-lambda so the user's `as e:` name is in
+        # scope only for this clause's body.
+        bind_lambda_ref = self._emit_lambda(
+            [self.get_safe_name(bound_name)], body_bytes,
+            is_function=True)
+        return create_inline_call(
+            bind_lambda_ref,
+            [encode_symbol(guard_var, self.bc)], self.bc)
 
     def _filter_loop_sentinels(self, exc_var: str,
                                handler_bytes: bytes) -> bytes:
