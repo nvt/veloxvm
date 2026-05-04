@@ -1302,7 +1302,55 @@ class TestClassDef(unittest.TestCase):
         self.assertIn("@deco", ctx.exception.raw_message)
         self.assertIn("not supported", ctx.exception.raw_message)
 
-    def test_method_decorator_is_compile_error(self):
+    def test_classmethod_compiles(self):
+        # Sanity: bare @classmethod is recognised. The wrapped
+        # closure is a variadic bind_function_rest so it can adapt
+        # the universal `(recv args...)` calling convention.
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(
+            'class Foo:\n'
+            '    @classmethod\n'
+            '    def make(cls, n):\n'
+            '        return cls(n)\n'
+            '    def __init__(self, n):\n'
+            '        self.n = n\n')
+        all_bytes = b''.join(bc.expressions)
+        # cls(n) inside the body lowers through _pyvelox_invoke.
+        self.assertIn(encode_symbol('_pyvelox_invoke', bc), all_bytes)
+
+    def test_staticmethod_compiles(self):
+        from pyvelox.compiler import compile_string
+        compile_string(
+            'class Foo:\n'
+            '    @staticmethod\n'
+            '    def helper(x):\n'
+            '        return x + 1\n')
+
+    def test_class_of_helper_emitted(self):
+        # _pyvelox_class_of is now part of the OOP helper batch and
+        # gets emitted alongside the other class machinery whenever
+        # a class is defined.
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'class Foo:\n    pass\n')
+        self.assertIn(encode_symbol('_pyvelox_class_of', bc), all_bytes)
+
+    def test_double_decorator_is_compile_error(self):
+        # @classmethod + @staticmethod on the same method is
+        # nonsensical; refuse instead of silently picking one.
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'class Foo:\n'
+                '    @classmethod\n'
+                '    @staticmethod\n'
+                '    def m(x):\n'
+                '        return x\n')
+        self.assertIn("classmethod", ctx.exception.raw_message)
+
+    def test_unknown_method_decorator_is_compile_error(self):
+        # @classmethod and @staticmethod are now recognised; any
+        # other method decorator name still raises.
         from pyvelox.compiler import compile_string
         with self.assertRaises(PyveloxCompileError) as ctx:
             compile_string(
@@ -1311,7 +1359,8 @@ class TestClassDef(unittest.TestCase):
                 '    @deco\n'
                 '    def m(self):\n'
                 '        return 1\n')
-        self.assertIn("Method decorators", ctx.exception.raw_message)
+        self.assertIn("@deco", ctx.exception.raw_message)
+        self.assertIn("not supported", ctx.exception.raw_message)
 
     def test_class_level_assignment_is_compile_error(self):
         from pyvelox.compiler import compile_string

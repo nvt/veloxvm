@@ -180,7 +180,13 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         # consults the top of the stack when it sees `super().m(args)`
         # so the lookup can start from the class's parent and pass
         # the right `self` value.
-        self._enclosing_class_stack: List["tuple[str, str]"] = []
+        # (enclosing-class-safe-name, recv-param-safe-name, is-classmethod)
+        # is_classmethod tells translate_call whether a bare
+        # `cls(...)` call inside the body should be lowered as
+        # instance construction (via _pyvelox_invoke) rather than a
+        # plain function call.
+        self._enclosing_class_stack: List[
+            "tuple[str, Optional[str], bool]"] = []
 
     def is_vm_primitive(self, name: str) -> bool:
         """Check if a name conflicts with a VM primitive."""
@@ -1019,7 +1025,11 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         # optional pass / docstring). For @dataclass we additionally
         # allow `name: type` annotations declaring fields. Anything
         # else gets refused so silent miscompiles don't sneak in.
-        method_nodes: List[ast.FunctionDef] = []
+        # Each entry: (kind, FunctionDef) where kind is 'instance',
+        # 'class', or 'static'. Kind drives the wrapper applied at
+        # class-def time so all three call shapes work through the
+        # universal `(recv args...)` calling convention.
+        method_entries: List["tuple[str, ast.FunctionDef]"] = []
         # Each entry: (field-name, default-expr-or-None). Defaulted
         # fields must come after non-defaulted ones (CPython
         # enforces this; we mirror it). The default expression is
@@ -1028,11 +1038,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         dataclass_fields: List["tuple[str, Optional[ast.expr]]"] = []
         for stmt in node.body:
             if isinstance(stmt, ast.FunctionDef):
-                if stmt.decorator_list:
-                    raise NotImplementedError(
-                        f"Method decorators (on `{stmt.name}`) are not "
-                        f"yet supported.")
-                method_nodes.append(stmt)
+                kind = self._classify_method_decorators(stmt)
+                method_entries.append((kind, stmt))
             elif isinstance(stmt, ast.Pass):
                 continue
             elif (isinstance(stmt, ast.Expr)
@@ -1075,7 +1082,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                 "@dataclass requires at least one annotated field "
                 "(`name: type`); use a plain class otherwise.")
         if dataclass_fields and any(
-                m.name == '__init__' for m in method_nodes):
+                m.name == '__init__' for _kind, m in method_entries):
             # CPython skips dataclass __init__ synthesis when the
             # user provides one. Keep the user's __init__ and ignore
             # the field list for synthesis purposes.
@@ -1102,9 +1109,13 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         # don't emit a `define` for them -- only the class object's
         # define at the bottom.
         method_pairs: List[bytes] = []
-        for method_node in method_nodes:
-            method_lambda = self._compile_method_lambda(
-                method_node, enclosing_class=safe_class_name)
+        for kind, method_node in method_entries:
+            real_lambda = self._compile_method_lambda(
+                method_node,
+                enclosing_class=safe_class_name,
+                kind=kind)
+            method_lambda = self._wrap_method_for_kind(
+                real_lambda, kind)
             pair = create_inline_call(
                 'cons',
                 [create_inline_call(
@@ -1147,6 +1158,70 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             'define',
             [encode_symbol(safe_class_name, self.bc), class_vector],
             self.bc)
+
+    def _classify_method_decorators(self, method_node) -> str:
+        """Map a method's decorator list to one of 'instance',
+        'class', 'static'. Refuses anything other than the bare
+        `@classmethod` / `@staticmethod` Names. The two recognised
+        decorators are mutually exclusive."""
+        kind = 'instance'
+        for deco in method_node.decorator_list:
+            if isinstance(deco, ast.Name) and deco.id in (
+                    'classmethod', 'staticmethod'):
+                target = 'class' if deco.id == 'classmethod' else 'static'
+                if kind != 'instance':
+                    raise NotImplementedError(
+                        f"Method `{method_node.name}` has both "
+                        f"@classmethod and @staticmethod (or repeats "
+                        f"one) -- pick exactly one.")
+                kind = target
+                continue
+            raise NotImplementedError(
+                f"Method decorator @{ast.unparse(deco)} on "
+                f"`{method_node.name}` is not supported. Only bare "
+                f"@classmethod and @staticmethod are recognised.")
+        return kind
+
+    def _wrap_method_for_kind(self, real_lambda: bytes,
+                              kind: str) -> bytes:
+        """Wrap a compiled method closure so all three call shapes
+        share the universal `(recv args...)` calling convention.
+
+        - instance: no wrapper. `(real recv args...)` runs directly.
+        - static:  wrapper drops `recv`, applies real to just args.
+        - class:   wrapper computes `_pyvelox_class_of(recv)` and
+                   passes it as the first arg instead of recv. So
+                   both `obj.classmethod(args)` and
+                   `Class.classmethod(args)` reach `real(class, args)`.
+
+        Wrappers are variadic via bind_function_rest so they don't
+        constrain the number of args the user's method declares.
+        """
+        if kind == 'instance':
+            return real_lambda
+        if kind not in ('class', 'static'):
+            raise ValueError(f"unknown method kind: {kind}")
+
+        # Reference the real method via a form-ref since real_lambda
+        # is itself a form-ref to a hoisted lambda; embedding it as
+        # the operator of an inline form is fine.
+        sym_recv = lambda: encode_symbol('_recv', self.bc)
+        sym_args = lambda: encode_symbol('_args', self.bc)
+        if kind == 'static':
+            apply_call = create_inline_call(
+                'apply', [real_lambda, sym_args()], self.bc)
+        else:  # class
+            cls_of_recv = create_inline_call(
+                '_pyvelox_class_of', [sym_recv()], self.bc)
+            apply_call = create_inline_call(
+                'apply',
+                [real_lambda,
+                 create_inline_call(
+                     'cons', [cls_of_recv, sym_args()], self.bc)],
+                self.bc)
+        return self._emit_lambda(
+            ['_recv', '_args'], apply_call,
+            is_function=True, has_rest=True)
 
     def _synthesize_dataclass_init(
             self,
@@ -1242,17 +1317,22 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             is_function=True, has_rest=True)
 
     def _compile_method_lambda(self, node: ast.FunctionDef, *,
-                               enclosing_class: str) -> bytes:
+                               enclosing_class: str,
+                               kind: str = 'instance') -> bytes:
         """Compile a method definition's body into a lambda form-ref,
         without binding the name at any scope. Mirrors
         translate_function_def's body-compilation half but skips the
-        outer `define`. The first parameter (`self` by convention) is
-        treated like any other -- the call site is responsible for
-        passing the receiver as the first actual.
+        outer `define`. The first parameter (`self` / `cls` by
+        convention) is treated like any other -- the call site is
+        responsible for passing the receiver as the first actual.
 
-        The (enclosing_class, self-name) pair is pushed onto
-        self._enclosing_class_stack across the body-compile so
-        super().m() inside the body can find the class context."""
+        `kind` is 'instance' / 'class' / 'static'. For 'class',
+        translate_call rewrites bare `cls(args)` calls inside the
+        body into instance construction (via _pyvelox_invoke) so the
+        common alternative-constructor pattern works. For 'static',
+        there's no implicit receiver -- the `self` slot of the stack
+        entry is None, and super() inside the body refuses with the
+        usual "no parameter" message."""
         # Validate signature (covers *args, defaults, etc.) and record
         # the rest-parameter name so calls into this method via the
         # method-dispatch path don't fight the default-padding logic.
@@ -1275,13 +1355,15 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                       - set(all_params))
         local_set = set(all_params) | local_vars
 
-        # Track the enclosing class + self-name for super() lookups
-        # during body compilation. Methods without any parameter (a
-        # questionable shape, but legal) get a placeholder self name
-        # that super() lowering will refuse to use.
+        # Track the enclosing class + self-name + classmethod-flag
+        # for super() lookups and cls() instance-construction during
+        # body compilation. Methods without any parameter (a
+        # questionable shape, but legal) get a None self name that
+        # super() lowering will refuse to use.
         self_name = safe_params[0] if safe_params else None
+        is_classmethod = kind == 'class'
         self._enclosing_class_stack.append(
-            (enclosing_class, self_name))
+            (enclosing_class, self_name, is_classmethod))
         try:
             with self._function_scope(local_set, node.body) as (captures, boxed_names):
                 body_bytes = self.translate_function_body(
@@ -1784,6 +1866,97 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             self.bc)
         self._preamble.extend(define_isinstance)
 
+        # _pyvelox_class_of(obj): return the class object for
+        # method lookup. If `obj` is itself a class, use it directly
+        # so `Class.method(...)` lookups don't have to walk through
+        # an instance. Otherwise use slot 1 (the class reference)
+        # of the instance vector.
+        sym_obj = lambda: encode_symbol('obj', self.bc)
+        is_class_check = create_inline_call(
+            'and',
+            [create_inline_call('vectorp', [sym_obj()], self.bc),
+             create_inline_call(
+                 'equal',
+                 [create_inline_call(
+                     'vector_length', [sym_obj()], self.bc),
+                  encode_integer(4)],
+                 self.bc),
+             create_inline_call(
+                 'eqp',
+                 [create_inline_call(
+                     'vector_ref',
+                     [sym_obj(), encode_integer(0)], self.bc),
+                  create_inline_call(
+                      'quote',
+                      [encode_symbol(self.CLASS_TAG, self.bc)],
+                      self.bc)],
+                 self.bc)],
+            self.bc)
+        class_of_body = create_inline_call(
+            'if',
+            [is_class_check,
+             sym_obj(),
+             create_inline_call(
+                 'vector_ref',
+                 [sym_obj(), encode_integer(1)], self.bc)],
+            self.bc)
+        class_of_lambda_ref = self._emit_lambda(
+            ['obj'], class_of_body, is_function=True)
+        define_class_of = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_class_of', self.bc),
+             class_of_lambda_ref],
+            self.bc)
+        self._preamble.extend(define_class_of)
+
+        # _pyvelox_invoke(callable, args): runtime dispatch for the
+        # `cls(args)` pattern inside a classmethod body. If callable
+        # is a class object, route to make_instance so user code
+        # gets an instance back. Otherwise apply normally. Used only
+        # from the classmethod-self-call path; regular calls bypass
+        # this helper.
+        sym_callable = lambda: encode_symbol('callable', self.bc)
+        sym_invoke_args = lambda: encode_symbol('args', self.bc)
+        is_class_check2 = create_inline_call(
+            'and',
+            [create_inline_call(
+                'vectorp', [sym_callable()], self.bc),
+             create_inline_call(
+                 'equal',
+                 [create_inline_call(
+                     'vector_length', [sym_callable()], self.bc),
+                  encode_integer(4)],
+                 self.bc),
+             create_inline_call(
+                 'eqp',
+                 [create_inline_call(
+                     'vector_ref',
+                     [sym_callable(), encode_integer(0)], self.bc),
+                  create_inline_call(
+                      'quote',
+                      [encode_symbol(self.CLASS_TAG, self.bc)],
+                      self.bc)],
+                 self.bc)],
+            self.bc)
+        invoke_body = create_inline_call(
+            'if',
+            [is_class_check2,
+             create_inline_call(
+                 '_pyvelox_make_instance',
+                 [sym_callable(), sym_invoke_args()], self.bc),
+             create_inline_call(
+                 'apply',
+                 [sym_callable(), sym_invoke_args()], self.bc)],
+            self.bc)
+        invoke_lambda_ref = self._emit_lambda(
+            ['callable', 'args'], invoke_body, is_function=True)
+        define_invoke = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_invoke', self.bc),
+             invoke_lambda_ref],
+            self.bc)
+        self._preamble.extend(define_invoke)
+
     def translate_lambda(self, node: ast.Lambda) -> bytes:
         """Translate `lambda x: expr` — Python lambdas are real
         functions (like `def`), so they get `bind_function`. Unlike
@@ -1861,20 +2034,74 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
              arg_list],
             self.bc)
 
+    def _is_classmethod_recv_call(self, name: str) -> bool:
+        """True iff `name` is the receiver parameter of the
+        classmethod whose body we're currently compiling. The
+        compiler dispatches `cls(args)` (and any other call where
+        the callee name matches the recv-param of the active
+        classmethod) through _pyvelox_invoke so users can do
+        `cls(args)` to construct an instance of the actual runtime
+        class -- the standard alternative-constructor pattern."""
+        if not self._enclosing_class_stack:
+            return False
+        _enc, recv_name, is_classmethod = (
+            self._enclosing_class_stack[-1])
+        return is_classmethod and recv_name == name
+
+    def _translate_classmethod_self_call(self, recv_name: str,
+                                         arg_nodes: List[ast.expr],
+                                         starred_idxs: List[int]) -> bytes:
+        """Lower `cls(args)` inside a classmethod via the runtime
+        _pyvelox_invoke dispatch. The args list is built at the call
+        site (mirroring the *args-forwarding shape) so the helper can
+        choose between make_instance and apply at runtime based on
+        whether `cls` is actually a class object."""
+        if starred_idxs and starred_idxs[0] != len(arg_nodes) - 1:
+            raise NotImplementedError(
+                "Positional arguments after *-argument are not "
+                "supported in classmethod cls(...) calls either.")
+        if starred_idxs:
+            fixed_nodes = arg_nodes[:-1]
+            arg_list = self.translate_expr_with_ref(arg_nodes[-1].value)
+            for fixed in reversed(fixed_nodes):
+                fixed_bytes = self.translate_expr_with_ref(fixed)
+                arg_list = create_inline_call(
+                    'cons', [fixed_bytes, arg_list], self.bc)
+        else:
+            arg_list = create_inline_call(
+                'list',
+                [self.translate_expr_with_ref(a) for a in arg_nodes],
+                self.bc)
+        self._emit_oop_helpers()
+        return create_inline_call(
+            '_pyvelox_invoke',
+            [encode_symbol(self.get_safe_name(recv_name), self.bc),
+             arg_list],
+            self.bc)
+
     def _translate_user_method_call(self, recv_node: ast.expr,
                                     method_name: str,
                                     arg_nodes: List[ast.expr]) -> bytes:
-        """Lower `obj.method(args)` for an unknown method name to a
+        """Lower `recv.method(args)` for an unknown method name to a
         runtime method-lookup-and-call:
 
-            ((_pyvelox_lookup_method (vector-ref obj 1) 'method)
-             obj arg1 arg2 ...)
+            ((_pyvelox_lookup_method (_pyvelox_class_of recv) 'method)
+             recv arg1 arg2 ...)
+
+        `_pyvelox_class_of` returns recv when recv is itself a class
+        object, or recv.class otherwise -- so `Class.classmethod(...)`
+        and `obj.classmethod(...)` both reach the right method-alist.
 
         The receiver is hoisted into the expression table once and
         the form-ref appears in two positions (the class fetch and
-        the self argument); each form-ref re-evaluation just
-        dereferences the cached expression, so this is safe even for
-        side-effecting receivers."""
+        the recv argument that wrappers may consult); each form-ref
+        re-evaluation just dereferences the cached expression, so
+        this is safe even for side-effecting receivers.
+
+        Whether the looked-up closure is wrapped (classmethod /
+        staticmethod adapter) or plain is opaque to this call site:
+        all three method kinds share the universal `(recv args...)`
+        calling convention courtesy of _wrap_method_for_kind."""
         # Reject *args here -- forwarding through method dispatch
         # would need an extra apply, which the lookup already uses.
         if any(isinstance(a, ast.Starred) for a in arg_nodes):
@@ -1885,8 +2112,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         method_quoted = create_inline_call(
             'quote', [encode_symbol(method_name, self.bc)], self.bc)
         class_lookup = create_inline_call(
-            'vector_ref',
-            [recv_token, encode_integer(1)], self.bc)
+            '_pyvelox_class_of', [recv_token], self.bc)
         method_closure = create_inline_call(
             '_pyvelox_lookup_method',
             [class_lookup, method_quoted], self.bc)
@@ -2073,7 +2299,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         if not self._enclosing_class_stack:
             raise NotImplementedError(
                 "super() can only be used inside a method body.")
-        enclosing_class, self_name = self._enclosing_class_stack[-1]
+        enclosing_class, self_name, _is_classmethod = (
+            self._enclosing_class_stack[-1])
         if self_name is None:
             raise NotImplementedError(
                 "super() needs the enclosing method's first "
@@ -2195,6 +2422,15 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             if (self.get_safe_name(callee_name) in self._defined_classes
                     and callee_name not in self.renamed_vars):
                 return self._translate_instance_construction(
+                    callee_name, node.args, starred_idxs)
+            # Special-case 2c: `cls(args)` inside a classmethod body.
+            # `cls` is a runtime parameter pointing at a class object,
+            # so the static "is the name a defined class?" check
+            # above doesn't catch it. Route through _pyvelox_invoke
+            # which dispatches at runtime: class -> make_instance,
+            # otherwise apply.
+            if self._is_classmethod_recv_call(callee_name):
+                return self._translate_classmethod_self_call(
                     callee_name, node.args, starred_idxs)
             # Resolve the callee carefully: when a user binding shadows
             # a primitive (tracked in renamed_vars by get_safe_name),

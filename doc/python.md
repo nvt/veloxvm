@@ -66,7 +66,7 @@ source line; the CLI prints the same and exits non-zero.
 | Dict / set comprehensions | No | |
 | Generators (`yield`) | No | |
 | f-strings `f"x={x}"` | Yes | Lowers to `string-append` over `str()`. Format specs (`:.2f`) and conversions (`!r`, `!s`, `!a`) are refused. |
-| Decorators | Partial | Bare `@dataclass` on a class (see Custom exception classes / dataclass section). All other class- and function-level decorators are still refused. |
+| Decorators | Partial | Bare `@dataclass` on a class, plus `@classmethod` and `@staticmethod` on methods (see @dataclass / class sections). Other class- and function-level decorators are still refused. |
 | `import lib` | Yes | Loads a port-specific VM library by canonical name. `import math` is a compiler-level no-op so `math.isqrt(...)` works without needing the VM to define a math library. |
 | `import x as y`, `from x import y` | No | |
 
@@ -209,6 +209,18 @@ fall through to a re-raise when nothing matches. Tuple filters
 (`except (A, B):`) aren't yet supported; expand them into separate
 clauses or use an `except Exception:` plus `if isinstance(e, ...)`
 inside the body.
+
+`@classmethod` and `@staticmethod` are recognised on methods. At
+class-def time each method is wrapped (or not, for plain instance
+methods) so all three kinds share the universal `(recv args...)`
+calling convention -- the wrapper drops the receiver for
+staticmethods, or substitutes the class object (via
+`_pyvelox_class_of`) for classmethods. Both `Class.method(args)`
+and `obj.method(args)` reach the right entry. `cls(args)` inside a
+classmethod body lowers through `_pyvelox_invoke`, which dispatches
+at runtime to either `_pyvelox_make_instance` (when `cls` is a
+class) or a plain apply, so the standard alternative-constructor
+pattern works for subclasses too.
 
 What's deferred to later steps: multiple inheritance + MRO,
 `@classmethod` / `@staticmethod` / `@property`, dunder operator
