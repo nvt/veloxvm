@@ -44,7 +44,8 @@ source line; the CLI prints the same and exits non-zero.
 | `break`, `continue` | Yes | Implemented via VM exception sentinels. |
 | `def`, `lambda`, `return` | Yes | Closures and free-variable capture supported. |
 | Default arguments `def f(x=10)` | Partial | Defaults must be literal constants (int, bool, str, None). Resolved by call-site padding, so passing `f` as a value (e.g. `map(f, xs)`) doesn't carry the defaults. Lambdas with defaults are refused. |
-| `*args` / `**kwargs`, keyword-only, positional-only | No | Refused at compile time. |
+| `*args` (receive) | Yes | `def f(*args)` and `lambda *args:` lower to `bind_function_rest`; trailing actuals arrive as a list bound to `args`. Combining `*args` with default arguments is refused. Forwarding via `f(*args)` at the call site is not yet supported. |
+| `**kwargs`, keyword-only, positional-only | No | Refused at compile time. |
 | `nonlocal`, `global` | Yes | Recognised by the scope analyser. |
 | `try` / `except` / `raise` | Partial | Single bare `except:` or `except Exception:`; typed handlers and multiple `except` clauses refused. `raise X(msg)` keeps the type, drops the message. |
 | `with` (context managers) | No | |

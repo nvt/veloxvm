@@ -131,6 +131,12 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         # call site references it; keeps subsequent call sites from
         # re-emitting the same constant.
         self._default_bytes: Dict[str, List[Optional[bytes]]] = {}
+        # Functions that accept `*args`. Maps the function's safe name
+        # to the safe name of the rest parameter. Populated by the
+        # signature pre-pass; consulted by translate_call so the
+        # arity/default-padding checks know to allow extra actuals
+        # (which the runtime's bind_function_rest soaks up as a list).
+        self._vararg_funcs: Dict[str, str] = {}
 
     def is_vm_primitive(self, name: str) -> bool:
         """Check if a name conflicts with a VM primitive."""
@@ -251,14 +257,13 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             self._collect_function_defaults(child)
 
     def _validate_function_signature(self, node, is_lambda: bool) -> None:
-        """Refuse vararg/kwarg/kw-only/positional-only forms; for
-        FunctionDefs also encode and record any literal defaults.
+        """Refuse kwarg/kw-only/positional-only forms; for FunctionDefs
+        also encode and record any literal defaults, and record the
+        rest-parameter name if `*args` is present.
+
         Raises NotImplementedError on anything we don't handle — the
         caller wraps it with a source location."""
         args = node.args
-        if args.vararg is not None:
-            raise NotImplementedError(
-                "*args is not yet supported in pyvelox")
         if args.kwarg is not None:
             raise NotImplementedError(
                 "**kwargs is not yet supported in pyvelox")
@@ -270,6 +275,18 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             raise NotImplementedError(
                 "Positional-only arguments (the `/` separator) are not "
                 "yet supported in pyvelox")
+        # *args + defaults is legal in CPython (`def f(a, b=1, *args)`)
+        # but the call-site default-padding logic assumes a fixed-arity
+        # signature. Refuse the combination for now; either feature
+        # works on its own.
+        if args.vararg is not None and args.defaults:
+            raise NotImplementedError(
+                "Combining `*args` with default arguments is not yet "
+                "supported. Drop the defaults or the rest parameter.")
+
+        if args.vararg is not None and not is_lambda:
+            self._vararg_funcs[self.get_safe_name(node.name)] = (
+                self.get_safe_name(args.vararg.arg))
 
         if not args.defaults:
             return
@@ -731,20 +748,27 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
 
     def _emit_lambda(self, params: List[str], body: bytes, *,
                      is_function: bool = False,
+                     has_rest: bool = False,
                      captures: Optional[List[str]] = None) -> bytes:
-        """Build a `(bind[_function] params... body)` form, store it
-        in the expression table, and return its lambda form-ref.
+        """Build a `(bind[_function[_rest]] params... body)` form,
+        store it in the expression table, and return its lambda
+        form-ref.
 
         `is_function=True` marks the lambda as a Python function
         boundary (used by the `return` primitive to know what to
         unwind to); plain lambdas used for control flow stay False.
+
+        `has_rest=True` selects bind_function_rest -- the last entry
+        in `params` is the rest formal that soaks up trailing actuals
+        as a list. Requires is_function=True.
 
         `captures`, if given, is a list of safe names whose IDs are
         recorded against the lambda's expression for the runtime
         closure machinery.
         """
         bind_bytes = create_bind_form(
-            params, body, self.bc, is_function=is_function)
+            params, body, self.bc,
+            is_function=is_function, has_rest=has_rest)
         expr_id = self.bc.add_expression(bind_bytes)
         if captures:
             capture_ids = [self.bc.symbol_table.add_symbol(name)
@@ -812,9 +836,16 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         in the body are hoisted to the top of the lambda via the
         let-expansion in `translate_function_body`; subsequent
         assignments use `set!`.
+
+        `def f(*args)` extends the formal list with the rest-parameter
+        name and emits bind_function_rest -- the rest formal soaks up
+        trailing actuals as a list at runtime.
         """
         safe_func_name = self.get_safe_name(node.name)
         safe_params = [self.get_safe_name(a.arg) for a in node.args.args]
+        rest_name = (self.get_safe_name(node.args.vararg.arg)
+                     if node.args.vararg is not None else None)
+        all_params = safe_params + [rest_name] if rest_name else safe_params
 
         # Encode the function name symbol FIRST so it appears in the
         # symbol table before any of its locals.
@@ -824,8 +855,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         # translate_function_body — drop the params, which are already
         # bound by the lambda's bind form.
         local_vars = (self.collect_assigned_vars(node.body)
-                      - set(safe_params))
-        local_set = set(safe_params) | local_vars
+                      - set(all_params))
+        local_set = set(all_params) | local_vars
         is_nested = len(self.scope_stack) > 1
 
         with self._function_scope(local_set, node.body) as (captures, boxed_names):
@@ -834,8 +865,9 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             # is_function=True marks this as a Python function boundary
             # so the `return` primitive knows what to unwind to.
             lambda_bytes = self._emit_lambda(
-                safe_params, body_bytes,
-                is_function=True, captures=captures)
+                all_params, body_bytes,
+                is_function=True, has_rest=rest_name is not None,
+                captures=captures)
 
         # Top-level defs become global bindings via `define`. Nested
         # defs bind into the enclosing function's let-expansion local
@@ -850,13 +882,18 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         """Translate `lambda x: expr` — Python lambdas are real
         functions (like `def`), so they get `bind_function`. Unlike
         `def`, no variable hoisting — the body is a single expression.
+        `lambda *args: ...` extends the formal list with the rest
+        name and emits bind_function_rest, same as a def.
         """
         safe_params = [self.get_safe_name(a.arg) for a in node.args.args]
+        rest_name = (self.get_safe_name(node.args.vararg.arg)
+                     if node.args.vararg is not None else None)
+        all_params = safe_params + [rest_name] if rest_name else safe_params
         # _analyze_body takes a statement list; wrap the body in an
         # Expr so the same analyser handles lambdas and defs.
         body_stmts = [ast.Expr(value=node.body)]
 
-        with self._function_scope(set(safe_params), body_stmts) as (captures, boxed_names):
+        with self._function_scope(set(all_params), body_stmts) as (captures, boxed_names):
             body_bytes = self.translate_expr(node.body)
             if boxed_names:
                 # Prepend (set! p (box p)) wraps for each boxed param,
@@ -866,8 +903,9 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                 body_bytes = create_inline_call(
                     'begin', wraps + [body_bytes], self.bc)
             return self._emit_lambda(
-                safe_params, body_bytes,
-                is_function=True, captures=captures)
+                all_params, body_bytes,
+                is_function=True, has_rest=rest_name is not None,
+                captures=captures)
 
     def translate_return(self, node: ast.Return) -> bytes:
         """Translate `return value` to `(return value)`.

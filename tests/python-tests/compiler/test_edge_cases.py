@@ -537,11 +537,21 @@ class TestDefaultArguments(unittest.TestCase):
         self.assertEqual(ctx.exception.lineno, 2)
         self.assertIn("missing required", ctx.exception.raw_message)
 
-    def test_varargs_is_compile_error(self):
+    def test_varargs_is_now_supported(self):
         from pyvelox.compiler import compile_string
+        # `*args` used to be refused; it's now lowered to
+        # bind_function_rest. Compile succeeding is the contract.
+        compile_string('def f(*args):\n    return 0\n')
+
+    def test_varargs_with_defaults_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        # `def f(a, b=1, *args)` is legal in CPython but refused for
+        # now -- the call-site default-padding logic assumes a fixed
+        # arity. Either feature works on its own.
         with self.assertRaises(PyveloxCompileError) as ctx:
-            compile_string('def f(*args):\n    return 0\n')
+            compile_string('def f(a, b=1, *args):\n    return a + b\n')
         self.assertIn("*args", ctx.exception.raw_message)
+        self.assertIn("default", ctx.exception.raw_message)
 
     def test_kwargs_is_compile_error(self):
         from pyvelox.compiler import compile_string
@@ -945,6 +955,45 @@ class TestBytesLowering(unittest.TestCase):
         self.assertIn(encode_symbol('vectorp', bc), all_bytes)
         self.assertIn(encode_symbol('vector_length', bc), all_bytes)
         self.assertIn(encode_symbol('length', bc), all_bytes)
+
+
+class TestVarargs(unittest.TestCase):
+    """`def f(*args)` lowering."""
+
+    def _compile_collect(self, source):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(source)
+        all_bytes = b''.join(bc.expressions)
+        return bc, all_bytes, encode_symbol
+
+    def test_vararg_function_emits_bind_function_rest(self):
+        bc, all_bytes, encode_symbol = self._compile_collect(
+            'def f(*args):\n    return 0\n')
+        self.assertIn(encode_symbol('bind_function_rest', bc), all_bytes)
+
+    def test_non_vararg_function_does_not_emit_rest(self):
+        # Sanity: a plain `def` should still use bind_function. If the
+        # rest variant ever leaks into fixed-arity functions we'd
+        # silently change the runtime arity check.
+        bc, all_bytes, encode_symbol = self._compile_collect(
+            'def f(a, b):\n    return a + b\n')
+        self.assertIn(encode_symbol('bind_function', bc), all_bytes)
+        self.assertNotIn(encode_symbol('bind_function_rest', bc), all_bytes)
+
+    def test_vararg_lambda_emits_bind_function_rest(self):
+        bc, all_bytes, encode_symbol = self._compile_collect(
+            'f = lambda *args: args\n')
+        self.assertIn(encode_symbol('bind_function_rest', bc), all_bytes)
+
+    def test_vararg_with_leading_positional(self):
+        # `def f(label, *rest)` should still compile -- the rest
+        # parameter sits after the fixed formals.
+        bc, all_bytes, encode_symbol = self._compile_collect(
+            'def f(label, *rest):\n    return label\n')
+        self.assertIn(encode_symbol('bind_function_rest', bc), all_bytes)
+        self.assertIn(encode_symbol('label', bc), all_bytes)
+        self.assertIn(encode_symbol('rest', bc), all_bytes)
 
 
 if __name__ == '__main__':
