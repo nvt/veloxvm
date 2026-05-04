@@ -64,6 +64,7 @@ class _MethodHandlers:
         # String methods
         'upper':      lambda t, o, a: t.translate_string_upper(o),
         'lower':      lambda t, o, a: t.translate_string_lower(o),
+        'casefold':   lambda t, o, a: t.translate_string_casefold(o),
         'split':      lambda t, o, a: t.translate_string_split(o, a),
         'join':       lambda t, o, a: t.translate_string_join(o, a),
         'startswith': lambda t, o, a: t.translate_string_startswith(o, a),
@@ -307,6 +308,13 @@ class _MethodHandlers:
 
     def translate_string_lower(self, str_expr: ast.expr) -> bytes:
         """Translate `s.lower()`."""
+        return self._translate_string_case(str_expr, 'char_downcase')
+
+    def translate_string_casefold(self, str_expr: ast.expr) -> bytes:
+        """Translate `s.casefold()`. ASCII case-folding is identical
+        to lowercasing -- only Unicode introduces real differences
+        (e.g. German "ß" folds to "ss"), and the VM is ASCII-only.
+        Route through the same lower() implementation."""
         return self._translate_string_case(str_expr, 'char_downcase')
 
     def translate_string_split(self, str_expr: ast.expr, args: List[ast.expr]) -> bytes:

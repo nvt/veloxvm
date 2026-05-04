@@ -546,8 +546,8 @@ class TestCallDispatchRegistry(unittest.TestCase):
             'append', 'extend', 'pop', 'remove', 'reverse',
             'count', 'index', 'insert',
             # String
-            'upper', 'lower', 'split', 'join', 'startswith',
-            'endswith', 'strip', 'replace',
+            'upper', 'lower', 'casefold', 'split', 'join',
+            'startswith', 'endswith', 'strip', 'replace',
         }
         self.assertEqual(set(PythonTranslator._METHOD_HANDLERS), expected)
 
@@ -1553,6 +1553,71 @@ class TestDataclass(unittest.TestCase):
                 '    pass\n')
         self.assertIn("at least one annotated field",
                       ctx.exception.raw_message)
+
+
+class TestCasefoldAndIsqrt(unittest.TestCase):
+    """str.casefold (routed through char_downcase) and math.isqrt
+    (Newton's method via runtime helper). `import math` is a no-op
+    so the import statement compiles to nothing observable."""
+
+    def _compile_collect(self, source):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol, encode_string
+        bc = compile_string(source)
+        all_bytes = b''.join(bc.expressions)
+        return bc, all_bytes, encode_symbol, encode_string
+
+    def test_casefold_uses_char_downcase(self):
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'x = "HELLO".casefold()\n')
+        # ASCII case-fold == lower; both share char_downcase.
+        self.assertIn(encode_symbol('char_downcase', bc), all_bytes)
+
+    def test_isqrt_emits_helper(self):
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'import math\nx = math.isqrt(100)\n')
+        self.assertIn(encode_symbol('_pyvelox_isqrt', bc), all_bytes)
+        self.assertIn(encode_symbol('_pyvelox_isqrt_loop', bc), all_bytes)
+
+    def test_import_math_is_noop(self):
+        # `import math` shouldn't reach the VM's import primitive.
+        # If it did, the runtime would error out trying to load a
+        # math library that doesn't exist.
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'import math\n')
+        # The string "math" shouldn't appear as a string-table entry
+        # passed to import; the only place it would show up is the
+        # symbol_table for the math.isqrt syntactic check, but a
+        # bare `import math` doesn't even populate that.
+        self.assertNotIn('math', bc.symbol_table.symbols)
+
+    def test_unsupported_math_attr_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('import math\nx = math.sin(0.5)\n')
+        self.assertIn("math.sin", ctx.exception.raw_message)
+
+    def test_math_can_be_shadowed_by_local(self):
+        # If the user assigns `math = something`, math.isqrt should
+        # NOT special-case -- the local wins. This matches CPython
+        # (a local `math` shadows the import).
+        from pyvelox.compiler import compile_string
+        # Local `math` -> .isqrt routes through the regular
+        # user-method dispatch (which emits _pyvelox_lookup_method).
+        # The compile shouldn't fail; runtime would error if the
+        # local wasn't a class instance, which is the user's concern.
+        bc = compile_string(
+            'class Mock:\n'
+            '    def isqrt(self, n):\n'
+            '        return -1\n'
+            'math = Mock()\n'
+            'r = math.isqrt(4)\n')
+        from pyvelox.encoder import encode_symbol
+        all_bytes = b''.join(bc.expressions)
+        # No isqrt helper should be emitted -- the special case
+        # didn't fire.
+        self.assertNotIn(
+            encode_symbol('_pyvelox_isqrt', bc), all_bytes)
 
 
 if __name__ == '__main__':

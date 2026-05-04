@@ -67,7 +67,7 @@ source line; the CLI prints the same and exits non-zero.
 | Generators (`yield`) | No | |
 | f-strings `f"x={x}"` | Yes | Lowers to `string-append` over `str()`. Format specs (`:.2f`) and conversions (`!r`, `!s`, `!a`) are refused. |
 | Decorators | Partial | Bare `@dataclass` on a class (see Custom exception classes / dataclass section). All other class- and function-level decorators are still refused. |
-| `import lib` | Yes | Loads a port-specific VM library by canonical name. |
+| `import lib` | Yes | Loads a port-specific VM library by canonical name. `import math` is a compiler-level no-op so `math.isqrt(...)` works without needing the VM to define a math library. |
 | `import x as y`, `from x import y` | No | |
 
 Status values: `Yes` supported, `Partial` supported with documented
@@ -94,7 +94,7 @@ Method calls (only on simple variable receivers; expressions like
 
 | Receiver | Methods |
 |----------|---------|
-| `str` | `upper`, `lower`, `split`, `join`, `startswith`, `endswith`, `strip`, `replace` |
+| `str` | `upper`, `lower`, `casefold`, `split`, `join`, `startswith`, `endswith`, `strip`, `replace` |
 | `list` | `append`, `extend`, `pop` (no-arg), `remove`, `reverse`, `count`, `index`, `insert` |
 | `dict` | `keys`, `values`, `items`, `get` |
 
@@ -214,6 +214,23 @@ descriptor protocol, metaclasses.
 - `int(x)`, `str(x)`, and f-string interpolation insert a runtime
   type-dispatch when `x` isn't a literal. Cheap, but worth pulling
   out of hot loops.
+
+## Pseudo-modules
+
+Some module-style names are recognised by the compiler directly
+rather than going through the VM's library loader, so they work
+without needing a port library. The matching `import` statement
+compiles to a no-op.
+
+| Module | Members |
+|--------|---------|
+| `math` | `isqrt(n)` -- integer square root via Newton's method. Negative `n` raises `ValueError`. |
+
+A local variable named `math` (or any other pseudo-module name)
+shadows the syntactic dispatch -- if you write `math = SomeObj()`,
+`math.isqrt(n)` falls back to regular instance-method dispatch on
+that local. Other `math.*` names than the ones listed above are
+refused at compile time.
 
 ## See also
 

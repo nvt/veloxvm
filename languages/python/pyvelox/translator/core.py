@@ -1827,6 +1827,154 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             self.translate_expr_with_ref(a) for a in arg_nodes]
         return create_inline_call(method_ref, arg_bytes, self.bc)
 
+    def _translate_pseudo_module_call(self, attr_node: ast.Attribute,
+                                      arg_nodes: List[ast.expr]
+                                      ) -> Optional[bytes]:
+        """Recognise `math.isqrt(...)` and other pseudo-module calls.
+        Returns the lowered bytecode if the receiver is a recognised
+        pseudo-module name, or None to let the regular method
+        dispatch take over.
+
+        Tying these to specific Name receivers (rather than
+        registering them as builtin methods like .upper) means a
+        local variable named `math` can still mask the pseudo-module:
+        the receiver has to be a literal Name reference and the name
+        has to actually be in _PSEUDO_MODULES."""
+        if not (isinstance(attr_node.value, ast.Name)
+                and attr_node.value.id in self._PSEUDO_MODULES):
+            return None
+        # User shadowing -- `math = ...` then `math.isqrt(...)` --
+        # falls back to instance method dispatch as if math weren't a
+        # pseudo-module. The shadowed variable wins.
+        if attr_node.value.id in self.scope_stack[-1]:
+            return None
+        if attr_node.value.id == 'math':
+            return self._translate_math_call(attr_node.attr, arg_nodes)
+        return None
+
+    def _translate_math_call(self, name: str,
+                             arg_nodes: List[ast.expr]
+                             ) -> bytes:
+        """Lower `math.NAME(args)` for the supported subset.
+
+        Currently implemented: math.isqrt(n) -- integer square root,
+        Newton's method via a runtime helper. Other math.* names are
+        refused so the user sees a friendly error rather than a
+        runtime "math.X has no method" surprise."""
+        if name == 'isqrt':
+            if len(arg_nodes) != 1:
+                raise ValueError(
+                    f"math.isqrt() takes exactly 1 argument "
+                    f"({len(arg_nodes)} given)")
+            self._emit_isqrt_helper()
+            arg_bytes = self.translate_expr_with_ref(arg_nodes[0])
+            return create_inline_call(
+                '_pyvelox_isqrt', [arg_bytes], self.bc)
+        raise NotImplementedError(
+            f"math.{name} is not supported in pyvelox; only "
+            f"math.isqrt is currently recognised.")
+
+    def _emit_isqrt_helper(self) -> None:
+        """Emit `_pyvelox_isqrt` and `_pyvelox_isqrt_loop` into the
+        program prologue. Idempotent.
+
+        Newton's method on integers, mirroring R7RS
+        exact-integer-sqrt (commit eadc26b on the Scheme side).
+        Negative input raises a structured ValueError so handlers
+        can catch it as `except Exception as e:` and read e.type.
+
+            (define (_pyvelox_isqrt n)
+              (if (< n 0)
+                  (raise <ValueError py-exception>)
+                  (if (< n 2) n (_pyvelox_isqrt_loop n n))))
+
+            (define (_pyvelox_isqrt_loop n x)
+              (let ((y (quotient (+ x (quotient n x)) 2)))
+                (if (>= y x) x (_pyvelox_isqrt_loop n y))))
+        """
+        if '_pyvelox_isqrt' in self._emitted_helpers:
+            return
+        self._emitted_helpers.add('_pyvelox_isqrt')
+
+        sym_n = lambda: encode_symbol('n', self.bc)
+        sym_x = lambda: encode_symbol('x', self.bc)
+        sym_y = lambda: encode_symbol('y', self.bc)
+
+        # _pyvelox_isqrt_loop(n, x):
+        # let y = (n/x + x) / 2
+        # if y >= x then x else recurse with x=y
+        next_y = create_inline_call(
+            'quotient',
+            [create_inline_call(
+                'add',
+                [create_inline_call(
+                    'quotient', [sym_n(), sym_x()], self.bc),
+                 sym_x()],
+                self.bc),
+             encode_integer(2)],
+            self.bc)
+        recurse = create_inline_call(
+            '_pyvelox_isqrt_loop', [sym_n(), sym_y()], self.bc)
+        loop_decision = create_inline_call(
+            'if',
+            [create_inline_call(
+                'greater_than_equal', [sym_y(), sym_x()], self.bc),
+             sym_x(), recurse],
+            self.bc)
+        # ((lambda (y) <decision>) <next-y>)
+        loop_let_inner = self._emit_lambda(
+            ['y'], loop_decision, is_function=True)
+        loop_body = create_inline_call(
+            loop_let_inner, [next_y], self.bc)
+        loop_lambda_ref = self._emit_lambda(
+            ['n', 'x'], loop_body, is_function=True)
+        define_loop = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_isqrt_loop', self.bc),
+             loop_lambda_ref],
+            self.bc)
+        self._preamble.extend(define_loop)
+
+        # _pyvelox_isqrt(n):
+        # if n < 0 -> raise ValueError; n < 2 -> n; else loop.
+        # Build the ValueError directly as a py-exception vector --
+        # using the legacy shape avoids depending on whether the
+        # OOP helpers were emitted (the user might call math.isqrt
+        # without ever defining a class). Handler-side e.args / str(e)
+        # access still works because _pyvelox_get_attr / _pyvelox_str
+        # recognise both shapes.
+        value_error = self._make_exception_obj(
+            'ValueError',
+            [ast.Constant(
+                value="isqrt() argument must be nonnegative")])
+        raise_neg = create_inline_call(
+            'raise', [value_error], self.bc)
+        small_branch = create_inline_call(
+            'if',
+            [create_inline_call(
+                'less_than',
+                [sym_n(), encode_integer(2)], self.bc),
+             sym_n(),
+             create_inline_call(
+                 '_pyvelox_isqrt_loop',
+                 [sym_n(), sym_n()], self.bc)],
+            self.bc)
+        isqrt_body = create_inline_call(
+            'if',
+            [create_inline_call(
+                'less_than',
+                [sym_n(), encode_integer(0)], self.bc),
+             raise_neg, small_branch],
+            self.bc)
+        isqrt_lambda_ref = self._emit_lambda(
+            ['n'], isqrt_body, is_function=True)
+        define_isqrt = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_isqrt', self.bc),
+             isqrt_lambda_ref],
+            self.bc)
+        self._preamble.extend(define_isqrt)
+
     def _is_super_call(self, node) -> bool:
         """True if `node` is a `super()` call expression with no
         arguments. Used by translate_call to detect the
@@ -1933,6 +2081,13 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             if self._is_super_call(node.func.value):
                 return self._translate_super_method_call(
                     node.func.attr, node.args)
+            # Pseudo-module calls (`math.isqrt(...)`) are dispatched
+            # syntactically -- the compiler emits a runtime helper
+            # rather than going through method-on-an-instance.
+            module_call = self._translate_pseudo_module_call(
+                node.func, node.args)
+            if module_call is not None:
+                return module_call
             handler = self._METHOD_HANDLERS.get(node.func.attr)
             if handler is not None:
                 return handler(self, node.func.value, node.args)
@@ -2557,13 +2712,25 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         return create_inline_call(
             'if', [is_sentinel_ref, rethrow_ref, handler_ref], self.bc)
 
+    # Pseudo-modules whose names pyvelox handles syntactically rather
+    # than via the VM's library loader. `import math` is a no-op so
+    # `math.isqrt(n)` (recognised in translate_call) still works
+    # idiomatically.
+    _PSEUDO_MODULES = {'math'}
+
     def translate_import(self, node: ast.Import) -> bytes:
         """Translate `import lib` to the VM's `(import "lib")` primitive.
 
         The VM's import loads a port-specific library (e.g. "sensors",
         "leds") that contributes operators to the current program's
         symbol table. `import a, b` becomes a begin-sequence.
-        `import x as y` is not supported."""
+        `import x as y` is not supported.
+
+        A handful of pseudo-modules (`math`) are handled by the
+        compiler directly via attribute-call dispatch and don't go
+        through the VM loader; their import statement compiles to a
+        no-op so the standard `import math; math.isqrt(...)` shape
+        works without needing the VM to define a math library."""
         calls = []
         for alias in node.names:
             if alias.asname is not None:
@@ -2571,9 +2738,15 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                     "pyvelox does not support `import ... as ...`; "
                     "port libraries are loaded by their canonical name."
                 )
+            if alias.name in self._PSEUDO_MODULES:
+                # No runtime work needed; the compiler handles
+                # math.* calls syntactically.
+                continue
             name_bytes = encode_string(alias.name, self.bc)
             calls.append(create_inline_call('import', [name_bytes], self.bc))
 
+        if not calls:
+            return encode_boolean(False)
         if len(calls) == 1:
             return calls[0]
         return create_inline_call('begin', calls, self.bc)
