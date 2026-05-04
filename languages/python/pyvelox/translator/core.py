@@ -122,14 +122,6 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
     CLASS_SLOT_PARENT = 2
     CLASS_SLOT_METHODS = 3
 
-    # Attribute names that translate_attribute knows how to lower for
-    # an exception object bound by `except as e:`. Maps the Python
-    # attribute name to the slot index in the tagged vector above.
-    # Keep in sync with EXCEPTION_SLOT_*.
-    _EXCEPTION_ATTRS: Dict[str, int] = {
-        'args': 2,
-        'type': 1,
-    }
 
     def __init__(self, bc: Bytecode, source_lines: Optional[List[str]] = None):
         self.bc = bc
@@ -991,6 +983,15 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                 raise NotImplementedError(
                     f"Base class must be a simple name "
                     f"(got {type(base).__name__}).")
+            # Special-case `Exception`: pyvelox auto-injects a
+            # built-in Exception class definition into the program
+            # prologue the first time someone references it as a base
+            # class (or constructs `Exception(...)` directly via
+            # translate_raise). Lets `class MyError(Exception): pass`
+            # work without forcing the user to define Exception
+            # themselves.
+            if base.id == 'Exception':
+                self._emit_exception_class()
             base_safe = self.get_safe_name(base.id)
             if base_safe not in self._defined_classes:
                 raise NotImplementedError(
@@ -1127,6 +1128,95 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         finally:
             self._enclosing_class_stack.pop()
 
+    def _emit_exception_class(self) -> None:
+        """Lazily emit a built-in `Exception` class definition into
+        the program prologue. Triggered when the user subclasses
+        Exception or directly constructs `Exception(args)`. The
+        class registers itself in self._defined_classes so subsequent
+        forward-reference checks for parent='Exception' succeed.
+
+        The synthesised __init__(self, *args) shape stores the args
+        list and the actual class name into the instance's slot-alist
+        so handlers can read e.args and e.type:
+
+            def __init__(self, *args):
+                self.args = args
+                self.type = self.__class__.__name__
+
+        Reading the class name uses (vector-ref (vector-ref self 1) 1)
+        directly -- self.__class__ has no real expression form in
+        pyvelox, but we have the slot indices fixed and inheritance
+        keeps the class name the *subclass*'s name, not Exception's.
+        """
+        if 'Exception' in self._emitted_helpers:
+            return
+        # Helpers that __init__ depends on must already be in the
+        # prologue; emit them first so define order is correct at run
+        # time.
+        self._emit_oop_helpers()
+        self._emitted_helpers.add('Exception')
+        self._defined_classes.add(self.get_safe_name('Exception'))
+
+        sym_self = lambda: encode_symbol('self', self.bc)
+        sym_args = lambda: encode_symbol('args', self.bc)
+
+        # (_pyvelox_set_attr self 'args args)
+        set_args_call = create_inline_call(
+            '_pyvelox_set_attr',
+            [sym_self(),
+             create_inline_call(
+                 'quote',
+                 [encode_symbol('args', self.bc)], self.bc),
+             sym_args()],
+            self.bc)
+        # (vector-ref (vector-ref self 1) 1) -- the class's name string.
+        class_name_lookup = create_inline_call(
+            'vector_ref',
+            [create_inline_call(
+                'vector_ref',
+                [sym_self(), encode_integer(1)], self.bc),
+             encode_integer(1)],
+            self.bc)
+        # (_pyvelox_set_attr self 'type <class-name-string>)
+        set_type_call = create_inline_call(
+            '_pyvelox_set_attr',
+            [sym_self(),
+             create_inline_call(
+                 'quote',
+                 [encode_symbol('type', self.bc)], self.bc),
+             class_name_lookup],
+            self.bc)
+        init_body = create_inline_call(
+            'begin', [set_args_call, set_type_call], self.bc)
+        init_lambda_ref = self._emit_lambda(
+            ['self', 'args'], init_body,
+            is_function=True, has_rest=True)
+
+        init_pair = create_inline_call(
+            'cons',
+            [create_inline_call(
+                'quote',
+                [encode_symbol('__init__', self.bc)], self.bc),
+             init_lambda_ref],
+            self.bc)
+        method_alist = create_inline_call(
+            'list', [self._hoist(init_pair)], self.bc)
+        class_vector = create_inline_call(
+            'vector',
+            [create_inline_call(
+                'quote',
+                [encode_symbol(self.CLASS_TAG, self.bc)], self.bc),
+             encode_string('Exception', self.bc),
+             encode_boolean(False),
+             method_alist],
+            self.bc)
+        define_exc = create_inline_call(
+            'define',
+            [encode_symbol(self.get_safe_name('Exception'), self.bc),
+             class_vector],
+            self.bc)
+        self._preamble.extend(define_exc)
+
     def _emit_oop_helpers(self) -> None:
         """Emit the small runtime library that backs class objects and
         instances. Idempotent. Helpers are written into the program
@@ -1227,27 +1317,97 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         self._preamble.extend(define_lookup)
 
         # _pyvelox_get_attr(instance, name)
-        # Reads instance slot; on miss raises AttributeError.
-        get_body = create_inline_call(
+        # Two receiver shapes are recognised:
+        #
+        # 1. py-exception tagged vector (the shape `raise X(args)`
+        #    builds when X isn't a defined class). Slot 1 holds the
+        #    type string, slot 2 the args list; we surface those as
+        #    `.type` / `.args`. Anything else on a py-exception
+        #    raises AttributeError.
+        #
+        # 2. pyinstance tagged vector (class instances, including
+        #    custom exception subclasses whose __init__ stored
+        #    args/type into the slot-alist). Looks up `name` via
+        #    assoc on slot 2.
+        #
+        # Anything else (a number, list, etc.) falls through to
+        # AttributeError too. This unifies the two exception
+        # representations under one access path so user code can
+        # read `e.args` and `e.type` regardless of which shape the
+        # exception was raised in.
+        py_exc_args = create_inline_call(
+            'vector_ref',
+            [sym_instance(),
+             encode_integer(self.EXCEPTION_SLOT_ARGS)], self.bc)
+        py_exc_type = create_inline_call(
+            'vector_ref',
+            [sym_instance(),
+             encode_integer(self.EXCEPTION_SLOT_TYPE)], self.bc)
+        py_exc_dispatch = create_inline_call(
             'if',
             [create_inline_call(
-                'assoc',
+                'eqp',
                 [sym_name(),
                  create_inline_call(
-                     'vector_ref',
-                     [sym_instance(), encode_integer(2)], self.bc)],
+                     'quote',
+                     [encode_symbol('args', self.bc)], self.bc)],
                 self.bc),
+             py_exc_args,
+             create_inline_call(
+                 'if',
+                 [create_inline_call(
+                     'eqp',
+                     [sym_name(),
+                      create_inline_call(
+                          'quote',
+                          [encode_symbol('type', self.bc)],
+                          self.bc)],
+                     self.bc),
+                  py_exc_type,
+                  attr_error(sym_name())],
+                 self.bc)],
+            self.bc)
+
+        # pyinstance dispatch: assoc on slot 2.
+        slot_alist = create_inline_call(
+            'vector_ref',
+            [sym_instance(), encode_integer(2)], self.bc)
+        instance_dispatch = create_inline_call(
+            'if',
+            [create_inline_call('assoc', [sym_name(), slot_alist], self.bc),
              create_inline_call(
                  'cdr',
                  [create_inline_call(
-                     'assoc',
-                     [sym_name(),
-                      create_inline_call(
-                          'vector_ref',
-                          [sym_instance(), encode_integer(2)], self.bc)],
-                     self.bc)],
+                     'assoc', [sym_name(), slot_alist], self.bc)],
                  self.bc),
              attr_error(sym_name())],
+            self.bc)
+
+        # Outer tag check: same py-exception shape predicate as
+        # _pyvelox_str uses. and short-circuits, so vector-ref only
+        # fires after vectorp confirms the receiver is a vector.
+        is_py_exc = create_inline_call(
+            'and',
+            [create_inline_call('vectorp', [sym_instance()], self.bc),
+             create_inline_call(
+                 'equal',
+                 [create_inline_call(
+                     'vector_length', [sym_instance()], self.bc),
+                  encode_integer(3)],
+                 self.bc),
+             create_inline_call(
+                 'eqp',
+                 [create_inline_call(
+                     'vector_ref',
+                     [sym_instance(), encode_integer(0)], self.bc),
+                  create_inline_call(
+                      'quote',
+                      [encode_symbol(self.EXCEPTION_TAG, self.bc)],
+                      self.bc)],
+                 self.bc)],
+            self.bc)
+        get_body = create_inline_call(
+            'if', [is_py_exc, py_exc_dispatch, instance_dispatch],
             self.bc)
         get_lambda_ref = self._emit_lambda(
             ['instance', 'name'], get_body, is_function=True)
@@ -2348,10 +2508,13 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         exceptions, so the sentinel filter (which compares with eqp)
         keeps working.
         """
-        # Bare `raise` -- generic Exception with empty args.
+        # Bare `raise` -- generic Exception with empty args. When the
+        # user has actually defined Exception (or any class extending
+        # it), prefer the instance shape; otherwise fall back to the
+        # legacy py-exception vector.
         if node.exc is None:
             return create_inline_call(
-                'raise', [self._make_exception_obj('Exception', [])],
+                'raise', [self._make_exception_value('Exception', [])],
                 self.bc)
 
         # `raise NAME`. Decide passthrough vs class-construction by
@@ -2366,18 +2529,47 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                     self.bc)
             return create_inline_call(
                 'raise',
-                [self._make_exception_obj(node.exc.id, [])], self.bc)
+                [self._make_exception_value(node.exc.id, [])], self.bc)
 
         # `raise NAME(args...)` -- construct a fresh exception object.
         if isinstance(node.exc, ast.Call) and isinstance(node.exc.func, ast.Name):
             return create_inline_call(
                 'raise',
-                [self._make_exception_obj(node.exc.func.id, node.exc.args)],
+                [self._make_exception_value(
+                    node.exc.func.id, node.exc.args)],
                 self.bc)
 
         raise NotImplementedError(
             f"raise of {type(node.exc).__name__} is not supported; use "
             f"`raise SomeException(args...)` or `raise <bound name>`.")
+
+    def _make_exception_value(self, type_name: str,
+                              arg_nodes: List[ast.expr]) -> bytes:
+        """Pick the right wire shape for `raise TYPE(args)`.
+
+        When TYPE names a class registered in self._defined_classes
+        (typically Exception or a user subclass thereof), construct
+        an instance through _pyvelox_make_instance. The instance's
+        slot-alist will receive args/type via Exception's __init__,
+        and handler-side `e.args` / `e.type` lookups go through
+        _pyvelox_get_attr's instance branch.
+
+        Otherwise (TYPE is a name not associated with a class --
+        legacy `raise SomeName("msg")` patterns), fall back to the
+        py-exception tagged vector. The handler-side access still
+        works because _pyvelox_get_attr recognises both shapes.
+
+        Special case: TYPE == 'Exception' triggers lazy emission of
+        the built-in Exception class so even programs that don't
+        define classes themselves can use it.
+        """
+        if type_name == 'Exception':
+            self._emit_exception_class()
+        safe = self.get_safe_name(type_name)
+        if safe in self._defined_classes and type_name not in self.renamed_vars:
+            return self._translate_instance_construction(
+                type_name, arg_nodes, [])
+        return self._make_exception_obj(type_name, arg_nodes)
 
     def _make_exception_obj(self, type_name: str,
                             arg_nodes: List[ast.expr]) -> bytes:
@@ -2523,40 +2715,27 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         """
         Translate attribute access: obj.attr
 
-        Three paths, in priority order:
+        All attribute reads route through the `_pyvelox_get_attr`
+        runtime helper, which inspects the receiver's tag and
+        chooses the right backing storage:
 
-        1. `e.args` / `e.type` on a name bound by an enclosing
-           `except as e:` -- direct vector-ref against the tagged
-           exception representation. Faster and more predictable
-           than going through the general attribute helper.
-        2. Otherwise, lower to a runtime call into _pyvelox_get_attr,
-           which looks up the named slot in the instance's slot-alist.
-           Method-table lookup is *not* part of this path; bound-method
-           values aren't supported, only `obj.method(args)` in call
-           position via translate_call's user-method dispatch.
-        3. Module-style `obj.attr` (no instance, no exception) gives a
-           runtime AttributeError because the helper assumes a tagged
-           instance vector. The compiler can't tell the difference at
-           this stage, so the error is deferred to runtime.
+        - py-exception tagged vector (legacy `raise X(args)` shape
+          for non-class names): slot 1 holds the type string, slot
+          2 the args list, exposed as `.type` / `.args`.
+        - pyinstance tagged vector (class instances, including
+          custom exception classes): looks `name` up in the
+          slot-alist.
+        - anything else: AttributeError raised through the
+          structured-exception machinery.
 
-        The helper isn't emitted for path 1; for paths 2 and 3 we
-        require the OOP helpers, so emit them lazily here -- a program
-        that only does exception-attribute access never pulls them in.
+        Method-table lookup is *not* part of this path; bound-method
+        values aren't supported, only `obj.method(args)` in call
+        position via translate_call's user-method dispatch.
+
+        Emit the OOP helpers if they aren't already in the prologue
+        -- a program that only catches exceptions and reads `e.args`
+        wouldn't otherwise pull them in.
         """
-        if (isinstance(node.value, ast.Name)
-                and node.value.id in self._exception_handler_vars
-                and node.attr in self._EXCEPTION_ATTRS):
-            slot = self._EXCEPTION_ATTRS[node.attr]
-            recv = encode_symbol(
-                self.get_safe_name(node.value.id), self.bc)
-            return create_inline_call(
-                'vector_ref', [recv, encode_integer(slot)], self.bc)
-
-        # Generic instance-attribute path. The helpers might not have
-        # been emitted yet (a program with class definitions hits
-        # _emit_oop_helpers via translate_class_def, but attribute
-        # access on an externally-supplied instance wouldn't); make
-        # sure they exist.
         self._emit_oop_helpers()
         recv_bytes = self.translate_expr_with_ref(node.value)
         name_quoted = create_inline_call(

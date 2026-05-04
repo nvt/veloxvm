@@ -1401,5 +1401,57 @@ class TestClassDef(unittest.TestCase):
                       ctx.exception.raw_message.lower())
 
 
+class TestCustomExceptionClasses(unittest.TestCase):
+    """Custom exception classes built on the auto-injected
+    Exception base. raise X(args) on a defined class lowers to
+    instance construction; legacy raise UnboundName(args) keeps the
+    py-exception tagged-vector shape."""
+
+    def _compile_collect(self, source):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol, encode_string
+        bc = compile_string(source)
+        all_bytes = b''.join(bc.expressions)
+        return bc, all_bytes, encode_symbol, encode_string
+
+    def test_extending_exception_emits_base_class(self):
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'class MyError(Exception):\n    pass\n')
+        # The auto-injected Exception class shows up in the symbol
+        # table and the bytecode references its name string.
+        self.assertIn('Exception', bc.symbol_table.symbols)
+        self.assertIn(encode_string('Exception', bc), all_bytes)
+
+    def test_raise_of_class_lowers_to_make_instance(self):
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'class Boom(Exception):\n    pass\n'
+            'raise Boom("oops")\n')
+        # Class-name raise routes through _pyvelox_make_instance,
+        # not the legacy vector form.
+        self.assertIn(encode_symbol('_pyvelox_make_instance', bc), all_bytes)
+
+    def test_raise_of_undefined_name_keeps_py_exception(self):
+        # raise of a name that isn't a defined class still uses the
+        # legacy `py-exception` tagged vector shape -- so existing
+        # code that raises through a name without defining a class
+        # for it keeps working.
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'raise UnboundName("legacy")\n')
+        self.assertIn(encode_symbol('py-exception', bc), all_bytes)
+        # And does *not* construct an instance.
+        self.assertNotIn(
+            encode_symbol('_pyvelox_make_instance', bc), all_bytes)
+
+    def test_raise_exception_auto_injects_base(self):
+        # Even a program that only does `raise Exception(...)` --
+        # without defining any custom exception class -- still gets
+        # the auto-injected Exception class so the raise can be
+        # lowered as an instance construction.
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'raise Exception("vanilla")\n')
+        self.assertIn(encode_symbol('_pyvelox_make_instance', bc), all_bytes)
+        self.assertIn(encode_string('Exception', bc), all_bytes)
+
+
 if __name__ == '__main__':
     unittest.main()

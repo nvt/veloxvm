@@ -47,7 +47,7 @@ source line; the CLI prints the same and exits non-zero.
 | `*args` (receive and forward) | Yes | `def f(*args)` and `lambda *args:` lower to `bind_function_rest`; trailing actuals arrive as a list bound to `args`. `f(*xs)` and `f(prefix, *xs)` at call sites lower to `(apply f arg-list)`. Combining `*args` with default arguments is refused, as are: multiple `*` arguments at one call site, positionals after `*`, and `*` arguments to built-ins or method calls. |
 | `**kwargs`, keyword-only, positional-only | No | Refused at compile time. |
 | `nonlocal`, `global` | Yes | Recognised by the scope analyser. |
-| `try` / `except` / `raise` | Partial | Single bare `except:` or `except Exception:`; typed handlers and multiple `except` clauses refused. `raise X(args...)` builds a tagged 3-vector `#(py-exception "TYPE" args-list)`; handlers can read `e.type` (a string), `e.args` (a list), and `str(e)` / `f"{e}"` (returns `args[0]` or `""` for empty args) on the bound exception via `except Exception as e:`. `raise e` on a bound name re-raises the caught object unchanged. |
+| `try` / `except` / `raise` | Partial | Single bare `except:` or `except Exception:`; typed handlers and multiple `except` clauses refused. `raise X(args...)` lowers as instance construction when `X` is a defined class (or `Exception` itself, which is auto-injected); otherwise as a tagged 3-vector `#(py-exception "TYPE" args-list)`. Handlers can read `e.type` (a string), `e.args` (a list), and `str(e)` / `f"{e}"` (returns `args[0]` or `""` for empty args) on the bound exception via `except Exception as e:`, and the access path is the same regardless of which shape was raised. `raise e` on a bound name re-raises the caught object unchanged. |
 | `with` (context managers) | No | |
 | `class` | Partial | `class Foo: def __init__/methods` and `class Bar(Foo): ...` lower to tagged class vectors. Instance construction `Foo(args)` runs `__init__`; classes without `__init__` (in their own body or any ancestor) still construct. `self.x = v` / `self.x` / `obj.method(args)` work. `super().method(args)` walks from the enclosing class's parent. `isinstance(obj, Cls)` walks the class chain. Refused: multiple inheritance, forward-reference base classes, `@classmethod` / `@staticmethod` / `@property` / decorators, class-level attributes, nested classes, dunder operator overloading (`__add__` etc.), `__getattr__` / `__setattr__` / descriptors, metaclasses, bare `super()` standalone, `super(Class, self)` 2-arg form, `isinstance` with a tuple second arg. Method names that collide with `_METHOD_HANDLERS` (`get`, `append`, `upper`, etc.) are shadowed by the builtin handler. |
 | Comparison ops (`<`, `<=`, `>`, `>=`) | Yes | Numeric only. |
@@ -129,12 +129,35 @@ The supporting runtime helpers (`_pyvelox_make_instance`,
 into the program prologue when the first class definition or
 attribute access is compiled.
 
+## Custom exception classes
+
+`class MyError(Exception): pass` (and arbitrarily nested
+subclasses) work. The compiler auto-injects an `Exception` base
+class into the program prologue the first time a class extends it
+or `raise Exception(...)` is used. Exception's synthesised
+`__init__(self, *args)` stores `self.args = args` and reads the
+actual class name from the instance's class slot into `self.type`,
+so subclasses without their own `__init__` get the standard shape
+for free, and subclasses that override `__init__` can call
+`super().__init__(msg)` to retain it.
+
+`raise X(args)` on a defined class routes through
+`_pyvelox_make_instance`; the resulting `pyinstance` is what the
+handler sees. Handler-side `e.args`, `e.type`, `str(e)`, and
+`f"{e}"` work the same way they do for the legacy
+`py-exception` tagged vector -- both shapes share the
+`_pyvelox_get_attr` and `_pyvelox_str` runtime helpers.
+
+`isinstance(e, MyError)` walks the class chain, so the usual
+"check the kind" pattern works inside an except handler. Typed
+exception handlers (`except MyError as e:`) are still refused at
+compile time -- the user needs a single `except Exception as e:`
+plus an isinstance check inside the body.
+
 What's deferred to later steps: multiple inheritance + MRO,
-`@classmethod` / `@staticmethod` / `@property`, custom exception
-classes that integrate with the existing `raise` / `except` flow,
-dunder operator overloading (`__add__` etc.),
-`__getattr__`/`__setattr__` and the descriptor protocol,
-metaclasses.
+`@classmethod` / `@staticmethod` / `@property`, dunder operator
+overloading (`__add__` etc.), `__getattr__`/`__setattr__` and the
+descriptor protocol, metaclasses.
 
 ## Runtime caveats
 

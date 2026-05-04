@@ -363,31 +363,23 @@ class _BuiltinHandlers:
             '_pyvelox_str', [arg_bytes], self.bc)
 
     def _emit_str_helper(self) -> None:
-        """Emit the `_pyvelox_str` and `_pyvelox_str_value` helpers
-        into the program prologue. Idempotent.
+        """Emit the `_pyvelox_str`, `_pyvelox_str_value`, and
+        `_pyvelox_str_args` helpers into the program prologue.
+        Idempotent.
 
-        `_pyvelox_str_value` does the existing string/bool/number
-        dispatch in isolation. `_pyvelox_str` adds an outer check for
-        a py-exception tagged vector and routes through args[0] when
-        one is found, falling back to the value dispatch for
-        everything else:
+        Three shapes need handling:
 
-            (define _pyvelox_str_value
-              (lambda (x)
-                (if (stringp x) x
-                  (if (booleanp x) (if x "True" "False")
-                    (number-to-string x)))))
+        - `py-exception` tagged 3-vector (legacy `raise X(args)`
+          shape for non-class names): args is in slot 2.
+        - `pyinstance` tagged 3-vector (custom exception classes
+          and any other class instance whose `args` slot is set):
+          args is in the slot-alist at slot 2.
+        - everything else: route through _pyvelox_str_value, which
+          does the original string/bool/number dispatch.
 
-            (define _pyvelox_str
-              (lambda (x)
-                (if (and (vectorp x)
-                         (= (vector-length x) 3)
-                         (eqp (vector-ref x 0)
-                              (quote py-exception)))
-                    (let ((args (vector-ref x 2)))
-                      (if (nullp args) ""
-                        (_pyvelox_str_value (car args))))
-                    (_pyvelox_str_value x))))
+        _pyvelox_str_args formats args list -> args[0] coerced to
+        string, or "" for empty args. Shared between the two
+        exception-shape branches.
 
         and short-circuits in the VM, so vector-length / vector-ref
         only fire after vectorp confirms the type.
@@ -426,11 +418,34 @@ class _BuiltinHandlers:
             self.bc)
         self._preamble.extend(define_value)
 
-        # _pyvelox_str: outer check for the py-exception tag.
-        tag_quoted = create_inline_call(
+        # _pyvelox_str_args(args): "" if null, else first elem as str.
+        args_format_body = create_inline_call(
+            'if',
+            [create_inline_call('nullp', [sym_args()], self.bc),
+             encode_string("", self.bc),
+             create_inline_call(
+                 '_pyvelox_str_value',
+                 [create_inline_call('car', [sym_args()], self.bc)],
+                 self.bc)],
+            self.bc)
+        args_format_lambda_ref = self._emit_lambda(
+            ['args'], args_format_body, is_function=True)
+        define_args = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_str_args', self.bc),
+             args_format_lambda_ref],
+            self.bc)
+        self._preamble.extend(define_args)
+
+        # _pyvelox_str: outer dispatch on the receiver's tag.
+        py_exc_tag = create_inline_call(
             'quote',
             [encode_symbol('py-exception', self.bc)], self.bc)
-        is_exc = create_inline_call(
+        py_inst_tag = create_inline_call(
+            'quote',
+            [encode_symbol('pyinstance', self.bc)], self.bc)
+
+        is_tagged_3vec = create_inline_call(
             'and',
             [create_inline_call('vectorp', [sym_x()], self.bc),
              create_inline_call(
@@ -438,42 +453,84 @@ class _BuiltinHandlers:
                  [create_inline_call(
                       'vector_length', [sym_x()], self.bc),
                   encode_integer(3)],
-                 self.bc),
-             create_inline_call(
-                 'eqp',
-                 [create_inline_call(
-                      'vector_ref',
-                      [sym_x(), encode_integer(0)], self.bc),
-                  tag_quoted],
                  self.bc)],
             self.bc)
 
-        # Inner: extract args, return car or "".
-        get_args = create_inline_call(
+        tag = create_inline_call(
+            'vector_ref',
+            [sym_x(), encode_integer(0)], self.bc)
+
+        # py-exception path: args is the slot-2 list directly.
+        py_exc_args = create_inline_call(
             'vector_ref',
             [sym_x(), encode_integer(2)], self.bc)
-        car_args = create_inline_call('car', [sym_args()], self.bc)
-        format_one = create_inline_call(
-            '_pyvelox_str_value', [car_args], self.bc)
-        format_args = create_inline_call(
-            'if',
-            [create_inline_call('nullp', [sym_args()], self.bc),
-             encode_string("", self.bc),
-             format_one],
+        py_exc_format = create_inline_call(
+            '_pyvelox_str_args', [py_exc_args], self.bc)
+
+        # pyinstance path: assoc 'args in slot-2 alist; if missing
+        # return the class name string as a coarse fallback.
+        slot_alist = create_inline_call(
+            'vector_ref',
+            [sym_x(), encode_integer(2)], self.bc)
+        args_slot = create_inline_call(
+            'assoc',
+            [create_inline_call(
+                'quote',
+                [encode_symbol('args', self.bc)], self.bc),
+             slot_alist],
             self.bc)
-        # Wrap in a let so `args` is bound once.
-        # let-as-immediate-lambda: ((lambda (args) <body>) <get-args>)
-        format_lambda_ref = self._emit_lambda(
-            ['args'], format_args, is_function=True)
-        format_call = create_inline_call(
-            format_lambda_ref, [get_args], self.bc)
+        # If args slot present, format it. Otherwise return the
+        # class's name (vector-ref (vector-ref x 1) 1).
+        instance_format = create_inline_call(
+            'if',
+            [args_slot,
+             create_inline_call(
+                 '_pyvelox_str_args',
+                 [create_inline_call(
+                     'cdr',
+                     [create_inline_call(
+                         'assoc',
+                         [create_inline_call(
+                             'quote',
+                             [encode_symbol('args', self.bc)],
+                             self.bc),
+                          slot_alist],
+                         self.bc)],
+                     self.bc)],
+                 self.bc),
+             create_inline_call(
+                 'vector_ref',
+                 [create_inline_call(
+                     'vector_ref',
+                     [sym_x(), encode_integer(1)], self.bc),
+                  encode_integer(1)],
+                 self.bc)],
+            self.bc)
 
         # Fallback: route through _pyvelox_str_value.
         fallback = create_inline_call(
             '_pyvelox_str_value', [sym_x()], self.bc)
 
+        # if tagged 3-vec:
+        #   if tag == 'py-exception: py_exc_format
+        #   elif tag == 'pyinstance: instance_format
+        #   else: fallback
+        # else:
+        #   fallback
+        tag_dispatch = create_inline_call(
+            'if',
+            [create_inline_call('eqp', [tag, py_exc_tag], self.bc),
+             py_exc_format,
+             create_inline_call(
+                 'if',
+                 [create_inline_call(
+                     'eqp', [tag, py_inst_tag], self.bc),
+                  instance_format,
+                  fallback],
+                 self.bc)],
+            self.bc)
         outer_body = create_inline_call(
-            'if', [is_exc, format_call, fallback], self.bc)
+            'if', [is_tagged_3vec, tag_dispatch, fallback], self.bc)
         outer_lambda_ref = self._emit_lambda(
             ['x'], outer_body, is_function=True)
         define_outer = create_inline_call(
