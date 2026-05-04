@@ -108,6 +108,16 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
     EXCEPTION_SLOT_TYPE = 1
     EXCEPTION_SLOT_ARGS = 2
 
+    # Tagged-vector layout for Python class objects and instances.
+    # Class:    #(pyclass     "Name" method-alist)
+    # Instance: #(pyinstance  class  slot-alist)
+    # method-alist is `((symbol-name . closure) ...)` populated at
+    # class-def time. slot-alist is `((symbol-name . value) ...)`,
+    # initially empty and grown by `self.x = v` writes through the
+    # _pyvelox_set_attr helper. Both alists are looked up via assoc.
+    CLASS_TAG = 'pyclass'
+    INSTANCE_TAG = 'pyinstance'
+
     # Attribute names that translate_attribute knows how to lower for
     # an exception object bound by `except as e:`. Maps the Python
     # attribute name to the slot index in the tagged vector above.
@@ -164,6 +174,11 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         # the same stack to allow `e.args` / `e.type` lookups on the
         # bound exception object.
         self._exception_handler_vars: List[str] = []
+        # Names that resolve to a class object at module top level.
+        # Populated by translate_class_def, consulted by translate_call
+        # to choose between regular function dispatch and instance
+        # construction. Tracks safe names (post get_safe_name).
+        self._defined_classes: Set[str] = set()
 
     def is_vm_primitive(self, name: str) -> bool:
         """Check if a name conflicts with a VM primitive."""
@@ -386,6 +401,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             return self.translate_aug_assign(stmt)
         elif isinstance(stmt, ast.FunctionDef):
             return self.translate_function_def(stmt)
+        elif isinstance(stmt, ast.ClassDef):
+            return self.translate_class_def(stmt)
         elif isinstance(stmt, ast.Return):
             return self.translate_return(stmt)
         elif isinstance(stmt, ast.If):
@@ -602,6 +619,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         - `ast.Name`      — `x = expr`, emitted as `define`/`set!`/
           `box-set!` depending on scope and whether the binding is
           boxed for closure aliasing.
+        - `ast.Attribute` — `obj.x = v`, lowered through
+          _pyvelox_set_attr against the tagged instance vector.
 
         Multi-target assignment (`a = b = 5`) is refused.
         """
@@ -616,8 +635,26 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             return self._assign_tuple_unpack(target, node.value)
         if isinstance(target, ast.Name):
             return self._assign_simple(target, node.value)
+        if isinstance(target, ast.Attribute):
+            return self._translate_attribute_assign(target, node.value)
         raise NotImplementedError(
             f"Assignment target type not supported: {type(target).__name__}")
+
+    def _translate_attribute_assign(self, target: ast.Attribute,
+                                    value_expr: ast.expr) -> bytes:
+        """Lower `obj.attr = value` to
+        `(_pyvelox_set_attr obj 'attr value)`. The helper either
+        mutates an existing slot via set-cdr! or cons-prepends a new
+        (name . value) pair onto the slot-alist."""
+        self._emit_oop_helpers()
+        recv_bytes = self.translate_expr_with_ref(target.value)
+        name_quoted = create_inline_call(
+            'quote',
+            [encode_symbol(target.attr, self.bc)], self.bc)
+        value_bytes = self.translate_expr_with_ref(value_expr)
+        return create_inline_call(
+            '_pyvelox_set_attr',
+            [recv_bytes, name_quoted, value_bytes], self.bc)
 
     def _assign_tuple_unpack(self, target: ast.Tuple,
                              value_expr: ast.expr) -> bytes:
@@ -905,6 +942,352 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         op = 'set' if is_nested else 'define'
         return create_inline_call(op, [func_name_symbol, lambda_bytes], self.bc)
 
+    def translate_class_def(self, node: ast.ClassDef) -> bytes:
+        """Translate `class Foo: ...` to a top-level binding holding a
+        tagged class vector.
+
+        Class vector layout: `#(pyclass "Name" method-alist)`. Each
+        method in the body becomes a closure entry in method-alist,
+        keyed by the method name as a symbol. The class object is
+        bound at module scope via `define`; instance construction
+        (`Foo(args)`) resolves the name through the
+        `_defined_classes` set populated here, and lowers to the
+        _pyvelox_make_instance runtime helper.
+
+        Out-of-scope shapes (base classes, decorators, class-level
+        statements other than methods, nested classes inside
+        functions) are rejected with located errors below.
+        """
+        if len(self.scope_stack) > 1:
+            raise NotImplementedError(
+                "class definitions inside functions are not yet "
+                "supported in pyvelox; define classes at module scope.")
+        if node.bases:
+            raise NotImplementedError(
+                "Base classes are not yet supported in pyvelox.")
+        if node.keywords:
+            raise NotImplementedError(
+                "Keyword class arguments (metaclass=, etc.) are not "
+                "supported.")
+        if node.decorator_list:
+            raise NotImplementedError(
+                "Class-level decorators are not supported.")
+
+        safe_class_name = self.get_safe_name(node.name)
+
+        # The body must be a flat sequence of method defs (and
+        # optional pass / docstring). Anything else gets refused so
+        # silent miscompiles don't sneak in.
+        method_nodes: List[ast.FunctionDef] = []
+        for stmt in node.body:
+            if isinstance(stmt, ast.FunctionDef):
+                if stmt.decorator_list:
+                    raise NotImplementedError(
+                        f"Method decorators (on `{stmt.name}`) are not "
+                        f"yet supported.")
+                method_nodes.append(stmt)
+            elif isinstance(stmt, ast.Pass):
+                continue
+            elif (isinstance(stmt, ast.Expr)
+                    and isinstance(stmt.value, ast.Constant)
+                    and isinstance(stmt.value.value, str)):
+                # Leading docstring -- harmless.
+                continue
+            else:
+                raise NotImplementedError(
+                    f"Class body may only contain method definitions "
+                    f"(got {type(stmt).__name__}). Class-level "
+                    f"attributes and arbitrary statements are not "
+                    f"supported in pyvelox class bodies.")
+
+        # Make sure the runtime helpers exist before any instantiation
+        # call site runs, and register the class name as a class
+        # *before* compiling method bodies. The latter matters: a
+        # method that returns `Foo(args)` -- a recursive constructor
+        # call or any reference to the class being defined -- needs
+        # translate_call to see "Foo" in `_defined_classes` and lower
+        # to instance construction. Without this ordering it would
+        # fall through to regular function dispatch and try to call
+        # the class vector at runtime, producing a confusing
+        # undefined-symbol downstream.
+        self._emit_oop_helpers()
+        self._defined_classes.add(safe_class_name)
+        self.scope_stack[-1].add(safe_class_name)
+
+        # Build method-alist entries. Each entry is `(quote name) .
+        # <lambda>`; the lambda is built the same way translate_function_def
+        # does (full closure analysis, bind_function / _rest as
+        # needed). Methods don't get hoisted into module scope, so we
+        # don't emit a `define` for them -- only the class object's
+        # define at the bottom.
+        method_pairs: List[bytes] = []
+        for method_node in method_nodes:
+            method_lambda = self._compile_method_lambda(method_node)
+            pair = create_inline_call(
+                'cons',
+                [create_inline_call(
+                    'quote',
+                    [encode_symbol(method_node.name, self.bc)], self.bc),
+                 method_lambda],
+                self.bc)
+            method_pairs.append(self._hoist(pair))
+
+        method_alist = create_inline_call('list', method_pairs, self.bc)
+
+        class_vector = create_inline_call(
+            'vector',
+            [create_inline_call(
+                'quote',
+                [encode_symbol(self.CLASS_TAG, self.bc)], self.bc),
+             encode_string(node.name, self.bc),
+             method_alist],
+            self.bc)
+
+        return create_inline_call(
+            'define',
+            [encode_symbol(safe_class_name, self.bc), class_vector],
+            self.bc)
+
+    def _compile_method_lambda(self, node: ast.FunctionDef) -> bytes:
+        """Compile a method definition's body into a lambda form-ref,
+        without binding the name at any scope. Mirrors
+        translate_function_def's body-compilation half but skips the
+        outer `define`. The first parameter (`self` by convention) is
+        treated like any other -- the call site is responsible for
+        passing the receiver as the first actual."""
+        # Validate signature (covers *args, defaults, etc.) and record
+        # the rest-parameter name so calls into this method via the
+        # method-dispatch path don't fight the default-padding logic.
+        try:
+            self._validate_function_signature(node, is_lambda=False)
+        except NotImplementedError as exc:
+            raise PyveloxCompileError(
+                str(exc),
+                lineno=getattr(node, 'lineno', None),
+                col_offset=getattr(node, 'col_offset', None),
+                source_lines=self._source_lines,
+            ) from exc
+
+        safe_params = [self.get_safe_name(a.arg) for a in node.args.args]
+        rest_name = (self.get_safe_name(node.args.vararg.arg)
+                     if node.args.vararg is not None else None)
+        all_params = safe_params + [rest_name] if rest_name else safe_params
+
+        local_vars = (self.collect_assigned_vars(node.body)
+                      - set(all_params))
+        local_set = set(all_params) | local_vars
+
+        with self._function_scope(local_set, node.body) as (captures, boxed_names):
+            body_bytes = self.translate_function_body(
+                node.body, local_vars, box_inits=boxed_names)
+            return self._emit_lambda(
+                all_params, body_bytes,
+                is_function=True, has_rest=rest_name is not None,
+                captures=captures)
+
+    def _emit_oop_helpers(self) -> None:
+        """Emit the small runtime library that backs class objects and
+        instances. Idempotent. Helpers are written into the program
+        prologue so any class definition or instance call site can
+        reference them by name.
+
+        Provided definitions:
+        - _pyvelox_make_instance(class, init-args-list): allocate a
+          fresh instance vector, run __init__ if defined, return the
+          instance.
+        - _pyvelox_lookup_method(class, name): fetch the closure for
+          `name` from the class's method-alist; raise AttributeError
+          via the structured-raise machinery if missing.
+        - _pyvelox_get_attr(instance, name): look up `name` in the
+          instance's slot-alist; raise AttributeError on miss.
+        - _pyvelox_set_attr(instance, name, value): if a slot with
+          `name` exists, mutate it via set-cdr!; else cons a new
+          (name . value) pair onto the slot-alist (allowing dynamic
+          attribute growth, matching CPython).
+        """
+        if '_pyvelox_make_instance' in self._emitted_helpers:
+            return
+        self._emitted_helpers.add('_pyvelox_make_instance')
+
+        # All four helpers share the AttributeError-raising shape used
+        # by lookup_method and get_attr; centralise it.
+        def attr_error(name_sym_bytes: bytes) -> bytes:
+            return create_inline_call(
+                'raise',
+                [create_inline_call(
+                    'vector',
+                    [create_inline_call(
+                        'quote',
+                        [encode_symbol(self.EXCEPTION_TAG, self.bc)],
+                        self.bc),
+                     encode_string('AttributeError', self.bc),
+                     create_inline_call('list',
+                                        [name_sym_bytes], self.bc)],
+                    self.bc)],
+                self.bc)
+
+        sym_class = lambda: encode_symbol('class', self.bc)
+        sym_instance = lambda: encode_symbol('instance', self.bc)
+        sym_name = lambda: encode_symbol('name', self.bc)
+        sym_value = lambda: encode_symbol('value', self.bc)
+        sym_slot = lambda: encode_symbol('slot', self.bc)
+        sym_init = lambda: encode_symbol('init', self.bc)
+        sym_args = lambda: encode_symbol('args', self.bc)
+
+        # _pyvelox_lookup_method(class, name)
+        lookup_body = create_inline_call(
+            'if',
+            [create_inline_call(
+                'assoc',
+                [sym_name(),
+                 create_inline_call(
+                     'vector_ref',
+                     [sym_class(), encode_integer(2)], self.bc)],
+                self.bc),
+             create_inline_call(
+                 'cdr',
+                 [create_inline_call(
+                     'assoc',
+                     [sym_name(),
+                      create_inline_call(
+                          'vector_ref',
+                          [sym_class(), encode_integer(2)], self.bc)],
+                     self.bc)],
+                 self.bc),
+             attr_error(sym_name())],
+            self.bc)
+        lookup_lambda_ref = self._emit_lambda(
+            ['class', 'name'], lookup_body, is_function=True)
+        define_lookup = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_lookup_method', self.bc),
+             lookup_lambda_ref],
+            self.bc)
+        self._preamble.extend(define_lookup)
+
+        # _pyvelox_get_attr(instance, name)
+        # Reads instance slot; on miss raises AttributeError.
+        get_body = create_inline_call(
+            'if',
+            [create_inline_call(
+                'assoc',
+                [sym_name(),
+                 create_inline_call(
+                     'vector_ref',
+                     [sym_instance(), encode_integer(2)], self.bc)],
+                self.bc),
+             create_inline_call(
+                 'cdr',
+                 [create_inline_call(
+                     'assoc',
+                     [sym_name(),
+                      create_inline_call(
+                          'vector_ref',
+                          [sym_instance(), encode_integer(2)], self.bc)],
+                     self.bc)],
+                 self.bc),
+             attr_error(sym_name())],
+            self.bc)
+        get_lambda_ref = self._emit_lambda(
+            ['instance', 'name'], get_body, is_function=True)
+        define_get = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_get_attr', self.bc),
+             get_lambda_ref],
+            self.bc)
+        self._preamble.extend(define_get)
+
+        # _pyvelox_set_attr(instance, name, value)
+        # If slot exists, set-cdr! it; else cons a new pair onto the
+        # slot-alist and write it back via vector-set! at slot 2.
+        set_existing = create_inline_call(
+            'set_cdr', [sym_slot(), sym_value()], self.bc)
+        set_new = create_inline_call(
+            'vector_set',
+            [sym_instance(), encode_integer(2),
+             create_inline_call(
+                 'cons',
+                 [create_inline_call(
+                     'cons', [sym_name(), sym_value()], self.bc),
+                  create_inline_call(
+                      'vector_ref',
+                      [sym_instance(), encode_integer(2)], self.bc)],
+                 self.bc)],
+            self.bc)
+        # let ((slot (assoc name (vector-ref instance 2))))
+        #   (if slot (set-cdr! slot value) (vector-set! instance 2 ...))
+        set_let_body = create_inline_call(
+            'if', [sym_slot(), set_existing, set_new], self.bc)
+        set_let_inner_lambda = self._emit_lambda(
+            ['slot'], set_let_body, is_function=True)
+        slot_value = create_inline_call(
+            'assoc',
+            [sym_name(),
+             create_inline_call(
+                 'vector_ref',
+                 [sym_instance(), encode_integer(2)], self.bc)],
+            self.bc)
+        set_body = create_inline_call(
+            set_let_inner_lambda, [slot_value], self.bc)
+        set_lambda_ref = self._emit_lambda(
+            ['instance', 'name', 'value'], set_body, is_function=True)
+        define_set = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_set_attr', self.bc),
+             set_lambda_ref],
+            self.bc)
+        self._preamble.extend(define_set)
+
+        # _pyvelox_make_instance(class, init-args-list)
+        # Allocate empty instance, look up __init__, apply if present.
+        make_instance_alloc = create_inline_call(
+            'vector',
+            [create_inline_call(
+                'quote',
+                [encode_symbol(self.INSTANCE_TAG, self.bc)], self.bc),
+             sym_class(),
+             create_inline_call('list', [], self.bc)],
+            self.bc)
+        # let ((instance <alloc>) (init (assoc '__init__ ...)))
+        # in (begin (if init (apply init (cons instance args)) #f) instance)
+        init_lookup = create_inline_call(
+            'assoc',
+            [create_inline_call(
+                'quote',
+                [encode_symbol('__init__', self.bc)], self.bc),
+             create_inline_call(
+                 'vector_ref',
+                 [sym_class(), encode_integer(2)], self.bc)],
+            self.bc)
+        apply_init = create_inline_call(
+            'apply',
+            [create_inline_call('cdr', [sym_init()], self.bc),
+             create_inline_call(
+                 'cons', [sym_instance(), sym_args()], self.bc)],
+            self.bc)
+        maybe_call_init = create_inline_call(
+            'if', [sym_init(), apply_init, encode_boolean(False)], self.bc)
+        # ((lambda (init) (begin <maybe-call-init> instance)) <init-lookup>)
+        init_let_body = create_inline_call(
+            'begin', [maybe_call_init, sym_instance()], self.bc)
+        init_let_lambda = self._emit_lambda(
+            ['init'], init_let_body, is_function=True)
+        instance_with_init = create_inline_call(
+            init_let_lambda, [init_lookup], self.bc)
+        # ((lambda (instance) <inner>) <alloc>)
+        outer_let_lambda = self._emit_lambda(
+            ['instance'], instance_with_init, is_function=True)
+        make_body = create_inline_call(
+            outer_let_lambda, [make_instance_alloc], self.bc)
+        make_lambda_ref = self._emit_lambda(
+            ['class', 'args'], make_body, is_function=True)
+        define_make = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_make_instance', self.bc),
+             make_lambda_ref],
+            self.bc)
+        self._preamble.extend(define_make)
+
     def translate_lambda(self, node: ast.Lambda) -> bytes:
         """Translate `lambda x: expr` — Python lambdas are real
         functions (like `def`), so they get `bind_function`. Unlike
@@ -947,6 +1330,74 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             value_bytes = encode_boolean(False)
 
         return create_inline_call('return', [value_bytes], self.bc)
+
+    def _translate_instance_construction(self, class_name: str,
+                                         arg_nodes: List[ast.expr],
+                                         starred_idxs: List[int]) -> bytes:
+        """Lower `Foo(args)` (where Foo names a class) to a call into
+        _pyvelox_make_instance. Trailing *args is supported because the
+        helper takes the args as a single list -- we just splice the
+        starred value onto the prefix at the call site, mirroring the
+        forwarding-via-apply path. No call-site default-padding here:
+        any defaults declared by a synthesised __init__ are handled
+        inside that closure via its own argc dispatch."""
+        if starred_idxs and starred_idxs[0] != len(arg_nodes) - 1:
+            raise NotImplementedError(
+                "Positional arguments after *-argument are not "
+                "supported in class instantiation either.")
+        if starred_idxs:
+            fixed_nodes = arg_nodes[:-1]
+            rest_value = self.translate_expr_with_ref(
+                arg_nodes[-1].value)
+            arg_list = rest_value
+            for fixed in reversed(fixed_nodes):
+                fixed_bytes = self.translate_expr_with_ref(fixed)
+                arg_list = create_inline_call(
+                    'cons', [fixed_bytes, arg_list], self.bc)
+        else:
+            arg_list = create_inline_call(
+                'list',
+                [self.translate_expr_with_ref(a) for a in arg_nodes],
+                self.bc)
+        return create_inline_call(
+            '_pyvelox_make_instance',
+            [encode_symbol(self.get_safe_name(class_name), self.bc),
+             arg_list],
+            self.bc)
+
+    def _translate_user_method_call(self, recv_node: ast.expr,
+                                    method_name: str,
+                                    arg_nodes: List[ast.expr]) -> bytes:
+        """Lower `obj.method(args)` for an unknown method name to a
+        runtime method-lookup-and-call:
+
+            ((_pyvelox_lookup_method (vector-ref obj 1) 'method)
+             obj arg1 arg2 ...)
+
+        The receiver is hoisted into the expression table once and
+        the form-ref appears in two positions (the class fetch and
+        the self argument); each form-ref re-evaluation just
+        dereferences the cached expression, so this is safe even for
+        side-effecting receivers."""
+        # Reject *args here -- forwarding through method dispatch
+        # would need an extra apply, which the lookup already uses.
+        if any(isinstance(a, ast.Starred) for a in arg_nodes):
+            raise NotImplementedError(
+                "Method calls don't yet support *-arguments")
+
+        recv_token = self.translate_expr_with_ref(recv_node)
+        method_quoted = create_inline_call(
+            'quote', [encode_symbol(method_name, self.bc)], self.bc)
+        class_lookup = create_inline_call(
+            'vector_ref',
+            [recv_token, encode_integer(1)], self.bc)
+        method_closure = create_inline_call(
+            '_pyvelox_lookup_method',
+            [class_lookup, method_quoted], self.bc)
+        method_ref = self._hoist(method_closure)
+        arg_bytes = [recv_token] + [
+            self.translate_expr_with_ref(a) for a in arg_nodes]
+        return create_inline_call(method_ref, arg_bytes, self.bc)
 
     def translate_call(self, node: ast.Call) -> bytes:
         """Translate function call.
@@ -995,6 +1446,12 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             handler = self._METHOD_HANDLERS.get(node.func.attr)
             if handler is not None:
                 return handler(self, node.func.value, node.args)
+            # Unknown method name -> assume the receiver is an instance
+            # of a user-defined class and dispatch via the runtime
+            # method-lookup helper. The receiver evaluates once because
+            # it's the helper's first argument.
+            return self._translate_user_method_call(
+                node.func.value, node.func.attr, node.args)
 
         # Resolve a Name callee once. callee_name is the source-level
         # name (or None for compound callees); func_bytes is the
@@ -1005,6 +1462,17 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             handler_name = self._BUILTIN_HANDLERS.get(callee_name)
             if handler_name is not None:
                 return getattr(self, handler_name)(node.args)
+            # Special-case 2b: instance construction. `Foo(args)` for
+            # a name registered by translate_class_def lowers through
+            # the make_instance helper, which allocates the instance
+            # vector and runs __init__ if present. The same name
+            # lookup that translate_class_def already did at class-def
+            # time is replayed here so a class shadowed by a later
+            # `def foo` still dispatches as the function.
+            if (self.get_safe_name(callee_name) in self._defined_classes
+                    and callee_name not in self.renamed_vars):
+                return self._translate_instance_construction(
+                    callee_name, node.args, starred_idxs)
             # Resolve the callee carefully: when a user binding shadows
             # a primitive (tracked in renamed_vars by get_safe_name),
             # call the user's py_-prefixed function; otherwise, if the
@@ -1811,14 +2279,26 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
     def translate_attribute(self, node: ast.Attribute) -> bytes:
         """
         Translate attribute access: obj.attr
-        This is used for accessing attributes that are not method calls.
-        For method calls, translate_call handles them.
 
-        Currently the only supported attributes are `e.args` and
-        `e.type` on an exception object bound by an enclosing
-        `except as e:` -- they lower to vector-ref against the
-        tagged-vector exception representation. Other attribute
-        access is still rejected.
+        Three paths, in priority order:
+
+        1. `e.args` / `e.type` on a name bound by an enclosing
+           `except as e:` -- direct vector-ref against the tagged
+           exception representation. Faster and more predictable
+           than going through the general attribute helper.
+        2. Otherwise, lower to a runtime call into _pyvelox_get_attr,
+           which looks up the named slot in the instance's slot-alist.
+           Method-table lookup is *not* part of this path; bound-method
+           values aren't supported, only `obj.method(args)` in call
+           position via translate_call's user-method dispatch.
+        3. Module-style `obj.attr` (no instance, no exception) gives a
+           runtime AttributeError because the helper assumes a tagged
+           instance vector. The compiler can't tell the difference at
+           this stage, so the error is deferred to runtime.
+
+        The helper isn't emitted for path 1; for paths 2 and 3 we
+        require the OOP helpers, so emit them lazily here -- a program
+        that only does exception-attribute access never pulls them in.
         """
         if (isinstance(node.value, ast.Name)
                 and node.value.id in self._exception_handler_vars
@@ -1828,9 +2308,19 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                 self.get_safe_name(node.value.id), self.bc)
             return create_inline_call(
                 'vector_ref', [recv, encode_integer(slot)], self.bc)
-        raise NotImplementedError(
-            f"Attribute access '{node.attr}' not supported in this "
-            f"context")
+
+        # Generic instance-attribute path. The helpers might not have
+        # been emitted yet (a program with class definitions hits
+        # _emit_oop_helpers via translate_class_def, but attribute
+        # access on an externally-supplied instance wouldn't); make
+        # sure they exist.
+        self._emit_oop_helpers()
+        recv_bytes = self.translate_expr_with_ref(node.value)
+        name_quoted = create_inline_call(
+            'quote',
+            [encode_symbol(node.attr, self.bc)], self.bc)
+        return create_inline_call(
+            '_pyvelox_get_attr', [recv_bytes, name_quoted], self.bc)
 
     _RANGE_LITERAL_LIMIT = 16
 

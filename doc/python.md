@@ -49,7 +49,7 @@ source line; the CLI prints the same and exits non-zero.
 | `nonlocal`, `global` | Yes | Recognised by the scope analyser. |
 | `try` / `except` / `raise` | Partial | Single bare `except:` or `except Exception:`; typed handlers and multiple `except` clauses refused. `raise X(args...)` builds a tagged 3-vector `#(py-exception "TYPE" args-list)`; handlers can read `e.type` (a string), `e.args` (a list), and `str(e)` / `f"{e}"` (returns `args[0]` or `""` for empty args) on the bound exception via `except Exception as e:`. `raise e` on a bound name re-raises the caught object unchanged. |
 | `with` (context managers) | No | |
-| `class` | No | |
+| `class` | Partial | `class Foo: def __init__/methods` lowers to a tagged class vector. Instance construction `Foo(args)` runs `__init__`. `self.x = v` / `self.x` / `obj.method(args)` work. No base classes / `super()` / decorators / class-level attributes / nested classes yet. Method names that collide with `_METHOD_HANDLERS` (dict.get, list.append, str.upper, etc.) are shadowed by the builtin handler. |
 | Comparison ops (`<`, `<=`, `>`, `>=`) | Yes | Numeric only. |
 | `==`, `!=` | Yes | Type-aware deep equality (`equalp`). `True == 1` is `False` because the VM keeps booleans and ints as distinct types. |
 | `is`, `is not` | No | Refused at compile time. |
@@ -96,6 +96,35 @@ Method calls (only on simple variable receivers; expressions like
 | `str` | `upper`, `lower`, `split`, `join`, `startswith`, `endswith`, `strip`, `replace` |
 | `list` | `append`, `extend`, `pop` (no-arg), `remove`, `reverse`, `count`, `index`, `insert` |
 | `dict` | `keys`, `values`, `items`, `get` |
+
+## Class object representation
+
+Classes are tagged 3-vectors:
+
+    #(pyclass "Name" method-alist)
+
+where `method-alist` is `((symbol-name . closure) ...)`. Instances
+are tagged 3-vectors:
+
+    #(pyinstance class-ref slot-alist)
+
+`slot-alist` starts empty and grows by cons-prepending new pairs as
+`self.x = v` writes go through; existing slots are mutated via
+`set-cdr!`. Both alists are looked up via `assoc`, so attribute
+access is O(N) in the slot/method count -- fine for typical class
+sizes.
+
+The supporting runtime helpers (`_pyvelox_make_instance`,
+`_pyvelox_lookup_method`, `_pyvelox_get_attr`, `_pyvelox_set_attr`)
+are emitted lazily into the program prologue when the first class
+definition or attribute access is compiled.
+
+What's deferred to later steps: single inheritance + `super()`,
+multiple inheritance + MRO, `@classmethod` / `@staticmethod` /
+`@property`, custom exception classes (which need inheritance to
+recognise the base `Exception`), dunder operator overloading
+(`__add__` etc.), `__getattr__`/`__setattr__` and the descriptor
+protocol, metaclasses.
 
 ## Runtime caveats
 

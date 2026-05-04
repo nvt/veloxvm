@@ -457,14 +457,18 @@ class TestStructuredRaise(unittest.TestCase):
             '    x = e.args\n')
         self.assertIn(encode_symbol('vector_ref', bc), all_bytes)
 
-    def test_attribute_outside_handler_is_compile_error(self):
-        # `e.args` on a name that isn't bound by an enclosing except
-        # falls through to translate_attribute's refusal -- otherwise
-        # any random `obj.foo` would silently emit vector_ref.
+    def test_attribute_outside_handler_compiles_via_get_attr(self):
+        # Pre-OOP, attribute access on a name not bound by an except
+        # handler was a compile error. With class instances landed,
+        # `obj.attr` outside a handler is a legitimate instance
+        # attribute access and lowers to _pyvelox_get_attr, which
+        # produces a runtime AttributeError if the receiver isn't a
+        # tagged vector. The compiler no longer rejects it.
         from pyvelox.compiler import compile_string
-        with self.assertRaises(PyveloxCompileError) as ctx:
-            compile_string('e = 1\nx = e.args\n')
-        self.assertIn("args", ctx.exception.raw_message)
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string('e = 1\nx = e.args\n')
+        all_bytes = b''.join(bc.expressions)
+        self.assertIn(encode_symbol('_pyvelox_get_attr', bc), all_bytes)
 
     def test_unsupported_raise_shape_is_compile_error(self):
         # `raise some_func()` doesn't have a Name as the call's func,
@@ -1169,6 +1173,146 @@ class TestStarredCallSite(unittest.TestCase):
         with self.assertRaises(PyveloxCompileError) as ctx:
             compile_string('xs = []\nys = [1]\nxs.extend(*ys)\n')
         self.assertIn("Method", ctx.exception.raw_message)
+
+
+class TestClassDef(unittest.TestCase):
+    """Class definitions: instance construction, attribute access,
+    method dispatch, and the various refusal cases for unsupported
+    class shapes."""
+
+    def _compile_collect(self, source):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol, encode_string
+        bc = compile_string(source)
+        all_bytes = b''.join(bc.expressions)
+        return bc, all_bytes, encode_symbol, encode_string
+
+    def test_empty_class_emits_class_vector(self):
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'class Foo:\n    pass\n')
+        # The class lowers to (define Foo (vector 'pyclass "Foo" (list))).
+        self.assertIn(encode_symbol('pyclass', bc), all_bytes)
+        self.assertIn(encode_string('Foo', bc), all_bytes)
+
+    def test_class_emits_oop_helpers(self):
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'class Foo:\n    pass\n')
+        # All four runtime helpers must be defined in the prologue.
+        self.assertIn(encode_symbol('_pyvelox_make_instance', bc), all_bytes)
+        self.assertIn(encode_symbol('_pyvelox_lookup_method', bc), all_bytes)
+        self.assertIn(encode_symbol('_pyvelox_get_attr', bc), all_bytes)
+        self.assertIn(encode_symbol('_pyvelox_set_attr', bc), all_bytes)
+
+    def test_instance_construction_routes_through_helper(self):
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'class Box:\n'
+            '    def __init__(self, v):\n'
+            '        self.v = v\n'
+            'b = Box(5)\n')
+        # Box(5) call site lowers to a _pyvelox_make_instance call.
+        self.assertIn(encode_symbol('_pyvelox_make_instance', bc), all_bytes)
+
+    def test_attribute_assign_uses_set_attr(self):
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'class Box:\n'
+            '    def __init__(self):\n'
+            '        self.v = 1\n'
+            'b = Box()\n'
+            'b.v = 99\n')
+        self.assertIn(encode_symbol('_pyvelox_set_attr', bc), all_bytes)
+
+    def test_method_call_uses_lookup_method(self):
+        # Method name must not collide with _METHOD_HANDLERS (dict
+        # `get`, list `append`, etc.); the builtin registry currently
+        # wins those names. Use a name we know isn't in the registry.
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'class Box:\n'
+            '    def __init__(self, v):\n'
+            '        self.v = v\n'
+            '    def fetch(self):\n'
+            '        return self.v\n'
+            'b = Box(5)\n'
+            'r = b.fetch()\n')
+        self.assertIn(encode_symbol('_pyvelox_lookup_method', bc), all_bytes)
+
+    def test_method_name_collides_with_builtin_handler(self):
+        # Documented limitation: a user method whose name matches an
+        # entry in _METHOD_HANDLERS (dict.get, list.append,
+        # str.upper, ...) is shadowed by the builtin dispatch -- the
+        # handler runs against the user instance and typically errors
+        # because the receiver shape is wrong. Pinned here so a fix
+        # later (e.g. runtime receiver-type dispatch) shows up as a
+        # test that needs updating.
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError):
+            compile_string(
+                'class Box:\n'
+                '    def __init__(self, v):\n'
+                '        self.v = v\n'
+                '    def get(self):\n'
+                '        return self.v\n'
+                'b = Box(5)\n'
+                'r = b.get()\n')
+
+    def test_base_class_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'class Base:\n    pass\n'
+                'class Sub(Base):\n    pass\n')
+        self.assertIn("Base classes", ctx.exception.raw_message)
+
+    def test_class_decorator_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'def deco(c):\n    return c\n'
+                '@deco\n'
+                'class Foo:\n    pass\n')
+        self.assertIn("Class-level decorators", ctx.exception.raw_message)
+
+    def test_method_decorator_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'def deco(f):\n    return f\n'
+                'class Foo:\n'
+                '    @deco\n'
+                '    def m(self):\n'
+                '        return 1\n')
+        self.assertIn("Method decorators", ctx.exception.raw_message)
+
+    def test_class_level_assignment_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'class Foo:\n'
+                '    counter = 0\n'
+                '    def m(self):\n'
+                '        return 1\n')
+        self.assertIn("only contain method definitions",
+                      ctx.exception.raw_message)
+
+    def test_nested_class_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'def outer():\n'
+                '    class Inner:\n'
+                '        pass\n'
+                '    return Inner\n')
+        self.assertIn("class definitions inside functions",
+                      ctx.exception.raw_message)
+
+    def test_docstring_in_class_body_is_allowed(self):
+        # A leading string-expression statement is a docstring; it
+        # shouldn't trip the "only method definitions" check.
+        from pyvelox.compiler import compile_string
+        compile_string(
+            'class Foo:\n'
+            '    """A docstring."""\n'
+            '    def m(self):\n'
+            '        return 1\n')
 
 
 if __name__ == '__main__':
