@@ -273,4 +273,16 @@
 #define VM_BUNDLE 0
 #endif
 
+/* Maximum number of in-flight network sockets across *all* loaded
+   programs. Each slot is one struct native_socket in the MEMB pool,
+   so the cost on a tight target is small. The legacy value of 2 is
+   too low for any realistic multi-program deployment. */
+#ifndef VM_MAX_SOCKETS
+#if CONTIKI_TARGET_ZOUL
+#define VM_MAX_SOCKETS 4
+#else
+#define VM_MAX_SOCKETS 8
+#endif
+#endif
+
 #endif /* !VM_CONFIG_H */

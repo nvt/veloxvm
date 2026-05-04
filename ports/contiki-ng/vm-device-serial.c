@@ -72,21 +72,29 @@ serial_open(vm_port_t *port, const char *filename, uint8_t flags)
 static int
 serial_read(vm_port_t *port, char *buf, size_t size)
 {
-#undef MIN
-#define MIN(a, b) ((a) < (b) ? (a) : (b))
-  size_t len;
+  size_t avail;
+  size_t n;
 
-  len = strlen(serial_buf) + 1;
-  if(len == 0) {
+  if(size == 0) {
     return 0;
   }
 
-  len = MIN(len, size);
+  avail = strlen(serial_buf);
+  if(avail == 0) {
+    return 0;
+  }
 
-  memcpy(buf, serial_buf, len);
-  serial_buf[0] = '\0';
-  buf[len - 1] = '\0';
-  return len;
+  n = avail < size ? avail : size;
+  memcpy(buf, serial_buf, n);
+
+  /* Shift any unread tail down so the next read returns the rest,
+     instead of dropping it on the floor. */
+  if(n < avail) {
+    memmove(serial_buf, serial_buf + n, avail - n + 1);
+  } else {
+    serial_buf[0] = '\0';
+  }
+  return n;
 }
 /*---------------------------------------------------------------------------*/
 static int

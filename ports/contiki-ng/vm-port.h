@@ -76,6 +76,7 @@ extern void *vm_native_alloc(size_t);
 extern bool vm_native_free(void *);
 extern void *vm_native_realloc(void *, size_t);
 extern char *vm_native_strdup(const char *);
+extern void vm_native_release_socket(struct native_socket *);
 
 PROCESS_NAME(vm_perfmon_process);
 

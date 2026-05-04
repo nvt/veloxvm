@@ -83,10 +83,6 @@ extern const vm_port_io_t device_uip;
 
 static struct ctimer timers[VM_THREAD_AMOUNT];
 
-#ifndef VM_MAX_SOCKETS
-#define VM_MAX_SOCKETS 2
-#endif
-
 MEMB(socket_memb, struct native_socket, VM_MAX_SOCKETS);
 LIST(socket_list);
 
@@ -128,9 +124,16 @@ allocate_socket(void)
   return sock;
 }
 
-static void
-free_socket(struct native_socket *sock)
+/* Release a socket slot. Non-static because vm-device-uip.c needs to
+   call it from its close handler -- that path runs both for explicit
+   closes and for the GC-sweep finaliser, so this is the single point
+   where the memb slot is reclaimed. */
+void
+vm_native_release_socket(struct native_socket *sock)
 {
+  if(sock == NULL) {
+    return;
+  }
   list_remove(socket_list, sock);
   memb_free(&socket_memb, sock);
 }
@@ -201,6 +204,11 @@ attribute_bandwidth(vm_thread_t *thread, uint16_t bytes)
   VM_TIME_COPY(thread->program->perf_attr.last_comm, current_time);
 
   diff_msec = (uint64_t)diff.sec * 1000 + diff.msec;
+  /* Two events inside the same millisecond reduce diff_msec to 0.
+     Clamp so the rate filter still gets a sample. */
+  if(diff_msec == 0) {
+    diff_msec = 1;
+  }
   bps = (uint64_t)1000 * 8 * bytes / diff_msec;
 
 #if 0
@@ -264,26 +272,28 @@ attribute_energy(vm_thread_t *thread, int done)
   }
 }
 
-static void
+static int
 register_devices(void)
 {
-  /* Register the Contiki File System device. */
-  if(vm_device_register("cfs",
-                        &device_cfs, VM_PORT_FLAG_INPUT | VM_PORT_FLAG_OUTPUT) == 0) {
-    VM_DEBUG(VM_DEBUG_LOW, "Failed to register %s", "cfs");
-  }
+  static const struct {
+    const char *name;
+    const vm_port_io_t *io;
+    uint8_t flags;
+  } devs[] = {
+    { "cfs",    &device_cfs,    VM_PORT_FLAG_INPUT | VM_PORT_FLAG_OUTPUT },
+    { "leds",   &device_leds,   VM_PORT_FLAG_OUTPUT },
+    { "serial", &device_serial, VM_PORT_FLAG_INPUT },
+  };
+  size_t i;
+  int ok = 1;
 
-  /* Register the LEDs device. */
-  if(vm_device_register("leds",
-                        &device_leds, VM_PORT_FLAG_OUTPUT) == 0) {
-    VM_DEBUG(VM_DEBUG_LOW, "Failed to register %s", "leds");
+  for(i = 0; i < VM_ARRAY_SIZE(devs); i++) {
+    if(vm_device_register(devs[i].name, devs[i].io, devs[i].flags) == 0) {
+      VM_DEBUG(VM_DEBUG_LOW, "Failed to register %s", devs[i].name);
+      ok = 0;
+    }
   }
-
-  /* Register the serial device. */
-  if(vm_device_register("serial",
-                        &device_serial, VM_PORT_FLAG_INPUT) == 0) {
-    VM_DEBUG(VM_DEBUG_LOW, "Failed to register %s", "serial");
-  }
+  return ok;
 }
 
 int
@@ -291,10 +301,26 @@ vm_native_init(void)
 {
   uip_ipaddr_t dns_addr;
 
-  register_devices();
+  if(!register_devices()) {
+    /* Without the core devices the VM cannot run any non-trivial
+       program; refuse to come up so the failure is visible at boot
+       instead of surfacing later as opaque IO errors. */
+    return 0;
+  }
 
-  /* Temporary hack to use a nameserver at the border router's host. */
+  /* Default to a nameserver at the border router's host. Override by
+     defining VM_DNS_SERVER_ADDR{0..7} in vm-config.h to inject a fixed
+     resolver, or rely on RA-supplied servers if the network advertises
+     them. */
+#ifdef VM_DNS_SERVER_ADDR0
+  uip_ip6addr(&dns_addr,
+              VM_DNS_SERVER_ADDR0, VM_DNS_SERVER_ADDR1,
+              VM_DNS_SERVER_ADDR2, VM_DNS_SERVER_ADDR3,
+              VM_DNS_SERVER_ADDR4, VM_DNS_SERVER_ADDR5,
+              VM_DNS_SERVER_ADDR6, VM_DNS_SERVER_ADDR7);
+#else
   uip_ip6addr(&dns_addr, UIP_DS6_DEFAULT_PREFIX, 0, 0, 0, 0, 0, 0, 1);
+#endif
   uip_nameserver_update(&dns_addr, 1000000);
 
 #if VM_SERVER
@@ -326,15 +352,31 @@ void
 vm_native_sleep(vm_thread_t *thread, vm_integer_t ms)
 {
   vm_id_index_t index;
+  uint64_t ticks;
+  clock_time_t timer_ticks;
 
   index = vm_thread_get_index(thread);
   if(index == VM_ID_INDEX_INVALID) {
     vm_signal_error(thread, VM_ERROR_INTERNAL);
-  } else {
-    ctimer_set(&timers[index], (CLOCK_SECOND * ms) / 1000,
-               thread_timer_expired, thread);
-    thread->status = VM_THREAD_WAITING;
+    return;
   }
+
+  /* Compute the timer expiration in clock ticks via uint64_t. The naive
+     CLOCK_SECOND * ms overflows int once CLOCK_SECOND >= 128 and ms is
+     larger than ~16M. Clamp negative values to zero and saturate at the
+     widest tick value the underlying ctimer can hold. */
+  if(ms < 0) {
+    ms = 0;
+  }
+  ticks = ((uint64_t)CLOCK_SECOND * (uint64_t)ms) / 1000;
+  if(ticks > (clock_time_t)-1) {
+    timer_ticks = (clock_time_t)-1;
+  } else {
+    timer_ticks = (clock_time_t)ticks;
+  }
+
+  ctimer_set(&timers[index], timer_ticks, thread_timer_expired, thread);
+  thread->status = VM_THREAD_WAITING;
 }
 
 int
@@ -348,12 +390,11 @@ vm_native_time(vm_time_t *time)
 void
 vm_native_close_port(vm_port_t *port)
 {
+  /* Per-IO close also reclaims the underlying native_socket for socket
+     ports (see vm-device-uip.c). The same path runs from the GC-sweep
+     finaliser in core/vm-memory.c, so leak coverage is uniform. */
   if(port->io && port->io->close) {
     port->io->close(port);
-  }
-
-  if(VM_IS_SET(port->flags, VM_PORT_FLAG_SOCKET)) {
-    free_socket(port->opaque_desc);
   }
 
   port->flags &= ~VM_PORT_FLAG_OPEN;
@@ -387,7 +428,7 @@ vm_native_open_client(vm_thread_t *thread, vm_socket_type_t socket_type,
 
   if(udp_socket_register(&sock->socket, thread, udp_input) < 0) {
     VM_DEBUG(VM_DEBUG_LOW, "Failed to create a UDP socket");
-    free_socket(sock);
+    vm_native_release_socket(sock);
     return NULL;
   }
 
@@ -404,14 +445,14 @@ vm_native_open_client(vm_thread_t *thread, vm_socket_type_t socket_type,
   if(udp_socket_connect(&sock->socket, &addr, dest_port) < 0) {
     VM_DEBUG(VM_DEBUG_LOW, "Failed to connect a UDP socket");
     udp_socket_close(&sock->socket);
-    free_socket(sock);
+    vm_native_release_socket(sock);
     return NULL;
   }
 
   port = vm_alloc(sizeof(vm_port_t));
   if(port == NULL) {
     udp_socket_close(&sock->socket);
-    free_socket(sock);
+    vm_native_release_socket(sock);
     return NULL;
   }
   vm_port_register(port);
@@ -521,6 +562,7 @@ vm_native_resolve(vm_thread_t *thread, const char *hostname)
     req_cost *= 4;
     attribute_bandwidth(thread, req_cost);
     resolv_query(hostname);
+    /* fall through */
   case RESOLV_STATUS_RESOLVING:
     vm_native_sleep(thread, VM_POLL_TIME);
     VM_SET_FLAG(thread->expr->flags, VM_EXPR_RESTART);

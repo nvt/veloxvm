@@ -59,7 +59,15 @@ vm_uip_close(vm_port_t *port)
   struct native_socket *sock;
 
   sock = port->opaque_desc;
+  if(sock == NULL) {
+    return;
+  }
   udp_socket_close(&sock->socket);
+  /* Reclaim the MEMB slot here so both manual closes and GC-driven
+     port finalisations free it. Skipping this leaks the slot until
+     reboot and eventually starves allocate_socket(). */
+  vm_native_release_socket(sock);
+  port->opaque_desc = NULL;
 }
 /*---------------------------------------------------------------------------*/
 const vm_port_io_t device_uip = {
