@@ -421,7 +421,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             raise NotImplementedError(f"Expression type not supported: {type(expr).__name__}")
 
     def translate_constant(self, node: ast.Constant) -> bytes:
-        """Translate a constant literal (int, bool, str, None)."""
+        """Translate a constant literal (int, bool, str, bytes, None)."""
         value = node.value
 
         if isinstance(value, bool):
@@ -430,6 +430,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             return encode_integer(value)
         elif isinstance(value, str):
             return encode_string(value, self.bc)
+        elif isinstance(value, bytes):
+            return self._translate_bytes_literal(value)
         elif value is None:
             # None -> empty list or #f
             return encode_boolean(False)
@@ -439,6 +441,26 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             return encode_integer(int(value))
         else:
             raise NotImplementedError(f"Constant type not supported: {type(value)}")
+
+    def _translate_bytes_literal(self, value: bytes) -> bytes:
+        """Lower a `b'...'` literal.
+
+        - Empty literal: `(make-buffer 0)`.
+        - Non-empty: emit the `_pyvelox_bytes_from_list` helper and
+          call it with a literal `(list b1 b2 ...)`. The helper
+          materialises a buffer-flagged vector matching the R7RS
+          bytevector representation. Each byte stays a small int
+          atom, so element encoding is one byte per element plus the
+          list overhead — fine for typical literal sizes.
+        """
+        if not value:
+            return create_inline_call(
+                'make_buffer', [encode_integer(0)], self.bc)
+        self._emit_bytes_helper()
+        elem_bytecode = [encode_integer(b) for b in value]
+        list_call = create_inline_call('list', elem_bytecode, self.bc)
+        return create_inline_call(
+            '_pyvelox_bytes_from_list', [list_call], self.bc)
 
     def translate_joined_str(self, node: ast.JoinedStr) -> bytes:
         """Translate an f-string into a chain of `string_append` calls.
@@ -1490,6 +1512,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         lst[idx] -> (list-ref lst idx)
         lst[start:end] -> slice implementation
         dict[key] -> (cdr (assoc key dict)) for string keys
+        b[i] (bytes) -> char->integer of vector-ref.
         Complex operands stored separately.
         """
         value_bytes = self.translate_expr_with_ref(node.value)
@@ -1498,23 +1521,42 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         if isinstance(node.slice, ast.Slice):
             return self.translate_slice(value_bytes, node.slice)
 
-        index_bytes = self.translate_expr_with_ref(node.slice)
-
         # Detect dict access: if index is a string, use assoc
         # d['key'] -> (cdr (assoc 'key d))
         # lst[0] -> (list-ref lst 0)
         is_string_key = isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str)
 
         if is_string_key:
+            index_bytes = self.translate_expr_with_ref(node.slice)
             # Dict access: (cdr (assoc key dict))
             assoc_bytes = create_inline_call('assoc', [index_bytes, value_bytes], self.bc)
             # Store assoc call separately
             assoc_ref = self._hoist(assoc_bytes)
             # Get the value from the pair with cdr
             return create_inline_call('cdr', [assoc_ref], self.bc)
-        else:
-            # List access: (list-ref lst idx)
-            return create_inline_call('list_ref', [value_bytes, index_bytes], self.bc)
+
+        # Sequence access. `list-ref` handles lists and strings;
+        # `bytes` is a buffer-flagged vector and needs `vector-ref`,
+        # which on a buffer returns a character — convert back to the
+        # int the Python user expects. Dispatch on `vectorp` so
+        # `lst[i]` and `b[i]` both work. Both the receiver and the
+        # index are read in two branches plus the predicate, so each
+        # is wrapped in `_evaluate_once` to avoid re-executing the
+        # underlying expression three times.
+        def build_with_idx(idx_token: bytes) -> bytes:
+            def build_with_recv(recv_token: bytes) -> bytes:
+                vec_ref = create_inline_call(
+                    'vector_ref', [recv_token, idx_token], self.bc)
+                vec_branch = create_inline_call(
+                    'char_to_integer', [vec_ref], self.bc)
+                list_branch = create_inline_call(
+                    'list_ref', [recv_token, idx_token], self.bc)
+                return self._emit_type_dispatch(
+                    recv_token,
+                    [('vectorp', vec_branch)],
+                    list_branch)
+            return self._evaluate_once(node.value, build_with_recv)
+        return self._evaluate_once(node.slice, build_with_idx)
 
     def translate_slice(self, value_bytes: bytes, slice_node: ast.Slice) -> bytes:
         """

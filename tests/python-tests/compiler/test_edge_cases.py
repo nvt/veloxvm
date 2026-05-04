@@ -429,9 +429,9 @@ class TestCallDispatchRegistry(unittest.TestCase):
         # is conscious. (Update both together when the set legitimately
         # changes.)
         expected = {
-            'print', 'len', 'range', 'int', 'str', 'abs', 'min',
-            'max', 'sum', 'sorted', 'reversed', 'map', 'filter',
-            'reduce', 'all', 'any', 'list', 'enumerate', 'zip',
+            'print', 'len', 'range', 'int', 'str', 'bytes', 'bytearray',
+            'abs', 'min', 'max', 'sum', 'sorted', 'reversed', 'map',
+            'filter', 'reduce', 'all', 'any', 'list', 'enumerate', 'zip',
         }
         self.assertEqual(set(PythonTranslator._BUILTIN_HANDLERS), expected)
 
@@ -866,6 +866,85 @@ class TestCompileErrorLocation(unittest.TestCase):
         self.assertIn("prog.py:1:5:", rendered)
         self.assertIn("y = {n for n in [1, 2]}", rendered)
         self.assertIn("^", rendered)
+
+
+class TestBytesLowering(unittest.TestCase):
+    """Bytes literals and `bytes(...)` constructor."""
+
+    def _compile_bytes_source(self, source):
+        bc = compile_string(source)
+        from pyvelox.encoder import encode_symbol
+        all_bytes = b''.join(bc.expressions)
+        return bc, all_bytes, encode_symbol
+
+    def test_empty_bytes_literal(self):
+        # b'' must not pull in the from-list helper — it's just
+        # `(make-buffer 0)`, no preamble work needed.
+        bc, all_bytes, encode_symbol = self._compile_bytes_source(
+            "x = b''\n")
+        self.assertIn(encode_symbol('make_buffer', bc), all_bytes)
+        self.assertNotIn(
+            encode_symbol('_pyvelox_bytes_from_list', bc), all_bytes)
+
+    def test_nonempty_bytes_literal_uses_helper(self):
+        bc, all_bytes, encode_symbol = self._compile_bytes_source(
+            "x = b'AB'\n")
+        # The helper symbol must show up — the literal lowers to a
+        # call to it.
+        self.assertIn(
+            encode_symbol('_pyvelox_bytes_from_list', bc), all_bytes)
+        self.assertIn(encode_symbol('make_buffer', bc), all_bytes)
+
+    def test_bytes_no_arg(self):
+        bc, all_bytes, encode_symbol = self._compile_bytes_source(
+            'x = bytes()\n')
+        # Pure make-buffer 0 — no helper needed.
+        self.assertIn(encode_symbol('make_buffer', bc), all_bytes)
+        self.assertNotIn(
+            encode_symbol('_pyvelox_bytes_from_list', bc), all_bytes)
+
+    def test_bytes_int_literal(self):
+        bc, all_bytes, encode_symbol = self._compile_bytes_source(
+            'x = bytes(8)\n')
+        self.assertIn(encode_symbol('make_buffer', bc), all_bytes)
+        self.assertNotIn(
+            encode_symbol('_pyvelox_bytes_from_list', bc), all_bytes)
+
+    def test_bytes_list_literal_uses_helper(self):
+        bc, all_bytes, encode_symbol = self._compile_bytes_source(
+            'x = bytes([1, 2, 3])\n')
+        self.assertIn(
+            encode_symbol('_pyvelox_bytes_from_list', bc), all_bytes)
+
+    def test_bytes_variable_uses_runtime_dispatch(self):
+        # Variable arg should fold through numberp / bufferp dispatch.
+        bc, all_bytes, encode_symbol = self._compile_bytes_source(
+            'y = 4\nx = bytes(y)\n')
+        self.assertIn(encode_symbol('numberp', bc), all_bytes)
+        self.assertIn(encode_symbol('bufferp', bc), all_bytes)
+        self.assertIn(encode_symbol('make_buffer', bc), all_bytes)
+        self.assertIn(
+            encode_symbol('_pyvelox_bytes_from_list', bc), all_bytes)
+
+    def test_bytearray_is_refused(self):
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('x = bytearray()\n')
+        self.assertIn("bytearray", ctx.exception.raw_message)
+
+    def test_bytes_bool_is_refused(self):
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('x = bytes(True)\n')
+        self.assertIn("bool", ctx.exception.raw_message)
+
+    def test_len_emits_vector_dispatch(self):
+        # The new len() lowers via vectorp / vector_length so it works
+        # on bytes. Make sure we still mention `length` for the
+        # list/string fallthrough.
+        bc, all_bytes, encode_symbol = self._compile_bytes_source(
+            'x = [1]\nprint(len(x))\n')
+        self.assertIn(encode_symbol('vectorp', bc), all_bytes)
+        self.assertIn(encode_symbol('vector_length', bc), all_bytes)
+        self.assertIn(encode_symbol('length', bc), all_bytes)
 
 
 if __name__ == '__main__':

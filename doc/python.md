@@ -37,6 +37,8 @@ source line; the CLI prints the same and exits non-zero.
 | `dict` | Yes | Association lists, O(n) lookup. |
 | `tuple` | Yes | Stored as a list; the immutable distinction isn't enforced. |
 | `set`, `frozenset` | No | No set type. |
+| `bytes` (`b'...'`, `bytes(...)`) | Yes | Backed by R7RS bytevector storage (buffer-flagged vector). `bytes(b'...')` shares storage instead of copying — observable only via `vector-set!`, which user Python can't reach. `bytes(True)` / `bytes(False)` is refused as ambiguous. |
+| `bytearray` | No | The VM has no separate mutable-buffer type; refused at compile time. |
 | `if`/`elif`/`else`, ternary `x if cond else y` | Yes | |
 | `for`, `while` | Yes | |
 | `break`, `continue` | Yes | Implemented via VM exception sentinels. |
@@ -79,6 +81,8 @@ miscompiles (will be tightened to a refusal).
 | `len` | Yes | |
 | `range` | Yes | 1–3 arguments, variable bounds. Small literal `range(N)` constant-folds; everything else uses a `_pyvelox_range` helper emitted into the program prologue. Step `0` would loop forever (Python raises). |
 | `int`, `str`, `abs`, `min`, `max`, `sum` | Yes | `int` and `str` insert a small runtime type-dispatch for non-literal arguments. |
+| `bytes` | Yes | `bytes()`, `bytes(N)` (N zero-filled), `bytes([b1, b2, …])`, `bytes(b'...')`. Variable arg routes through a `numberp`/`bufferp` runtime dispatch. |
+| `bytearray` | No | Refused at compile time. |
 | `enumerate`, `zip`, `reversed`, `list` | Yes | |
 | `map`, `filter`, `reduce`, `any`, `all` | Yes | Eager — return lists, not iterators. |
 | `sorted` | No | Refused; sort manually until a VM-level sort is added. |

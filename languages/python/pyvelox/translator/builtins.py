@@ -53,6 +53,8 @@ class _BuiltinHandlers:
         'range':     'translate_range',
         'int':       'translate_int',
         'str':       'translate_str',
+        'bytes':     'translate_bytes',
+        'bytearray': 'translate_bytearray',
         'abs':       'translate_abs',
         'min':       'translate_min',
         'max':       'translate_max',
@@ -100,15 +102,33 @@ class _BuiltinHandlers:
         return create_inline_call('begin', [print_ref, newline_ref], self.bc)
 
     def translate_len(self, args: List[ast.expr]) -> bytes:
-        """Translate len(x) -> (length x) or (string-length x)."""
+        """Translate `len(x)`.
+
+        The VM's `length` primitive only handles lists and strings, but
+        `bytes` objects are buffer-flagged vectors — they need
+        `vector-length`. Emit a runtime dispatch so `len` works for
+        all four sequence shapes:
+
+            (if (vectorp x) (vector-length x) (length x))
+
+        `vectorp` is true for both regular and buffer-flagged vectors,
+        so this single test covers `bytes` plus any vector the user
+        gets from a port library.
+        """
         if len(args) != 1:
             raise ValueError("len() takes exactly 1 argument")
 
-        arg_bytes = self.translate_expr_with_ref(args[0])
+        def build(arg_token: bytes) -> bytes:
+            vec_len = create_inline_call(
+                'vector_length', [arg_token], self.bc)
+            list_or_str_len = create_inline_call(
+                'length', [arg_token], self.bc)
+            return self._emit_type_dispatch(
+                arg_token,
+                [('vectorp', vec_len)],
+                list_or_str_len)
 
-        # For simplicity, use 'length' (works for lists)
-        # TODO: Could inspect type to choose between length/string-length/vector-length
-        return create_inline_call('length', [arg_bytes], self.bc)
+        return self._evaluate_once(args[0], build)
 
     def translate_range(self, args: List[ast.expr]) -> bytes:
         """Translate `range(stop)` / `range(start, stop)` /
@@ -349,6 +369,163 @@ class _BuiltinHandlers:
         # Evaluate `arg` once — the dispatch reads it from multiple
         # branches.
         return self._evaluate_once(arg, build)
+
+    def translate_bytes(self, args: List[ast.expr]) -> bytes:
+        """Translate `bytes(...)`.
+
+        Lowers to a buffer-flagged vector — the same VM storage R7RS
+        bytevectors use. Recognised forms:
+
+        - `bytes()`            -> `(make-buffer 0)`
+        - `bytes(int_lit)`     -> `(make-buffer N)` (zero-filled)
+        - `bytes([b1, b2, …])` -> `(_pyvelox_bytes_from_list (list b1 b2 …))`
+        - `bytes(b'...')`      -> the literal itself
+        - `bytes(x)` (variable) -> runtime dispatch on `numberp` /
+          `bufferp`, falling through to the from-list helper.
+
+        CPython copies on `bytes(b'...')`; we return the same buffer.
+        Documented divergence — bytes are notionally immutable, so
+        sharing storage is observable only through `vector-set!`,
+        which Python user code can't reach.
+        """
+        if len(args) > 1:
+            raise ValueError(
+                f"bytes() takes 0 or 1 arguments ({len(args)} given)")
+
+        if not args:
+            return create_inline_call(
+                'make_buffer', [encode_integer(0)], self.bc)
+
+        arg = args[0]
+
+        # Compile-time fast paths: source already tells us the shape.
+        if isinstance(arg, ast.Constant):
+            value = arg.value
+            if isinstance(value, bool):
+                # bool is an int subclass; bytes(True/False) is 0/1
+                # bytes in CPython. We refuse rather than silently
+                # interpret it that way.
+                raise NotImplementedError(
+                    "bytes(bool) is ambiguous in pyvelox; pass an "
+                    "explicit int (e.g. bytes(int(b))) or a list")
+            if isinstance(value, int):
+                # `-1` parses as UnaryOp, not Constant, so we never
+                # see a negative literal here. The VM's make-buffer
+                # rejects negatives at runtime anyway.
+                return create_inline_call(
+                    'make_buffer',
+                    [self.translate_expr_with_ref(arg)], self.bc)
+            if isinstance(value, bytes):
+                # Recurses through translate_constant.
+                return self.translate_expr_with_ref(arg)
+
+        if isinstance(arg, (ast.List, ast.Tuple)):
+            self._emit_bytes_helper()
+            list_bytes = self.translate_expr_with_ref(arg)
+            return create_inline_call(
+                '_pyvelox_bytes_from_list', [list_bytes], self.bc)
+
+        # Variable / general expression: dispatch at runtime.
+        self._emit_bytes_helper()
+
+        def build(arg_token: bytes) -> bytes:
+            # (numberp x) -> (make-buffer x)
+            # (bufferp x) -> x ;; already bytes; share storage
+            # else        -> (_pyvelox_bytes_from_list x)
+            return self._emit_type_dispatch(
+                arg_token,
+                [('numberp', create_inline_call(
+                    'make_buffer', [arg_token], self.bc)),
+                 ('bufferp', arg_token)],
+                create_inline_call(
+                    '_pyvelox_bytes_from_list', [arg_token], self.bc))
+
+        return self._evaluate_once(arg, build)
+
+    def translate_bytearray(self, args: List[ast.expr]) -> bytes:
+        """`bytearray` isn't yet distinguished from `bytes` — the VM
+        has only one buffer type and exposing both names without
+        enforcing mutability semantics would mislead users."""
+        raise NotImplementedError(
+            "bytearray is not yet supported in pyvelox; use bytes()")
+
+    def _emit_bytes_helper(self) -> None:
+        """Emit the `_pyvelox_bytes_from_list` helper into the
+        program prologue. Idempotent.
+
+        The helper allocates a buffer of the list's length and writes
+        each element (an int 0..255 or a character) into it via
+        `vector-set!`. Representation matches R7RS bytevectors —
+        buffer-flagged vectors. The loop is split out as a separate
+        recursive helper so it doesn't capture any free variables, the
+        same shape `_pyvelox_range` uses.
+
+            (define _pyvelox_bytes_loop
+              (lambda (lst buf i)
+                (if (null? lst)
+                    buf
+                    (begin
+                      (vector-set! buf i (car lst))
+                      (_pyvelox_bytes_loop (cdr lst) buf (+ i 1))))))
+
+            (define _pyvelox_bytes_from_list
+              (lambda (lst)
+                (_pyvelox_bytes_loop
+                  lst (make-buffer (length lst)) 0)))
+        """
+        if '_pyvelox_bytes_from_list' in self._emitted_helpers:
+            return
+        self._emitted_helpers.add('_pyvelox_bytes_from_list')
+
+        sym_lst = lambda: encode_symbol('lst', self.bc)
+        sym_buf = lambda: encode_symbol('buf', self.bc)
+        sym_i = lambda: encode_symbol('i', self.bc)
+
+        # (vector-set! buf i (car lst))
+        car_lst = create_inline_call('car', [sym_lst()], self.bc)
+        set_call = create_inline_call(
+            'vector_set', [sym_buf(), sym_i(), car_lst], self.bc)
+
+        # (_pyvelox_bytes_loop (cdr lst) buf (+ i 1))
+        cdr_lst = create_inline_call('cdr', [sym_lst()], self.bc)
+        next_i = create_inline_call(
+            'add', [sym_i(), encode_integer(1)], self.bc)
+        recurse = create_inline_call(
+            '_pyvelox_bytes_loop',
+            [cdr_lst, sym_buf(), next_i], self.bc)
+
+        # (begin (vector-set! ...) (recurse ...))
+        step = create_inline_call(
+            'begin', [set_call, recurse], self.bc)
+
+        null_test = create_inline_call('nullp', [sym_lst()], self.bc)
+        loop_body = create_inline_call(
+            'if', [null_test, sym_buf(), step], self.bc)
+        loop_lambda_ref = self._emit_lambda(
+            ['lst', 'buf', 'i'], loop_body, is_function=True)
+        define_loop = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_bytes_loop', self.bc),
+             loop_lambda_ref],
+            self.bc)
+
+        # Outer constructor.
+        len_call = create_inline_call('length', [sym_lst()], self.bc)
+        make_buf = create_inline_call(
+            'make_buffer', [len_call], self.bc)
+        outer_call = create_inline_call(
+            '_pyvelox_bytes_loop',
+            [sym_lst(), make_buf, encode_integer(0)], self.bc)
+        outer_lambda_ref = self._emit_lambda(
+            ['lst'], outer_call, is_function=True)
+        define_outer = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_bytes_from_list', self.bc),
+             outer_lambda_ref],
+            self.bc)
+
+        self._preamble.extend(define_loop)
+        self._preamble.extend(define_outer)
 
     def translate_abs(self, args: List[ast.expr]) -> bytes:
         """Translate `abs(x)` to `(if (< x 0) (- 0 x) x)`.
