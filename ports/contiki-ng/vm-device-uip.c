@@ -36,12 +36,46 @@
 
 #include "vm.h"
 #include "vm-log.h"
+#include "vm-native.h"
+
+#include <string.h>
 
 /*---------------------------------------------------------------------------*/
 static int
 vm_uip_read(vm_port_t *port, char *buf, size_t size)
 {
-  return 0;
+  struct native_socket *sock;
+  size_t avail;
+  size_t n;
+
+  sock = port->opaque_desc;
+  if(sock == NULL || size == 0) {
+    return 0;
+  }
+
+  avail = sock->rx_len - sock->rx_pos;
+  if(avail == 0) {
+    /* No bytes buffered yet. Park the calling thread on a short timer
+       so the eval loop retries; udp_input wakes the thread early when
+       a datagram actually arrives. The expr-restart flag is what
+       rewinds us back to this read on the next pass. */
+    if(port->thread != NULL) {
+      vm_native_sleep(port->thread, VM_POLL_TIME);
+      if(port->thread->expr != NULL) {
+        VM_SET_FLAG(port->thread->expr->flags, VM_EXPR_RESTART);
+      }
+    }
+    return 0;
+  }
+
+  n = avail < size ? avail : size;
+  memcpy(buf, sock->rx_buf + sock->rx_pos, n);
+  sock->rx_pos += n;
+  if(sock->rx_pos >= sock->rx_len) {
+    sock->rx_pos = 0;
+    sock->rx_len = 0;
+  }
+  return (int)n;
 }
 /*---------------------------------------------------------------------------*/
 static int
@@ -50,6 +84,9 @@ vm_uip_write(vm_port_t *port, const char *buf, size_t size)
   struct native_socket *sock;
 
   sock = port->opaque_desc;
+  if(sock == NULL) {
+    return -1;
+  }
   return udp_socket_send(&sock->socket, buf, size);
 }
 /*---------------------------------------------------------------------------*/
@@ -62,6 +99,10 @@ vm_uip_close(vm_port_t *port)
   if(sock == NULL) {
     return;
   }
+  /* Drop the back-pointer first: udp_input might fire one more time
+     between udp_socket_close and the memb release on some stacks.
+     With sock->port cleared it becomes a logged drop, not a UAF. */
+  sock->port = NULL;
   udp_socket_close(&sock->socket);
   /* Reclaim the MEMB slot here so both manual closes and GC-driven
      port finalisations free it. Skipping this leaks the slot until

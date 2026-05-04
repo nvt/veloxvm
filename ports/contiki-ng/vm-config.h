@@ -285,4 +285,16 @@
 #endif
 #endif
 
+/* Per-socket inbound datagram buffer in bytes. Sized for one IPv6
+   payload by default; packets larger than this on UDP are truncated
+   (the rx callback never receives reassembled fragments larger than
+   one datagram, so this is the natural unit). */
+#ifndef VM_SOCKET_RX_BUFSIZE
+#if CONTIKI_TARGET_ZOUL
+#define VM_SOCKET_RX_BUFSIZE 128
+#else
+#define VM_SOCKET_RX_BUFSIZE 256
+#endif
+#endif
+
 #endif /* !VM_CONFIG_H */

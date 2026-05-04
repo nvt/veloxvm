@@ -36,9 +36,14 @@
 #include "cfs/cfs.h"
 #include "lib/random.h"
 #include "net/ipv6/udp-socket.h"
+#include "net/ipv6/uip.h"
 
 #include "lib/heapmem.h"
 #include "vm-file.h"
+#include "vm-config.h"
+
+#include <stdbool.h>
+#include <stdint.h>
 
 #define VM_MALLOC vm_native_alloc
 #define VM_FREE vm_native_free
@@ -65,11 +70,37 @@ typedef rtimer_clock_t vm_native_time_t;
 /* The native clocks resolution in Hertz. */
 #define VM_NATIVE_TIME_RESOLUTION() RTIMER_SECOND
 
+/* Forward declaration so the back-pointer below does not require
+   including vm.h. */
+struct vm_port;
+
 struct native_socket {
   struct udp_socket socket;
   uint16_t proto;
   uint16_t lport;
   uint16_t rport;
+
+  /* Back-pointer set by vm_native_open_client so the udp_input
+     callback can find the owning port (and thus the parked reader
+     thread) without searching the socket list. */
+  struct vm_port *port;
+
+  /* Source of the most recent inbound datagram. peer-name returns
+     this rather than the connected ripaddr so server-style flows can
+     tell who sent what. */
+  uip_ipaddr_t last_src_addr;
+  uint16_t last_src_port;
+  bool last_src_valid;
+
+  /* Single in-flight inbound datagram. udp_input copies the payload
+     here; vm_uip_read drains rx_pos..rx_len. New datagrams arriving
+     while rx_len > rx_pos are dropped (logged) -- the caller must
+     read promptly. A ring would help but VM_SOCKET_RX_BUFSIZE is
+     already pre-allocated per slot so a fixed single-slot buffer
+     keeps memory linear in VM_MAX_SOCKETS. */
+  uint8_t rx_buf[VM_SOCKET_RX_BUFSIZE];
+  uint16_t rx_pos;
+  uint16_t rx_len;
 };
 
 extern void *vm_native_alloc(size_t);

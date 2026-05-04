@@ -119,6 +119,10 @@ allocate_socket(void)
 
   sock = memb_alloc(&socket_memb);
   if(sock != NULL) {
+    /* memb_alloc does not zero the slot; clear the bookkeeping fields
+       so the rx queue starts empty and the back-pointer is well
+       defined before udp_socket_register exposes us to callbacks. */
+    memset(sock, 0, sizeof(*sock));
     list_push(socket_list, sock);
   }
   return sock;
@@ -228,21 +232,85 @@ attribute_communication(vm_thread_t *thread, uint16_t proto, uint16_t port)
   /* No Powertrace in Contiki-NG. */
 }
 
+/* Wake a thread parked by vm_uip_read. Cancels the polling timer and
+   nudges the VM process so the eval loop picks the thread up on its
+   next pass. Safe to call from the tcpip-process context where
+   udp_input runs because Contiki-NG schedules processes
+   cooperatively -- there is no preemption between this and the VM
+   eval loop. */
+static void
+wake_thread(vm_thread_t *thread)
+{
+  vm_id_index_t idx;
+
+  if(thread == NULL) {
+    return;
+  }
+  idx = vm_thread_get_index(thread);
+  if(idx != VM_ID_INDEX_INVALID) {
+    ctimer_stop(&timers[idx]);
+  }
+  if(thread->status == VM_THREAD_WAITING) {
+    thread->status = VM_THREAD_RUNNABLE;
+    process_poll(&vm_process);
+  }
+}
+
 static void
 udp_input(struct udp_socket *sock, void *ptr,
           const uip_ipaddr_t *source_addr, uint16_t source_port,
           const uip_ipaddr_t *dest_addr, uint16_t dest_port,
           const uint8_t *data, uint16_t datalen)
 {
+  struct native_socket *nsock;
+  vm_port_t *port;
   vm_thread_t *thread;
+  uint16_t copy;
 
-  thread = ptr;
+  nsock = ptr;
+  if(nsock == NULL) {
+    return;
+  }
+  port = nsock->port;
+  thread = port != NULL ? port->thread : NULL;
 
-  attribute_communication(thread, UIP_PROTO_UDP,
-                          VM_MIN(uip_ntohs(source_port), uip_ntohs(dest_port)));
+  if(thread != NULL) {
+    attribute_communication(thread, UIP_PROTO_UDP,
+                            VM_MIN(uip_ntohs(source_port),
+                                   uip_ntohs(dest_port)));
+    VM_DEBUG(VM_DEBUG_MEDIUM,
+             "Program %s received a UDP packet of %u bytes",
+             thread->program->name, (unsigned)datalen);
+  }
 
-  VM_DEBUG(VM_DEBUG_MEDIUM,
-           "Program %s received a UDP packet", thread->program->name);
+  if(datalen == 0) {
+    return;
+  }
+
+  /* Drop the new datagram if the previous one has not been drained.
+     UDP semantics already permit loss; logging makes the situation
+     visible without aborting the connection. */
+  if(nsock->rx_pos < nsock->rx_len) {
+    VM_DEBUG(VM_DEBUG_LOW,
+             "UDP rx slot full, dropping %u bytes", (unsigned)datalen);
+    return;
+  }
+
+  copy = datalen > VM_SOCKET_RX_BUFSIZE ? VM_SOCKET_RX_BUFSIZE : datalen;
+  if(copy < datalen) {
+    VM_DEBUG(VM_DEBUG_LOW,
+             "UDP rx datagram %u bytes truncated to %u",
+             (unsigned)datalen, (unsigned)copy);
+  }
+  memcpy(nsock->rx_buf, data, copy);
+  nsock->rx_pos = 0;
+  nsock->rx_len = copy;
+
+  uip_ipaddr_copy(&nsock->last_src_addr, source_addr);
+  nsock->last_src_port = source_port;
+  nsock->last_src_valid = true;
+
+  wake_thread(thread);
 }
 
 static void
@@ -415,6 +483,14 @@ vm_native_open_client(vm_thread_t *thread, vm_socket_type_t socket_type,
   uip_ipaddr_t addr;
   vm_port_t *port;
 
+  if(socket_type != VM_SOCKET_DATAGRAM) {
+    /* TCP support lands in a follow-up commit; refuse with a typed
+       error rather than silently falling back to UDP. */
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+    vm_set_error_string(thread, "TCP not yet implemented on this port");
+    return NULL;
+  }
+
   if(vector_to_ip(address, &addr) == 0) {
     VM_DEBUG(VM_DEBUG_MEDIUM, "Failed to convert an IP address");
     return NULL;
@@ -426,8 +502,30 @@ vm_native_open_client(vm_thread_t *thread, vm_socket_type_t socket_type,
     return NULL;
   }
 
-  if(udp_socket_register(&sock->socket, thread, udp_input) < 0) {
+  /* Allocate the port up front so we can bind it to the socket before
+     registering with the network stack. udp_input may fire as soon as
+     the socket is bound, and it dereferences sock->port to find the
+     reader thread; an unset port pointer would crash. */
+  port = vm_alloc(sizeof(vm_port_t));
+  if(port == NULL) {
+    vm_native_release_socket(sock);
+    return NULL;
+  }
+  vm_port_register(port);
+
+  port->thread = thread;
+  port->flags = VM_PORT_FLAG_OPEN | VM_PORT_FLAG_SOCKET |
+                VM_PORT_FLAG_INPUT | VM_PORT_FLAG_OUTPUT;
+  port->io = &device_uip;
+  port->opaque_desc = sock;
+
+  sock->port = port;
+
+  if(udp_socket_register(&sock->socket, sock, udp_input) < 0) {
     VM_DEBUG(VM_DEBUG_LOW, "Failed to create a UDP socket");
+    sock->port = NULL;
+    port->opaque_desc = NULL;
+    port->flags = 0;
     vm_native_release_socket(sock);
     return NULL;
   }
@@ -445,23 +543,12 @@ vm_native_open_client(vm_thread_t *thread, vm_socket_type_t socket_type,
   if(udp_socket_connect(&sock->socket, &addr, dest_port) < 0) {
     VM_DEBUG(VM_DEBUG_LOW, "Failed to connect a UDP socket");
     udp_socket_close(&sock->socket);
+    sock->port = NULL;
+    port->opaque_desc = NULL;
+    port->flags = 0;
     vm_native_release_socket(sock);
     return NULL;
   }
-
-  port = vm_alloc(sizeof(vm_port_t));
-  if(port == NULL) {
-    udp_socket_close(&sock->socket);
-    vm_native_release_socket(sock);
-    return NULL;
-  }
-  vm_port_register(port);
-
-  port->thread = thread;
-  port->flags = VM_PORT_FLAG_OPEN | VM_PORT_FLAG_SOCKET |
-                VM_PORT_FLAG_INPUT | VM_PORT_FLAG_OUTPUT;
-  port->io = &device_uip;
-  port->opaque_desc = sock;
 
   LOG_INFO("Created a UDP connection to ");
   LOG_INFO_6ADDR(&addr);
@@ -484,14 +571,24 @@ vm_native_get_peer_name(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
   struct native_socket *sock;
   vm_vector_t *vector;
   vm_obj_t item;
-  int i;
-  uip_ipaddr_t *peeraddr;
+  unsigned i;
+  const uip_ipaddr_t *peeraddr;
 
   sock = port->opaque_desc;
-  if(sock == NULL || sock->socket.udp_conn == NULL) {
+  if(sock == NULL) {
     return 0;
   }
-  peeraddr = &sock->socket.udp_conn->ripaddr;
+
+  /* Prefer the source of the last datagram we received (so server
+     flows can tell who sent what). Fall back to the connected
+     ripaddr for client flows that have not yet received anything. */
+  if(sock->last_src_valid) {
+    peeraddr = &sock->last_src_addr;
+  } else if(sock->socket.udp_conn != NULL) {
+    peeraddr = &sock->socket.udp_conn->ripaddr;
+  } else {
+    return 0;
+  }
 
   vector = vm_vector_create(obj, sizeof(peeraddr->u8), VM_VECTOR_FLAG_REGULAR);
   if(vector == NULL) {
