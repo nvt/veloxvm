@@ -396,9 +396,87 @@ class TestTryExceptCompilation(unittest.TestCase):
         )
         all_bytes = b''.join(bc.expressions)
         self.assertIn(encode_symbol('guard', bc), all_bytes)
-        # `quote` is needed to keep the exception type from being
+        # `quote` is needed to keep the py-exception tag from being
         # looked up as a variable.
         self.assertIn(encode_symbol('quote', bc), all_bytes)
+
+
+class TestStructuredRaise(unittest.TestCase):
+    """`raise X(args...)` lowers to a tagged 3-vector
+    `#(py-exception "TYPE" (list args...))` so handlers can read the
+    type and args via `e.type` / `e.args` (lowered to vector_ref)."""
+
+    def _compile_collect(self, source):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol, encode_string
+        bc = compile_string(source)
+        all_bytes = b''.join(bc.expressions)
+        return bc, all_bytes, encode_symbol, encode_string
+
+    def test_raise_with_args_emits_vector(self):
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'raise ValueError("oops")\n')
+        # Tagged vector + raise + a string for the type and the
+        # message must all show up.
+        self.assertIn(encode_symbol('raise', bc), all_bytes)
+        self.assertIn(encode_symbol('vector', bc), all_bytes)
+        self.assertIn(encode_symbol('py-exception', bc), all_bytes)
+        self.assertIn(encode_string('ValueError', bc), all_bytes)
+        self.assertIn(encode_string('oops', bc), all_bytes)
+
+    def test_bare_class_name_still_wraps(self):
+        # `raise X` with no args lowers to the same tagged vector,
+        # just with an empty list of args.
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'raise KeyError\n')
+        self.assertIn(encode_symbol('vector', bc), all_bytes)
+        self.assertIn(encode_string('KeyError', bc), all_bytes)
+
+    def test_reraise_of_bound_name_is_passthrough(self):
+        # `raise e` inside an except-as-e handler should pass the
+        # caught value through unchanged -- no fresh vector built
+        # around it. The tell-tale: only ONE `vector` symbol appears
+        # in the bytecode (from the inner construction); the re-raise
+        # itself doesn't emit another.
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'try:\n'
+            '    raise ValueError("inner")\n'
+            'except Exception as e:\n'
+            '    raise e\n')
+        self.assertIn(encode_symbol('raise', bc), all_bytes)
+        # The inner construction emits exactly one vector form.
+        self.assertEqual(all_bytes.count(encode_symbol('vector', bc)), 1)
+
+    def test_except_as_binds_attribute_access(self):
+        # e.args inside the handler lowers to vector_ref against the
+        # bound exception object.
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'try:\n'
+            '    raise ValueError("oops")\n'
+            'except Exception as e:\n'
+            '    x = e.args\n')
+        self.assertIn(encode_symbol('vector_ref', bc), all_bytes)
+
+    def test_attribute_outside_handler_is_compile_error(self):
+        # `e.args` on a name that isn't bound by an enclosing except
+        # falls through to translate_attribute's refusal -- otherwise
+        # any random `obj.foo` would silently emit vector_ref.
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('e = 1\nx = e.args\n')
+        self.assertIn("args", ctx.exception.raw_message)
+
+    def test_unsupported_raise_shape_is_compile_error(self):
+        # `raise some_func()` doesn't have a Name as the call's func,
+        # so translate_raise can't extract a type symbol.
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'def make_exc():\n'
+                '    return 1\n'
+                'raise (make_exc())()\n')
+        # The message mentions raise unsupported shape.
+        self.assertIn("raise", ctx.exception.raw_message)
 
 
 class TestCallDispatchRegistry(unittest.TestCase):

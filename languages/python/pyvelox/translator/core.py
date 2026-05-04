@@ -98,6 +98,25 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
     BREAK_SENTINEL = '__pyvelox_break__'
     CONTINUE_SENTINEL = '__pyvelox_continue__'
 
+    # Tag and slot layout for the tagged vector that pyvelox uses to
+    # represent a Python exception at runtime. Distinct from the R7RS
+    # error-object tag so the two can coexist without one's predicate
+    # false-positiving on the other. Slot 0 carries the tag; slots 1
+    # and 2 hold the type symbol and the args list, exposed via
+    # `e.type` and `e.args`.
+    EXCEPTION_TAG = 'py-exception'
+    EXCEPTION_SLOT_TYPE = 1
+    EXCEPTION_SLOT_ARGS = 2
+
+    # Attribute names that translate_attribute knows how to lower for
+    # an exception object bound by `except as e:`. Maps the Python
+    # attribute name to the slot index in the tagged vector above.
+    # Keep in sync with EXCEPTION_SLOT_*.
+    _EXCEPTION_ATTRS: Dict[str, int] = {
+        'args': 2,
+        'type': 1,
+    }
+
     def __init__(self, bc: Bytecode, source_lines: Optional[List[str]] = None):
         self.bc = bc
         self.scope_stack: List[Set[str]] = [set()]  # Stack of scopes, outermost first
@@ -137,6 +156,14 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         # arity/default-padding checks know to allow extra actuals
         # (which the runtime's bind_function_rest soaks up as a list).
         self._vararg_funcs: Dict[str, str] = {}
+        # Stack of `as e` names from currently-translating except
+        # handlers. translate_raise consults this to decide whether
+        # `raise NAME` should pass the bound value through (when NAME
+        # matches an active handler variable) or wrap the symbol as a
+        # fresh tagged exception (otherwise). translate_attribute uses
+        # the same stack to allow `e.args` / `e.type` lookups on the
+        # bound exception object.
+        self._exception_handler_vars: List[str] = []
 
     def is_vm_primitive(self, name: str) -> bool:
         """Check if a name conflicts with a VM primitive."""
@@ -1497,8 +1524,18 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             )
         exc_var = handler.name if handler.name else 'obj'
 
-        # Handler body
-        handler_bytes = self.translate_block(handler.body)
+        # Push the bound name so translate_raise / translate_attribute
+        # inside the handler body can recognise references to the
+        # caught exception. Only `as e:` introduces a real Python
+        # binding; the synthetic 'obj' default is still pushed so
+        # raise-passthrough on it works in the legacy
+        # except-without-as case.
+        self._exception_handler_vars.append(exc_var)
+        try:
+            # Handler body
+            handler_bytes = self.translate_block(handler.body)
+        finally:
+            self._exception_handler_vars.pop()
 
         # Inside a loop, an `except:` written by the user shouldn't
         # accidentally swallow our break/continue sentinels. Prepend a
@@ -1574,24 +1611,85 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         return create_inline_call('begin', calls, self.bc)
 
     def translate_raise(self, node: ast.Raise) -> bytes:
-        """Translate raise statement: raise ValueError -> (raise 'ValueError)."""
-        if node.exc:
-            if isinstance(node.exc, ast.Call):
-                exc_name = node.exc.func.id if isinstance(node.exc.func, ast.Name) else 'Exception'
-            elif isinstance(node.exc, ast.Name):
-                exc_name = node.exc.id
-            else:
-                exc_name = 'Exception'
-        else:
-            exc_name = 'Exception'
+        """Translate raise into a structured exception object.
 
-        # raise evaluates its argument before invocation. Without
-        # quoting, the exception type name would be looked up as a
-        # variable and fail with "Undefined symbol". Wrap the symbol in
-        # (quote ...) so it survives evaluation as a symbol literal.
-        exc_bytes = create_inline_call(
-            'quote', [encode_symbol(exc_name, self.bc)], self.bc)
-        return create_inline_call('raise', [exc_bytes], self.bc)
+        The wire format is a 3-slot tagged vector:
+        `#(py-exception type-sym args-list)` -- distinct from the
+        R7RS error-object tag so the two coexist. `type-sym` carries
+        the exception class name; `args-list` is the positional
+        argument list passed to the constructor (CPython's `e.args`).
+
+        Recognised forms:
+        - `raise X(a, b, ...)`: build the tagged vector, raise it.
+        - `raise X` (bare class name): same shape with empty args.
+        - `raise e` where `e` names an exception currently bound by
+          an enclosing `except as e:`: passthrough -- raise the
+          already-tagged value the handler caught, no re-wrapping.
+        - `raise` (bare re-raise): no exception state is tracked
+          across handlers, so we synthesise a generic Exception with
+          empty args. (Bare re-raise inside a handler with `as e:`
+          would be cleaner via `raise e`.)
+        - Anything else (e.g. `raise some_func()`): refuse.
+
+        Boundary with break/continue: the loop sentinels still go
+        through `_raise_sentinel` directly and stay as bare quoted
+        symbols. The tagged-vector shape is only for Python-visible
+        exceptions, so the sentinel filter (which compares with eqp)
+        keeps working.
+        """
+        # Bare `raise` -- generic Exception with empty args.
+        if node.exc is None:
+            return create_inline_call(
+                'raise', [self._make_exception_obj('Exception', [])],
+                self.bc)
+
+        # `raise NAME`. Decide passthrough vs class-construction by
+        # looking at the active handler stack.
+        if isinstance(node.exc, ast.Name):
+            if node.exc.id in self._exception_handler_vars:
+                # Re-raise of a bound exception variable. Pass the
+                # caught value through unchanged.
+                return create_inline_call(
+                    'raise',
+                    [encode_symbol(self.get_safe_name(node.exc.id), self.bc)],
+                    self.bc)
+            return create_inline_call(
+                'raise',
+                [self._make_exception_obj(node.exc.id, [])], self.bc)
+
+        # `raise NAME(args...)` -- construct a fresh exception object.
+        if isinstance(node.exc, ast.Call) and isinstance(node.exc.func, ast.Name):
+            return create_inline_call(
+                'raise',
+                [self._make_exception_obj(node.exc.func.id, node.exc.args)],
+                self.bc)
+
+        raise NotImplementedError(
+            f"raise of {type(node.exc).__name__} is not supported; use "
+            f"`raise SomeException(args...)` or `raise <bound name>`.")
+
+    def _make_exception_obj(self, type_name: str,
+                            arg_nodes: List[ast.expr]) -> bytes:
+        """Build `(vector 'py-exception "TYPE" (list args...))` for
+        the given type name and positional-argument AST nodes. Each
+        arg node is translated through translate_expr_with_ref so
+        complex argument expressions get hoisted into the expression
+        table.
+
+        The type is stored as a string -- not a symbol -- so user
+        code can compare with a plain string literal (`e.type ==
+        'ValueError'`); the VM's equalp keeps symbols and strings
+        distinct, so a symbol on either side would silently fail.
+        The tag in slot 0 is still a symbol because it's an internal
+        marker, never compared by user code.
+        """
+        tag_bytes = create_inline_call(
+            'quote', [encode_symbol(self.EXCEPTION_TAG, self.bc)], self.bc)
+        type_bytes = encode_string(type_name, self.bc)
+        arg_bytes = [self.translate_expr_with_ref(a) for a in arg_nodes]
+        args_list = create_inline_call('list', arg_bytes, self.bc)
+        return create_inline_call(
+            'vector', [tag_bytes, type_bytes, args_list], self.bc)
 
     def translate_subscript(self, node: ast.Subscript) -> bytes:
         """
@@ -1715,8 +1813,24 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         Translate attribute access: obj.attr
         This is used for accessing attributes that are not method calls.
         For method calls, translate_call handles them.
+
+        Currently the only supported attributes are `e.args` and
+        `e.type` on an exception object bound by an enclosing
+        `except as e:` -- they lower to vector-ref against the
+        tagged-vector exception representation. Other attribute
+        access is still rejected.
         """
-        raise NotImplementedError(f"Attribute access '{node.attr}' not supported in this context")
+        if (isinstance(node.value, ast.Name)
+                and node.value.id in self._exception_handler_vars
+                and node.attr in self._EXCEPTION_ATTRS):
+            slot = self._EXCEPTION_ATTRS[node.attr]
+            recv = encode_symbol(
+                self.get_safe_name(node.value.id), self.bc)
+            return create_inline_call(
+                'vector_ref', [recv, encode_integer(slot)], self.bc)
+        raise NotImplementedError(
+            f"Attribute access '{node.attr}' not supported in this "
+            f"context")
 
     _RANGE_LITERAL_LIMIT = 16
 
