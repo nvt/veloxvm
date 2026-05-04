@@ -122,6 +122,74 @@ expect("TaggedPoint.label", tp.label(), "(10, 20)")
 expect("isinstance(tp, Point)", isinstance(tp, Point), True)
 
 
+# ============================================================
+# Field defaults: trailing fields can have literal default values.
+# Synthesised __init__ is variadic and uses argc dispatch to pick
+# arg vs default per field.
+# ============================================================
+
+@dataclass
+class Config:
+    host: str
+    port: int = 8080
+    debug: bool = False
+    label: str = "default"
+
+
+# All defaults consumed.
+c1 = Config("api")
+expect("Config.host (only required)", c1.host, "api")
+expect("Config.port default", c1.port, 8080)
+expect("Config.debug default", c1.debug, False)
+expect("Config.label default", c1.label, "default")
+
+# Override the first defaulted field.
+c2 = Config("api", 9000)
+expect("Config.port override", c2.port, 9000)
+expect("Config.debug still default", c2.debug, False)
+expect("Config.label still default", c2.label, "default")
+
+# Override several.
+c3 = Config("api", 7000, True)
+expect("Config.debug override", c3.debug, True)
+expect("Config.label still default", c3.label, "default")
+
+# Override all.
+c4 = Config("api", 7000, True, "custom")
+expect("Config.label override", c4.label, "custom")
+
+
+# All-default fields: zero positional args is enough.
+@dataclass
+class AllDefaults:
+    a: int = 1
+    b: int = 2
+    c: int = 3
+
+
+ad = AllDefaults()
+expect("AllDefaults.a", ad.a, 1)
+expect("AllDefaults.b", ad.b, 2)
+expect("AllDefaults.c", ad.c, 3)
+
+ad2 = AllDefaults(10)
+expect("AllDefaults a override", ad2.a, 10)
+expect("AllDefaults b still default", ad2.b, 2)
+
+
+# Subclass of a defaulted dataclass inherits the variadic __init__.
+class ExtendedConfig(Config):
+    def description(self):
+        return f"{self.host}:{self.port}"
+
+
+ec = ExtendedConfig("primary", 4000)
+expect("ExtendedConfig host", ec.host, "primary")
+expect("ExtendedConfig port", ec.port, 4000)
+expect("ExtendedConfig debug default inherited", ec.debug, False)
+expect("ExtendedConfig.description", ec.description(), "primary:4000")
+
+
 if failures > 0:
     print("FAILURES:", failures)
     raise SystemExit(1)

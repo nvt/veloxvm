@@ -1519,15 +1519,55 @@ class TestDataclass(unittest.TestCase):
         self.assertIn("@dataclass", ctx.exception.raw_message)
         self.assertIn("arguments", ctx.exception.raw_message)
 
-    def test_field_default_is_compile_error(self):
+    def test_field_defaults_compile(self):
+        # Field defaults are now supported; the synthesized __init__
+        # is variadic so it can take fewer than `len(fields)` args.
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(
+            '@dataclass\n'
+            'class Foo:\n'
+            '    x: int\n'
+            '    y: int = 5\n')
+        all_bytes = b''.join(bc.expressions)
+        # Variadic init uses bind_function_rest.
+        self.assertIn(
+            encode_symbol('bind_function_rest', bc), all_bytes)
+
+    def test_no_default_fields_keeps_fixed_arity(self):
+        # Regression guard: a dataclass with no defaults should still
+        # use the fixed-arity init shape (bind_function), not the
+        # variadic one.
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            '@dataclass\n'
+            'class Pair:\n'
+            '    a: int\n'
+            '    b: int\n')
+        self.assertIn(encode_symbol('bind_function', bc), all_bytes)
+
+    def test_non_default_after_default_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                '@dataclass\n'
+                'class Bad:\n'
+                '    x: int = 0\n'
+                '    y: int\n')
+        self.assertIn("Non-default field", ctx.exception.raw_message)
+        self.assertIn("y", ctx.exception.raw_message)
+
+    def test_non_literal_default_is_compile_error(self):
+        # Defaults must be literal constants, same as plain function
+        # defaults. A computed default would need to evaluate at
+        # call time; we don't have that machinery in the synthesised
+        # init.
         from pyvelox.compiler import compile_string
         with self.assertRaises(PyveloxCompileError) as ctx:
             compile_string(
                 '@dataclass\n'
                 'class Foo:\n'
-                '    x: int\n'
-                '    y: int = 5\n')
-        self.assertIn("default", ctx.exception.raw_message)
+                '    x: int = 1 + 1\n')
+        self.assertIn("literal", ctx.exception.raw_message)
 
     def test_annotation_without_dataclass_is_compile_error(self):
         # `x: int` in a class body without @dataclass would be a

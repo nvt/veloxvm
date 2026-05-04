@@ -152,9 +152,28 @@ populated from the constructor args; `Vec.magnitude_sq()`,
 `isinstance(p, Point)`, subclassing `Point`, etc. all behave like
 they would on any class.
 
+Field defaults work for trailing fields (CPython requires
+defaulted fields to follow non-defaulted ones, and pyvelox enforces
+the same ordering):
+
+```python
+@dataclass
+class Config:
+    host: str
+    port: int = 8080
+    debug: bool = False
+```
+
+Defaults must be literal constants (`int`, `str`, `bool`, `None`),
+matching the existing default-arg restriction on plain functions.
+When any field has a default, the synthesised `__init__` becomes
+variadic (`def __init__(self, *_args)`) with argc-based dispatch
+so missing trailing args fall back to the declared defaults.
+
 What's not supported: parameterised forms (`@dataclass(eq=False,
-frozen=True, ...)`), per-field defaults (`x: int = 0`), the
-`field()` config helper, keyword-only fields. Type annotations
+frozen=True, ...)`), the `field()` config helper for
+default-factory / kw-only behaviour, non-literal defaults like
+`x: list = []` or `x: int = compute()`. Type annotations
 themselves are stored in the AST but otherwise ignored at
 runtime, matching CPython.
 

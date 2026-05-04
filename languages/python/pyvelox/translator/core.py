@@ -1020,7 +1020,12 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         # allow `name: type` annotations declaring fields. Anything
         # else gets refused so silent miscompiles don't sneak in.
         method_nodes: List[ast.FunctionDef] = []
-        dataclass_fields: List[str] = []
+        # Each entry: (field-name, default-expr-or-None). Defaulted
+        # fields must come after non-defaulted ones (CPython
+        # enforces this; we mirror it). The default expression is
+        # restricted to a literal Constant, same as default args on
+        # plain functions.
+        dataclass_fields: List["tuple[str, Optional[ast.expr]]"] = []
         for stmt in node.body:
             if isinstance(stmt, ast.FunctionDef):
                 if stmt.decorator_list:
@@ -1045,13 +1050,19 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                 if not isinstance(stmt.target, ast.Name):
                     raise NotImplementedError(
                         "@dataclass field targets must be simple names.")
-                if stmt.value is not None:
-                    raise NotImplementedError(
-                        f"@dataclass field defaults (on "
-                        f"`{stmt.target.id}`) are not yet supported. "
-                        f"Define every field without `= default` or "
-                        f"override the synthesised __init__ manually.")
-                dataclass_fields.append(stmt.target.id)
+                default_node = stmt.value
+                if default_node is not None:
+                    self._validate_literal_default(default_node)
+                else:
+                    # Non-default after default is illegal in Python's
+                    # dataclass.
+                    if dataclass_fields and dataclass_fields[-1][1] is not None:
+                        raise NotImplementedError(
+                            f"Non-default field `{stmt.target.id}` "
+                            f"follows default field "
+                            f"`{dataclass_fields[-1][0]}`. Reorder so "
+                            f"all defaulted fields come last.")
+                dataclass_fields.append((stmt.target.id, default_node))
             else:
                 raise NotImplementedError(
                     f"Class body may only contain method definitions "
@@ -1137,41 +1148,98 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             [encode_symbol(safe_class_name, self.bc), class_vector],
             self.bc)
 
-    def _synthesize_dataclass_init(self,
-                                   field_names: List[str]) -> bytes:
-        """Build the __init__(self, f1, f2, ...) closure for a
-        @dataclass-decorated class. Body is a `begin` of
-        _pyvelox_set_attr calls, one per field, mirroring what the
-        user would write by hand:
+    def _synthesize_dataclass_init(
+            self,
+            fields: List["tuple[str, Optional[ast.expr]]"]) -> bytes:
+        """Build the __init__ closure for a @dataclass-decorated
+        class. Two shapes:
 
-            def __init__(self, x, y):
-                self.x = x
-                self.y = y
+        - **No fields have defaults**: a fixed-arity closure
+          `(self, f1, f2, ...)` where each parameter is stored into
+          its slot via _pyvelox_set_attr. Direct, no extra
+          machinery.
 
-        Field defaults aren't supported in this step (refused at
-        class-body parse time), so the synthesised init is fixed-
-        arity. Capture set is empty -- each set_attr call uses only
-        self and the matching parameter, both bound by the lambda's
-        formals.
+        - **At least one field has a default**: a variadic closure
+          `(self, *_args)` plus argc-based dispatch. Each defaulted
+          field's value is `(if (>= n i+1) (list-ref _args i)
+          <default>)` where `n` is the actual arg count. Required
+          fields (those before the first defaulted one) just take
+          `(list-ref _args i)` directly -- if the user calls with
+          too few args, list-ref raises at runtime.
+
+          The arg count is computed once via a let-binding so each
+          defaulted field's check doesn't re-walk the args list.
+
+        Fields are validated upstream: defaulted fields must be
+        contiguous at the tail, defaults must be literal constants,
+        and the field list is guaranteed non-empty.
         """
-        self_sym = encode_symbol('self', self.bc)
-        body_calls: List[bytes] = []
-        for fname in field_names:
-            safe_fname = self.get_safe_name(fname)
+        sym_self = lambda: encode_symbol('self', self.bc)
+        any_defaults = any(d is not None for _, d in fields)
+
+        if not any_defaults:
+            # Fast path: fixed-arity init.
+            body_calls: List[bytes] = []
+            for fname, _default in fields:
+                safe_fname = self.get_safe_name(fname)
+                body_calls.append(create_inline_call(
+                    '_pyvelox_set_attr',
+                    [sym_self(),
+                     create_inline_call(
+                         'quote',
+                         [encode_symbol(fname, self.bc)], self.bc),
+                     encode_symbol(safe_fname, self.bc)],
+                    self.bc))
+            body = (body_calls[0] if len(body_calls) == 1
+                    else create_inline_call(
+                        'begin', body_calls, self.bc))
+            params = ['self'] + [
+                self.get_safe_name(f) for f, _ in fields]
+            return self._emit_lambda(
+                params, body, is_function=True)
+
+        # Variadic path: argc dispatch around defaulted fields.
+        sym_args = lambda: encode_symbol('_args', self.bc)
+        sym_n = lambda: encode_symbol('_n', self.bc)
+        body_calls = []
+        for i, (fname, default_node) in enumerate(fields):
+            list_ref = create_inline_call(
+                'list_ref',
+                [sym_args(), encode_integer(i)], self.bc)
+            if default_node is None:
+                value_bytes = list_ref
+            else:
+                default_bytes = self.translate_constant(default_node)
+                value_bytes = create_inline_call(
+                    'if',
+                    [create_inline_call(
+                        'greater_than_equal',
+                        [sym_n(), encode_integer(i + 1)], self.bc),
+                     list_ref,
+                     default_bytes],
+                    self.bc)
             body_calls.append(create_inline_call(
                 '_pyvelox_set_attr',
-                [self_sym,
+                [sym_self(),
                  create_inline_call(
                      'quote',
                      [encode_symbol(fname, self.bc)], self.bc),
-                 encode_symbol(safe_fname, self.bc)],
+                 value_bytes],
                 self.bc))
-        if len(body_calls) == 1:
-            body = body_calls[0]
-        else:
-            body = create_inline_call('begin', body_calls, self.bc)
-        params = ['self'] + [self.get_safe_name(f) for f in field_names]
-        return self._emit_lambda(params, body, is_function=True)
+        body = (body_calls[0] if len(body_calls) == 1
+                else create_inline_call('begin', body_calls, self.bc))
+
+        # Bind n once with ((lambda (_n) <body>) (length _args)).
+        n_let_lambda = self._emit_lambda(
+            ['_n'], body, is_function=True)
+        wrapped_body = create_inline_call(
+            n_let_lambda,
+            [create_inline_call('length', [sym_args()], self.bc)],
+            self.bc)
+
+        return self._emit_lambda(
+            ['self', '_args'], wrapped_body,
+            is_function=True, has_rest=True)
 
     def _compile_method_lambda(self, node: ast.FunctionDef, *,
                                enclosing_class: str) -> bytes:
