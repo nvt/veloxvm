@@ -972,9 +972,23 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             raise NotImplementedError(
                 "Keyword class arguments (metaclass=, etc.) are not "
                 "supported.")
-        if node.decorator_list:
+        is_dataclass = False
+        for deco in node.decorator_list:
+            # Bare `@dataclass` is the only recognised class-level
+            # decorator. The parameterised form `@dataclass(eq=...,
+            # frozen=...)` parses as Call and is refused.
+            if isinstance(deco, ast.Name) and deco.id == 'dataclass':
+                is_dataclass = True
+                continue
+            if (isinstance(deco, ast.Call)
+                    and isinstance(deco.func, ast.Name)
+                    and deco.func.id == 'dataclass'):
+                raise NotImplementedError(
+                    "@dataclass with arguments (`@dataclass(...)`) "
+                    "is not supported; only the bare form works.")
             raise NotImplementedError(
-                "Class-level decorators are not supported.")
+                f"Class-level decorator @{ast.unparse(deco)} is not "
+                f"supported.")
 
         parent_bytes: bytes = encode_boolean(False)
         if node.bases:
@@ -1001,10 +1015,12 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
 
         safe_class_name = self.get_safe_name(node.name)
 
-        # The body must be a flat sequence of method defs (and
-        # optional pass / docstring). Anything else gets refused so
-        # silent miscompiles don't sneak in.
+        # The body must be a flat sequence of method defs (plus
+        # optional pass / docstring). For @dataclass we additionally
+        # allow `name: type` annotations declaring fields. Anything
+        # else gets refused so silent miscompiles don't sneak in.
         method_nodes: List[ast.FunctionDef] = []
+        dataclass_fields: List[str] = []
         for stmt in node.body:
             if isinstance(stmt, ast.FunctionDef):
                 if stmt.decorator_list:
@@ -1019,12 +1035,40 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                     and isinstance(stmt.value.value, str)):
                 # Leading docstring -- harmless.
                 continue
+            elif isinstance(stmt, ast.AnnAssign):
+                if not is_dataclass:
+                    raise NotImplementedError(
+                        f"Class-level annotations like `{stmt.target.id}: "
+                        f"...` require an @dataclass decorator. Move the "
+                        f"declaration into __init__ if you don't want a "
+                        f"dataclass.")
+                if not isinstance(stmt.target, ast.Name):
+                    raise NotImplementedError(
+                        "@dataclass field targets must be simple names.")
+                if stmt.value is not None:
+                    raise NotImplementedError(
+                        f"@dataclass field defaults (on "
+                        f"`{stmt.target.id}`) are not yet supported. "
+                        f"Define every field without `= default` or "
+                        f"override the synthesised __init__ manually.")
+                dataclass_fields.append(stmt.target.id)
             else:
                 raise NotImplementedError(
                     f"Class body may only contain method definitions "
                     f"(got {type(stmt).__name__}). Class-level "
                     f"attributes and arbitrary statements are not "
                     f"supported in pyvelox class bodies.")
+
+        if is_dataclass and not dataclass_fields:
+            raise NotImplementedError(
+                "@dataclass requires at least one annotated field "
+                "(`name: type`); use a plain class otherwise.")
+        if dataclass_fields and any(
+                m.name == '__init__' for m in method_nodes):
+            # CPython skips dataclass __init__ synthesis when the
+            # user provides one. Keep the user's __init__ and ignore
+            # the field list for synthesis purposes.
+            dataclass_fields = []
 
         # Make sure the runtime helpers exist before any instantiation
         # call site runs, and register the class name as a class
@@ -1059,6 +1103,23 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                 self.bc)
             method_pairs.append(self._hoist(pair))
 
+        # Dataclass __init__ synthesis. dataclass_fields is non-empty
+        # only when @dataclass was on the class AND the user didn't
+        # already provide their own __init__. Synthesise a closure
+        # that takes `self, field1, field2, ...` and writes each one
+        # via _pyvelox_set_attr.
+        if dataclass_fields:
+            init_lambda = self._synthesize_dataclass_init(
+                dataclass_fields)
+            init_pair = create_inline_call(
+                'cons',
+                [create_inline_call(
+                    'quote',
+                    [encode_symbol('__init__', self.bc)], self.bc),
+                 init_lambda],
+                self.bc)
+            method_pairs.append(self._hoist(init_pair))
+
         method_alist = create_inline_call('list', method_pairs, self.bc)
 
         class_vector = create_inline_call(
@@ -1075,6 +1136,42 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             'define',
             [encode_symbol(safe_class_name, self.bc), class_vector],
             self.bc)
+
+    def _synthesize_dataclass_init(self,
+                                   field_names: List[str]) -> bytes:
+        """Build the __init__(self, f1, f2, ...) closure for a
+        @dataclass-decorated class. Body is a `begin` of
+        _pyvelox_set_attr calls, one per field, mirroring what the
+        user would write by hand:
+
+            def __init__(self, x, y):
+                self.x = x
+                self.y = y
+
+        Field defaults aren't supported in this step (refused at
+        class-body parse time), so the synthesised init is fixed-
+        arity. Capture set is empty -- each set_attr call uses only
+        self and the matching parameter, both bound by the lambda's
+        formals.
+        """
+        self_sym = encode_symbol('self', self.bc)
+        body_calls: List[bytes] = []
+        for fname in field_names:
+            safe_fname = self.get_safe_name(fname)
+            body_calls.append(create_inline_call(
+                '_pyvelox_set_attr',
+                [self_sym,
+                 create_inline_call(
+                     'quote',
+                     [encode_symbol(fname, self.bc)], self.bc),
+                 encode_symbol(safe_fname, self.bc)],
+                self.bc))
+        if len(body_calls) == 1:
+            body = body_calls[0]
+        else:
+            body = create_inline_call('begin', body_calls, self.bc)
+        params = ['self'] + [self.get_safe_name(f) for f in field_names]
+        return self._emit_lambda(params, body, is_function=True)
 
     def _compile_method_lambda(self, node: ast.FunctionDef, *,
                                enclosing_class: str) -> bytes:

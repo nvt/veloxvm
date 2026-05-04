@@ -66,7 +66,7 @@ source line; the CLI prints the same and exits non-zero.
 | Dict / set comprehensions | No | |
 | Generators (`yield`) | No | |
 | f-strings `f"x={x}"` | Yes | Lowers to `string-append` over `str()`. Format specs (`:.2f`) and conversions (`!r`, `!s`, `!a`) are refused. |
-| Decorators | No | |
+| Decorators | Partial | Bare `@dataclass` on a class (see Custom exception classes / dataclass section). All other class- and function-level decorators are still refused. |
 | `import lib` | Yes | Loads a port-specific VM library by canonical name. |
 | `import x as y`, `from x import y` | No | |
 
@@ -128,6 +128,39 @@ The supporting runtime helpers (`_pyvelox_make_instance`,
 `_pyvelox_isinstance`, `_pyvelox_class_extends`) are emitted lazily
 into the program prologue when the first class definition or
 attribute access is compiled.
+
+## @dataclass
+
+`@dataclass` on a class with `name: type` annotated fields
+synthesises an `__init__(self, f1, f2, ...)` that stores each
+parameter into the matching slot via `_pyvelox_set_attr`.
+Methods can coexist with fields. If the user provides their own
+`__init__`, synthesis is skipped (matching CPython).
+
+```python
+@dataclass
+class Point:
+    x: int
+    y: int
+
+    def magnitude_sq(self):
+        return self.x * self.x + self.y * self.y
+```
+
+`Point(3, 4)` constructs an instance whose `x` and `y` slots are
+populated from the constructor args; `Vec.magnitude_sq()`,
+`isinstance(p, Point)`, subclassing `Point`, etc. all behave like
+they would on any class.
+
+What's not supported: parameterised forms (`@dataclass(eq=False,
+frozen=True, ...)`), per-field defaults (`x: int = 0`), the
+`field()` config helper, keyword-only fields. Type annotations
+themselves are stored in the AST but otherwise ignored at
+runtime, matching CPython.
+
+A class body that has annotations but no `@dataclass` decorator
+is rejected (CPython would silently treat them as class-level
+attributes); the error message points at the missing decorator.
 
 ## Custom exception classes
 

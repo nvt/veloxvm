@@ -1291,13 +1291,16 @@ class TestClassDef(unittest.TestCase):
                       ctx.exception.raw_message)
 
     def test_class_decorator_is_compile_error(self):
+        # The only recognised class-level decorator is @dataclass.
+        # Any other decorator name (here `@deco`) is refused.
         from pyvelox.compiler import compile_string
         with self.assertRaises(PyveloxCompileError) as ctx:
             compile_string(
                 'def deco(c):\n    return c\n'
                 '@deco\n'
                 'class Foo:\n    pass\n')
-        self.assertIn("Class-level decorators", ctx.exception.raw_message)
+        self.assertIn("@deco", ctx.exception.raw_message)
+        self.assertIn("not supported", ctx.exception.raw_message)
 
     def test_method_decorator_is_compile_error(self):
         from pyvelox.compiler import compile_string
@@ -1451,6 +1454,105 @@ class TestCustomExceptionClasses(unittest.TestCase):
             'raise Exception("vanilla")\n')
         self.assertIn(encode_symbol('_pyvelox_make_instance', bc), all_bytes)
         self.assertIn(encode_string('Exception', bc), all_bytes)
+
+
+class TestDataclass(unittest.TestCase):
+    """@dataclass synthesises __init__ from `name: type` field
+    annotations. Refuses parameterised forms, field defaults, and
+    AnnAssign without a @dataclass decorator."""
+
+    def _compile_collect(self, source):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol, encode_string
+        bc = compile_string(source)
+        all_bytes = b''.join(bc.expressions)
+        return bc, all_bytes, encode_symbol, encode_string
+
+    def test_simple_dataclass_compiles(self):
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            '@dataclass\n'
+            'class Point:\n'
+            '    x: int\n'
+            '    y: int\n'
+            'p = Point(1, 2)\n')
+        # Synthesised __init__ uses _pyvelox_set_attr to store the
+        # field params into the instance.
+        self.assertIn(encode_symbol('_pyvelox_set_attr', bc), all_bytes)
+        # The class name string is in the table.
+        self.assertIn(encode_string('Point', bc), all_bytes)
+        # Field names appear as quoted symbols in the synthesised init.
+        self.assertIn('x', bc.symbol_table.symbols)
+        self.assertIn('y', bc.symbol_table.symbols)
+
+    def test_dataclass_with_methods(self):
+        # Methods alongside fields should still compile; the
+        # synthesised __init__ joins them in the method-alist.
+        from pyvelox.compiler import compile_string
+        compile_string(
+            '@dataclass\n'
+            'class Vec:\n'
+            '    a: int\n'
+            '    b: int\n'
+            '    def sum(self):\n'
+            '        return self.a + self.b\n')
+
+    def test_dataclass_with_user_init_skips_synthesis(self):
+        # If the user provides an __init__, the dataclass annotations
+        # become decorative -- compile should still succeed.
+        from pyvelox.compiler import compile_string
+        compile_string(
+            '@dataclass\n'
+            'class Custom:\n'
+            '    x: int\n'
+            '    def __init__(self, x):\n'
+            '        self.x = x * 2\n')
+
+    def test_dataclass_with_arguments_is_compile_error(self):
+        # @dataclass(frozen=True), @dataclass(eq=False), etc. are
+        # rejected -- only the bare `@dataclass` form is supported.
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                '@dataclass(frozen=True)\n'
+                'class Foo:\n'
+                '    x: int\n')
+        self.assertIn("@dataclass", ctx.exception.raw_message)
+        self.assertIn("arguments", ctx.exception.raw_message)
+
+    def test_field_default_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                '@dataclass\n'
+                'class Foo:\n'
+                '    x: int\n'
+                '    y: int = 5\n')
+        self.assertIn("default", ctx.exception.raw_message)
+
+    def test_annotation_without_dataclass_is_compile_error(self):
+        # `x: int` in a class body without @dataclass would be a
+        # silent class variable in CPython; pyvelox refuses so the
+        # user notices the missing decorator.
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'class Foo:\n'
+                '    x: int\n'
+                '    def m(self):\n'
+                '        return 1\n')
+        self.assertIn("@dataclass", ctx.exception.raw_message)
+
+    def test_empty_dataclass_is_compile_error(self):
+        # @dataclass with no fields is pointless and probably a typo;
+        # refuse so the user knows the annotation was forgotten.
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                '@dataclass\n'
+                'class Empty:\n'
+                '    pass\n')
+        self.assertIn("at least one annotated field",
+                      ctx.exception.raw_message)
 
 
 if __name__ == '__main__':
