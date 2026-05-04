@@ -932,7 +932,37 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
           2. Built-in name calls (`name(args)`) — checked against
              `_BUILTIN_HANDLERS`.
           3. Otherwise, generic call: emit `(callee args...)`.
+
+        `f(*args)` (a call with one trailing Starred argument) is
+        special: it lowers to (apply func arg_list), where arg_list
+        cons-prepends any leading fixed actuals onto the starred
+        value. Method calls and built-in calls don't currently accept
+        Starred -- their handlers don't know how to forward.
         """
+        # Validate Starred up front: most shapes are out of scope and
+        # the regular dispatch would otherwise fail in a confusing
+        # spot (e.g. inside the builtin handler, on the inner Starred
+        # element).
+        starred_idxs = [i for i, a in enumerate(node.args)
+                        if isinstance(a, ast.Starred)]
+        if len(starred_idxs) > 1:
+            raise NotImplementedError(
+                "Multiple *-arguments at a single call site are not "
+                "yet supported")
+        if starred_idxs and starred_idxs[0] != len(node.args) - 1:
+            raise NotImplementedError(
+                "Positional arguments after *-argument are not yet "
+                "supported (the rest list must be the last actual)")
+        if starred_idxs:
+            if isinstance(node.func, ast.Attribute):
+                raise NotImplementedError(
+                    "Method calls don't yet support *-arguments")
+            if isinstance(node.func, ast.Name) and (
+                    node.func.id in self._BUILTIN_HANDLERS):
+                raise NotImplementedError(
+                    f"Built-in {node.func.id}() doesn't yet support "
+                    f"*-arguments")
+
         # Special-case 1: known method calls.
         if isinstance(node.func, ast.Attribute):
             handler = self._METHOD_HANDLERS.get(node.func.attr)
@@ -969,6 +999,25 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             # inlines.
             callee_name = None
             func_bytes = self.translate_expr_with_ref(node.func)
+
+        # Forwarding via *args -- emit (apply func arg_list). Built
+        # the list at the call site by cons-prepending any leading
+        # fixed actuals onto the starred value, so a wrapper like
+        # `def w(a, *args): inner(a, *args)` doesn't lose the prefix.
+        # We skip the default-padding logic because we can't tell at
+        # compile time how many elements the rest list will hold;
+        # bind_function / bind_function_rest will check arity at
+        # runtime.
+        if starred_idxs:
+            fixed_nodes = node.args[:-1]
+            rest_node = node.args[-1].value  # Starred.value
+            arg_list = self.translate_expr_with_ref(rest_node)
+            for fixed in reversed(fixed_nodes):
+                fixed_bytes = self.translate_expr_with_ref(fixed)
+                arg_list = create_inline_call(
+                    'cons', [fixed_bytes, arg_list], self.bc)
+            return create_inline_call(
+                'apply', [func_bytes, arg_list], self.bc)
 
         arg_bytes = [self.translate_expr_with_ref(arg) for arg in node.args]
 

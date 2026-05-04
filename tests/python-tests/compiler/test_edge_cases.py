@@ -996,5 +996,74 @@ class TestVarargs(unittest.TestCase):
         self.assertIn(encode_symbol('rest', bc), all_bytes)
 
 
+class TestStarredCallSite(unittest.TestCase):
+    """Forwarding `f(*args)` at a call site."""
+
+    def _compile_collect(self, source):
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(source)
+        all_bytes = b''.join(bc.expressions)
+        return bc, all_bytes, encode_symbol
+
+    def test_pure_starred_emits_apply(self):
+        bc, all_bytes, encode_symbol = self._compile_collect(
+            'def f(*a):\n    return a\n'
+            'def g(*a):\n    return f(*a)\n')
+        # The wrapper should reach `apply`; `cons` shouldn't be needed
+        # because there's no fixed prefix.
+        self.assertIn(encode_symbol('apply', bc), all_bytes)
+
+    def test_prefix_plus_starred_uses_cons(self):
+        bc, all_bytes, encode_symbol = self._compile_collect(
+            'def f(a, b, c):\n    return a + b + c\n'
+            'xs = [2, 3]\n'
+            'r = f(1, *xs)\n')
+        self.assertIn(encode_symbol('apply', bc), all_bytes)
+        # Fixed prefix is cons-prepended onto the starred list.
+        self.assertIn(encode_symbol('cons', bc), all_bytes)
+
+    def test_no_starred_does_not_emit_apply(self):
+        # Sanity: a call without *args should keep the direct-emit
+        # path -- if apply leaked in, every call would pay the
+        # list-construction overhead.
+        bc, all_bytes, encode_symbol = self._compile_collect(
+            'def f(a, b):\n    return a + b\n'
+            'r = f(1, 2)\n')
+        self.assertNotIn(encode_symbol('apply', bc), all_bytes)
+
+    def test_multiple_starred_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'def f(*a):\n    return a\n'
+                'r = f(*[1], *[2])\n')
+        self.assertIn("Multiple", ctx.exception.raw_message)
+
+    def test_starred_not_last_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'def f(*a):\n    return a\n'
+                'r = f(*[1], 2)\n')
+        self.assertIn("after", ctx.exception.raw_message.lower())
+
+    def test_starred_into_builtin_is_compile_error(self):
+        # print(*args) etc. would need each builtin handler to
+        # cooperate; refuse for now so the error is friendly rather
+        # than coming out of translate_expr deep below.
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('xs = [1, 2]\nprint(*xs)\n')
+        self.assertIn("print", ctx.exception.raw_message)
+        self.assertIn("Built-in", ctx.exception.raw_message)
+
+    def test_starred_into_method_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('xs = []\nys = [1]\nxs.extend(*ys)\n')
+        self.assertIn("Method", ctx.exception.raw_message)
+
+
 if __name__ == '__main__':
     unittest.main()

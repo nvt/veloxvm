@@ -87,6 +87,55 @@ app = make_appender("p")
 expect("closure-args(): []", app(), ['p', 0])
 expect("closure-args(1,2)", app(1, 2), ['p', 2])
 
+# ============================================================
+# Forwarding via f(*args) at the call site.
+# ============================================================
+
+def total_via_loop(*args):
+    s = 0
+    for x in args:
+        s = s + x
+    return s
+
+
+def double_total(*args):
+    # Calls total twice with the same forwarded list.
+    return total_via_loop(*args) + total_via_loop(*args)
+
+
+def add3(a, b, c):
+    return a + b + c
+
+
+def labeled(label, *args):
+    return [label, total_via_loop(*args)]
+
+
+# Forwarding into another *args function.
+expect("double_total()", double_total(), 0)
+expect("double_total(1,2,3)", double_total(1, 2, 3), 12)
+
+# Forwarding into a fixed-arity function.
+expect("add3(*[1,2,3])", add3(*[1, 2, 3]), 6)
+
+# Mix: fixed prefix + *list.
+expect("add3(1,*[2,3])", add3(1, *[2, 3]), 6)
+expect("add3(1,2,*[3])", add3(1, 2, *[3]), 6)
+
+# Forward with leading fixed positional + *args.
+expect("labeled('sum')", labeled('sum'), ['sum', 0])
+expect("labeled('sum',10,20,30)", labeled('sum', 10, 20, 30), ['sum', 60])
+
+# Closure: an inner def forwards into an outer-captured callable.
+def make_forwarder(target):
+    def go(*args):
+        return target(*args)
+    return go
+
+
+fwd_total = make_forwarder(total_via_loop)
+expect("fwd_total(1,2,3)", fwd_total(1, 2, 3), 6)
+
 if failures > 0:
     print("FAILURES:", failures)
     raise SystemExit(1)
