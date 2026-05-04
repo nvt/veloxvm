@@ -76,6 +76,36 @@ expect("len({'a':1,'b':2})", len({'a': 1, 'b': 2}), 2)
 xs = [10, 20, 30]
 expect("xs[1]", xs[1], 20)
 
+# Bytes slicing — exercises the buffer path through the `slice` VM
+# primitive (the one whose buffer support was previously broken).
+src = b'\x10\x20\x30\x40\x50'
+mid = src[1:4]
+expect("len(b[1:4])", len(mid), 3)
+expect("b[1:4][0]", mid[0], 0x20)
+expect("b[1:4][2]", mid[2], 0x40)
+
+prefix = src[:2]
+expect("len(b[:2])", len(prefix), 2)
+expect("b[:2][0]", prefix[0], 0x10)
+expect("b[:2][1]", prefix[1], 0x20)
+
+suffix = src[2:]
+expect("len(b[2:])", len(suffix), 3)
+expect("b[2:][0]", suffix[0], 0x30)
+expect("b[2:][2]", suffix[2], 0x50)
+
+empty_slice = src[2:2]
+expect("len(b[2:2])", len(empty_slice), 0)
+
+full_slice = src[0:5]
+expect("len(b[0:5])", len(full_slice), 5)
+expect("b[0:5][4]", full_slice[4], 0x50)
+
+neg = src[-2:]
+expect("len(b[-2:])", len(neg), 2)
+expect("b[-2:][0]", neg[0], 0x40)
+expect("b[-2:][1]", neg[1], 0x50)
+
 if failures > 0:
     print("FAILURES:", failures)
     # The e2e runner treats non-zero exit as failure.

@@ -1595,11 +1595,20 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         if not has_end:
             # lst[start:] or s[start:]
             if has_start:
-                # For slicing without end, use slice with length as end
-                # This works for lists, strings, and vectors (list-tail doesn't work for strings)
-                # lst[start:] -> (slice lst start (length lst))
-                # s[start:] -> (slice s start (length s))
-                length_call = create_inline_call('length', [value_bytes], self.bc)
+                # For slicing without end, use slice with length as end.
+                # Works for lists, strings, vectors, and bytes — but
+                # the bare `length` primitive rejects vectors, so we
+                # dispatch on `vectorp` (true for buffers and regular
+                # vectors alike) and fall through to `length` for
+                # lists and strings. Same shape as `translate_len`.
+                length_call = create_inline_call(
+                    'if',
+                    [create_inline_call('vectorp', [value_bytes], self.bc),
+                     create_inline_call('vector_length',
+                                        [value_bytes], self.bc),
+                     create_inline_call('length',
+                                        [value_bytes], self.bc)],
+                    self.bc)
                 length_ref = self._hoist(length_call)
 
                 return create_inline_call('slice', [value_bytes, start_bytes, length_ref], self.bc)

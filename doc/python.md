@@ -56,7 +56,7 @@ source line; the CLI prints the same and exits non-zero.
 | Augmented assignment (`+=`, `-=`, ...) | Yes | Simple variable targets only. |
 | Multiple targets (`a = b = 5`) | No | |
 | Tuple unpacking (`a, b = pair`, `for x, y in ...`) | Yes | Simple names only. |
-| Slicing `seq[start:stop]` | Yes | Lists, strings, and VM vectors. Negative indices supported. |
+| Slicing `seq[start:stop]` | Yes | Lists, strings, regular vectors, and bytes. Negative indices supported. Bytes slicing returns a fresh bytes object. |
 | Slicing with step `[::2]` | No | |
 | Plain negative indexing `lst[-1]` | Buggy | Compiles but crashes at runtime. Use `lst[len(lst)-1]` for now. |
 | Subscript assignment `lst[0] = v` | Buggy | Emits dict-style code; produces wrong list contents. Rebuild the list instead. |
