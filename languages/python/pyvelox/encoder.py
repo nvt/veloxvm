@@ -346,7 +346,9 @@ def create_inline_call(operator, args: list, bc: Bytecode) -> bytes:
 create_inline_call_direct = create_inline_call
 
 
-def create_bind_form(params: list, body: bytes, bc: Bytecode, is_function: bool = False) -> bytes:
+def create_bind_form(params: list, body: bytes, bc: Bytecode,
+                     is_function: bool = False,
+                     has_rest: bool = False) -> bytes:
     """
     Create a bind (lambda) form: (bind param1 param2 ... body).
 
@@ -354,24 +356,40 @@ def create_bind_form(params: list, body: bytes, bc: Bytecode, is_function: bool 
     and use a form ref to avoid nested inline forms (which creates malformed bytecode).
 
     Args:
-        params: List of parameter names
+        params: List of parameter names. When has_rest is True, the
+            last entry is the rest-formal -- bind_function_rest packs
+            actuals beyond the fixed count into a list bound to it.
         body: Compiled bytecode for the body
         bc: Bytecode container
-        is_function: If True, use 'bind_function' to mark actual function boundaries.
-                     This allows the return primitive to distinguish between functions
-                     and control flow (while loops, let-expansion).
+        is_function: If True, use 'bind_function' (or 'bind_function_rest'
+                     when has_rest is set) to mark actual function boundaries.
+                     This allows the return primitive to distinguish between
+                     functions and control flow (while loops, let-expansion).
+        has_rest:    If True, emit bind_function_rest so the last formal
+                     soaks up trailing actuals as a list. Requires
+                     is_function=True; the variadic primitive marks a
+                     function boundary, not a let.
 
     Returns:
         Complete bind form bytecode
     """
+    if has_rest and not is_function:
+        raise ValueError(
+            "create_bind_form: has_rest requires is_function=True")
     result = bytearray()
 
     # Inline form with argc = 1 (bind symbol) + len(params) + 1 (body)
     argc = 1 + len(params) + 1
     result.extend(encode_inline_form(argc))
 
-    # Use 'bind_function' for actual Python functions, 'bind' for control flow
-    bind_symbol = 'bind_function' if is_function else 'bind'
+    # Use 'bind_function' for actual Python functions, 'bind' for
+    # control flow, 'bind_function_rest' for *args functions.
+    if has_rest:
+        bind_symbol = 'bind_function_rest'
+    elif is_function:
+        bind_symbol = 'bind_function'
+    else:
+        bind_symbol = 'bind'
     result.extend(encode_symbol(bind_symbol, bc))
 
     # Parameter symbols

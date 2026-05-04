@@ -203,12 +203,14 @@ vm_return_from_function(vm_thread_t *thread, vm_obj_t *obj)
 
   for(i = thread->exprc - 1; i >= 0; i--) {
     if(thread->exprv[i]->procedure != NULL) {
-      /* Check if this is a bind_function frame (actual function boundary).
-       * Skip regular bind frames (control flow: while loops, let-expansion).
-       * This allows return to properly unwind through nested control structures
-       * and exit at the actual function that contains the return statement.
+      /* Check if this is a function-boundary frame -- either a fixed-arity
+       * bind_function, or a variadic bind_function_rest. Skip regular
+       * bind frames (control flow: while loops, let-expansion). This
+       * lets `return` unwind through nested control structures and exit
+       * at the actual function that contains the return statement.
        */
-      if(thread->exprv[i]->procedure->operator == op_bind_function) {
+      vm_operator_t op = thread->exprv[i]->procedure->operator;
+      if(op == op_bind_function || op == op_bind_function_rest) {
         /* This is a function boundary - stop here and unwind */
         old_exprc = thread->exprc;
 

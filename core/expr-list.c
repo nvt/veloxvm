@@ -318,6 +318,35 @@ VM_FUNCTION(list_tail)
   }
 }
 
+/* Python-style normalisation: negative indices count from the end,
+   then both ends are clamped to [0, length] and start to <= end. */
+static void
+normalize_slice_bounds(vm_integer_t length,
+                       vm_integer_t *start, vm_integer_t *end)
+{
+  if(*start < 0) {
+    *start += length;
+    if(*start < 0) {
+      *start = 0;
+    }
+  }
+  if(*end < 0) {
+    *end += length;
+    if(*end < 0) {
+      *end = 0;
+    }
+  }
+  if(*start > length) {
+    *start = length;
+  }
+  if(*end > length) {
+    *end = length;
+  }
+  if(*start > *end) {
+    *start = *end;
+  }
+}
+
 VM_FUNCTION(slice)
 {
   vm_integer_t start;
@@ -340,34 +369,7 @@ VM_FUNCTION(slice)
 
     string = argv[0].value.string;
     length = string->length;
-
-    /* Handle negative indices (Python-style) */
-    if(start < 0) {
-      start = length + start;
-      if(start < 0) {
-        start = 0;
-      }
-    }
-
-    if(end < 0) {
-      end = length + end;
-      if(end < 0) {
-        end = 0;
-      }
-    }
-
-    /* Clamp to valid range */
-    if(start > length) {
-      start = length;
-    }
-    if(end > length) {
-      end = length;
-    }
-
-    /* Ensure start <= end */
-    if(start > end) {
-      start = end;
-    }
+    normalize_slice_bounds(length, &start, &end);
 
     /* Create substring */
     result_string = vm_string_create(&thread->result, end - start, NULL);
@@ -378,7 +380,6 @@ VM_FUNCTION(slice)
 
     memcpy(result_string->str, string->str + start, end - start);
     result_string->str[result_string->length] = '\0';
-    thread->result.type = VM_TYPE_STRING;
     return;
   } else if(argv[0].type == VM_TYPE_LIST) {
     /* List slicing */
@@ -389,34 +390,7 @@ VM_FUNCTION(slice)
 
     input_list = argv[0].value.list;
     length = input_list->length;
-
-    /* Handle negative indices (Python-style) */
-    if(start < 0) {
-      start = length + start;
-      if(start < 0) {
-        start = 0;
-      }
-    }
-
-    if(end < 0) {
-      end = length + end;
-      if(end < 0) {
-        end = 0;
-      }
-    }
-
-    /* Clamp to valid range */
-    if(start > length) {
-      start = length;
-    }
-    if(end > length) {
-      end = length;
-    }
-
-    /* Ensure start <= end */
-    if(start > end) {
-      start = end;
-    }
+    normalize_slice_bounds(length, &start, &end);
 
     /* Disable GC during list construction */
     vm_gc_disable();
@@ -448,55 +422,41 @@ VM_FUNCTION(slice)
     vm_gc_enable();
     VM_PUSH_LIST(result_list);
   } else if(argv[0].type == VM_TYPE_VECTOR) {
-    /* Vector slicing */
+    /* Vector slicing. Buffer-flagged vectors (R7RS bytevectors) and
+       regular element-vectors share this path but use different
+       backing storage; preserve the input's flag in the result so
+       (buffer? (slice b ...)) stays #t. */
     vm_vector_t *input_vector;
     vm_vector_t *result_vector;
+    vm_vector_flags_t flags;
+    vm_integer_t result_length;
     vm_integer_t i;
 
     input_vector = argv[0].value.vector;
     length = input_vector->length;
+    normalize_slice_bounds(length, &start, &end);
+    result_length = end - start;
 
-    /* Handle negative indices (Python-style) */
-    if(start < 0) {
-      start = length + start;
-      if(start < 0) {
-        start = 0;
-      }
-    }
-
-    if(end < 0) {
-      end = length + end;
-      if(end < 0) {
-        end = 0;
-      }
-    }
-
-    /* Clamp to valid range */
-    if(start > length) {
-      start = length;
-    }
-    if(end > length) {
-      end = length;
-    }
-
-    /* Ensure start <= end */
-    if(start > end) {
-      start = end;
-    }
-
-    /* Create result vector */
-    result_vector = vm_vector_create(&thread->result, end - start, VM_VECTOR_FLAG_REGULAR);
+    flags = VM_IS_SET(input_vector->flags, VM_VECTOR_FLAG_BUFFER)
+            ? VM_VECTOR_FLAG_BUFFER : VM_VECTOR_FLAG_REGULAR;
+    result_vector = vm_vector_create(&thread->result, result_length, flags);
     if(result_vector == NULL) {
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
 
-    /* Copy elements from start to end */
-    for(i = 0; i < end - start; i++) {
-      result_vector->elements[i] = input_vector->elements[start + i];
+    /* Copy from whichever backing array the input uses. Buffers store
+       bytes in ->bytes; regular vectors store vm_obj_t in ->elements.
+       (Buffers leave ->elements NULL, so the original code segfaulted
+       when this path was taken on a bytevector.) */
+    if(VM_IS_SET(input_vector->flags, VM_VECTOR_FLAG_BUFFER)) {
+      memcpy(result_vector->bytes,
+             input_vector->bytes + start, result_length);
+    } else {
+      for(i = 0; i < result_length; i++) {
+        result_vector->elements[i] = input_vector->elements[start + i];
+      }
     }
-
-    thread->result.type = VM_TYPE_VECTOR;
   } else {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
   }
