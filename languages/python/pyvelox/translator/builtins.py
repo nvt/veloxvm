@@ -313,20 +313,23 @@ class _BuiltinHandlers:
     def translate_str(self, args: List[ast.expr]) -> bytes:
         """Translate `str(x)`.
 
-        Python `str(x)` accepts any type; the VM has no single
-        `to_string` primitive, so we either pick the right conversion
-        at compile time (for literal arguments) or emit a small
-        runtime type-dispatch:
+        Python `str(x)` accepts any type. Compile-time fast paths
+        cover literals (str / bool / None / int); for variables we
+        emit a call into the `_pyvelox_str` runtime helper, which
+        dispatches on type at runtime:
 
-            (if (stringp x) x
-              (if (booleanp x) (if x "True" "False")
-                (number-to-string x)))
+        - already a string -> return as-is
+        - boolean          -> "True" / "False"
+        - py-exception     -> args[0] coerced to string, or "" if
+                              args is empty
+        - otherwise        -> number-to-string (errors at runtime
+                              for lists/dicts/etc)
 
-        The fallback branch errors at runtime for unsupported types
-        (e.g. lists), matching pre-existing behaviour. None is encoded
-        as `False` in PyVelox, so `str(None)` on a variable yields
-        "False" — see the `None`/`bool` row of doc/python.md's status
-        table.
+        The exception case is what makes `str(e)` and `f"{e}"` show
+        the user's message instead of the bare tagged-vector
+        representation. Multi-arg exceptions (`raise X("a", "b")`)
+        return the first arg only -- a documented deviation from
+        CPython's repr-of-args formatting.
         """
         if len(args) != 1:
             raise ValueError("str() takes exactly 1 argument")
@@ -348,27 +351,136 @@ class _BuiltinHandlers:
                     'number_to_string',
                     [self.translate_expr_with_ref(arg)],
                     self.bc)
-            # Other constant types fall through to the runtime path.
+            # Other constant types fall through to the runtime helper.
 
-        def build(arg_token: bytes) -> bytes:
-            # (stringp x)  -> x ;; already a string
-            # (booleanp x) -> (if x "True" "False")
-            # (else)       -> (number-to-string x)
-            return self._emit_type_dispatch(
-                arg_token,
-                [('stringp', arg_token),
-                 ('booleanp', create_inline_call(
-                     'if',
-                     [arg_token,
-                      encode_string("True", self.bc),
-                      encode_string("False", self.bc)],
-                     self.bc))],
-                create_inline_call(
-                    'number_to_string', [arg_token], self.bc))
+        # Variable / general-expression path: dispatch happens inside
+        # the runtime helper so f-strings and other call sites share
+        # the same code without inflating bytecode at every callsite.
+        self._emit_str_helper()
+        arg_bytes = self.translate_expr_with_ref(arg)
+        return create_inline_call(
+            '_pyvelox_str', [arg_bytes], self.bc)
 
-        # Evaluate `arg` once — the dispatch reads it from multiple
-        # branches.
-        return self._evaluate_once(arg, build)
+    def _emit_str_helper(self) -> None:
+        """Emit the `_pyvelox_str` and `_pyvelox_str_value` helpers
+        into the program prologue. Idempotent.
+
+        `_pyvelox_str_value` does the existing string/bool/number
+        dispatch in isolation. `_pyvelox_str` adds an outer check for
+        a py-exception tagged vector and routes through args[0] when
+        one is found, falling back to the value dispatch for
+        everything else:
+
+            (define _pyvelox_str_value
+              (lambda (x)
+                (if (stringp x) x
+                  (if (booleanp x) (if x "True" "False")
+                    (number-to-string x)))))
+
+            (define _pyvelox_str
+              (lambda (x)
+                (if (and (vectorp x)
+                         (= (vector-length x) 3)
+                         (eqp (vector-ref x 0)
+                              (quote py-exception)))
+                    (let ((args (vector-ref x 2)))
+                      (if (nullp args) ""
+                        (_pyvelox_str_value (car args))))
+                    (_pyvelox_str_value x))))
+
+        and short-circuits in the VM, so vector-length / vector-ref
+        only fire after vectorp confirms the type.
+        """
+        if '_pyvelox_str' in self._emitted_helpers:
+            return
+        self._emitted_helpers.add('_pyvelox_str')
+
+        sym_x = lambda: encode_symbol('x', self.bc)
+        sym_args = lambda: encode_symbol('args', self.bc)
+
+        # _pyvelox_str_value: the original 3-way dispatch.
+        value_body = create_inline_call(
+            'if',
+            [create_inline_call('stringp', [sym_x()], self.bc),
+             sym_x(),
+             create_inline_call(
+                 'if',
+                 [create_inline_call('booleanp', [sym_x()], self.bc),
+                  create_inline_call(
+                      'if',
+                      [sym_x(),
+                       encode_string("True", self.bc),
+                       encode_string("False", self.bc)],
+                      self.bc),
+                  create_inline_call(
+                      'number_to_string', [sym_x()], self.bc)],
+                 self.bc)],
+            self.bc)
+        value_lambda_ref = self._emit_lambda(
+            ['x'], value_body, is_function=True)
+        define_value = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_str_value', self.bc),
+             value_lambda_ref],
+            self.bc)
+        self._preamble.extend(define_value)
+
+        # _pyvelox_str: outer check for the py-exception tag.
+        tag_quoted = create_inline_call(
+            'quote',
+            [encode_symbol('py-exception', self.bc)], self.bc)
+        is_exc = create_inline_call(
+            'and',
+            [create_inline_call('vectorp', [sym_x()], self.bc),
+             create_inline_call(
+                 'equal',
+                 [create_inline_call(
+                      'vector_length', [sym_x()], self.bc),
+                  encode_integer(3)],
+                 self.bc),
+             create_inline_call(
+                 'eqp',
+                 [create_inline_call(
+                      'vector_ref',
+                      [sym_x(), encode_integer(0)], self.bc),
+                  tag_quoted],
+                 self.bc)],
+            self.bc)
+
+        # Inner: extract args, return car or "".
+        get_args = create_inline_call(
+            'vector_ref',
+            [sym_x(), encode_integer(2)], self.bc)
+        car_args = create_inline_call('car', [sym_args()], self.bc)
+        format_one = create_inline_call(
+            '_pyvelox_str_value', [car_args], self.bc)
+        format_args = create_inline_call(
+            'if',
+            [create_inline_call('nullp', [sym_args()], self.bc),
+             encode_string("", self.bc),
+             format_one],
+            self.bc)
+        # Wrap in a let so `args` is bound once.
+        # let-as-immediate-lambda: ((lambda (args) <body>) <get-args>)
+        format_lambda_ref = self._emit_lambda(
+            ['args'], format_args, is_function=True)
+        format_call = create_inline_call(
+            format_lambda_ref, [get_args], self.bc)
+
+        # Fallback: route through _pyvelox_str_value.
+        fallback = create_inline_call(
+            '_pyvelox_str_value', [sym_x()], self.bc)
+
+        outer_body = create_inline_call(
+            'if', [is_exc, format_call, fallback], self.bc)
+        outer_lambda_ref = self._emit_lambda(
+            ['x'], outer_body, is_function=True)
+        define_outer = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_str', self.bc),
+             outer_lambda_ref],
+            self.bc)
+        self._preamble.extend(define_outer)
 
     def translate_bytes(self, args: List[ast.expr]) -> bytes:
         """Translate `bytes(...)`.

@@ -47,7 +47,7 @@ source line; the CLI prints the same and exits non-zero.
 | `*args` (receive and forward) | Yes | `def f(*args)` and `lambda *args:` lower to `bind_function_rest`; trailing actuals arrive as a list bound to `args`. `f(*xs)` and `f(prefix, *xs)` at call sites lower to `(apply f arg-list)`. Combining `*args` with default arguments is refused, as are: multiple `*` arguments at one call site, positionals after `*`, and `*` arguments to built-ins or method calls. |
 | `**kwargs`, keyword-only, positional-only | No | Refused at compile time. |
 | `nonlocal`, `global` | Yes | Recognised by the scope analyser. |
-| `try` / `except` / `raise` | Partial | Single bare `except:` or `except Exception:`; typed handlers and multiple `except` clauses refused. `raise X(args...)` builds a tagged 3-vector `#(py-exception "TYPE" args-list)`; handlers can read `e.type` (a string) and `e.args` (a list) on the bound exception via `except Exception as e:`. `raise e` on a bound name re-raises the caught object unchanged. |
+| `try` / `except` / `raise` | Partial | Single bare `except:` or `except Exception:`; typed handlers and multiple `except` clauses refused. `raise X(args...)` builds a tagged 3-vector `#(py-exception "TYPE" args-list)`; handlers can read `e.type` (a string), `e.args` (a list), and `str(e)` / `f"{e}"` (returns `args[0]` or `""` for empty args) on the bound exception via `except Exception as e:`. `raise e` on a bound name re-raises the caught object unchanged. |
 | `with` (context managers) | No | |
 | `class` | No | |
 | Comparison ops (`<`, `<=`, `>`, `>=`) | Yes | Numeric only. |
@@ -101,9 +101,12 @@ Method calls (only on simple variable receivers; expressions like
 
 - Exceptions carry their constructor args. `raise ValueError("oops")`
   is observable inside the handler as `e.args == ["oops"]`,
-  `e.type == "ValueError"`. Only `e.args` and `e.type` are exposed;
-  `str(e)` doesn't yet route through the args list, and `e.message`
-  doesn't exist (matching CPython 3, which removed it).
+  `e.type == "ValueError"`, `str(e) == "oops"`. Multi-arg exceptions
+  return `args[0]` from `str(e)` -- a deviation from CPython, which
+  formats the args tuple's repr. `print(e)` still prints the bare
+  vector representation; wrap it as `print(str(e))` or `print(e.args[0])`
+  to get the message. `e.message` doesn't exist (matching CPython 3,
+  which removed it).
 - Lists are cons cells; method calls that look mutating actually
   rebind the variable to a new list. Aliases of the old list keep
   seeing the old contents.

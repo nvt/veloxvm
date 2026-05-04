@@ -478,6 +478,26 @@ class TestStructuredRaise(unittest.TestCase):
         # The message mentions raise unsupported shape.
         self.assertIn("raise", ctx.exception.raw_message)
 
+    def test_str_of_variable_emits_helper(self):
+        # Variable-typed str() argument now routes through
+        # _pyvelox_str so the runtime can branch on the py-exception
+        # tag and return args[0] for an exception.
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'x = 1\ny = str(x)\n')
+        self.assertIn(encode_symbol('_pyvelox_str', bc), all_bytes)
+        # The helper recognises the py-exception tag.
+        self.assertIn(encode_symbol('py-exception', bc), all_bytes)
+        # And falls back to _pyvelox_str_value for non-exceptions.
+        self.assertIn(encode_symbol('_pyvelox_str_value', bc), all_bytes)
+
+    def test_str_literal_skips_helper(self):
+        # Literal arguments still constant-fold; the helper isn't
+        # emitted unless something needs it. This keeps trivial
+        # programs lean.
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'y = str(42)\n')
+        self.assertNotIn(encode_symbol('_pyvelox_str', bc), all_bytes)
+
 
 class TestCallDispatchRegistry(unittest.TestCase):
     """`translate_call` dispatches builtins and methods through two
@@ -820,8 +840,16 @@ class TestEvaluateOnce(unittest.TestCase):
         self.assertTrue(any(s.startswith('_t_') for s in syms))
 
     def test_str_of_call_evaluates_once(self):
-        syms = self._symbols('def f():\n    return 7\nx = str(f())\n')
-        self.assertTrue(any(s.startswith('_t_') for s in syms))
+        # str() now routes through the _pyvelox_str runtime helper
+        # rather than emitting an inline dispatch with a let-bound
+        # temp. The argument expression evaluates exactly once because
+        # it's passed as the helper's lambda parameter -- no `_t_`
+        # symbol involved. Pin the helper presence instead so a
+        # regression that re-inlines the dispatch (and loses the
+        # evaluate-once guarantee) shows up here.
+        from pyvelox.compiler import compile_string
+        bc = compile_string('def f():\n    return 7\nx = str(f())\n')
+        self.assertIn('_pyvelox_str', bc.symbol_table.symbols)
 
     def test_chained_comparison_intermediate_evaluates_once(self):
         # `a < g() < b` — g()'s result is the RHS of the first

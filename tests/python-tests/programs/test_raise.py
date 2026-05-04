@@ -123,6 +123,41 @@ for i in [1, 2, 3]:
 
 expect("loop catches and continues", collected, [1, "caught:two", 3])
 
+# ============================================================
+# str(e) routes through the args list.
+# ============================================================
+
+# Single-arg: str(e) returns args[0].
+try:
+    raise ValueError("bad input")
+except Exception as e:
+    expect("str(single)", str(e), "bad input")
+    expect("f-string single", f"err={e}", "err=bad input")
+
+# Zero-arg: str(e) returns "".
+try:
+    raise RuntimeError
+except Exception as e:
+    expect("str(zero)", str(e), "")
+    expect("f-string zero", f"[{e}]", "[]")
+
+# Multi-arg: documented to return args[0] (CPython would return
+# repr-of-tuple, pyvelox keeps it simple).
+try:
+    raise KeyError("first", "second", 3)
+except Exception as e:
+    expect("str(multi)", str(e), "first")
+
+# Existing str() on non-exception types still works.
+expect("str(int)", str(42), "42")
+expect("str(string)", str("hi"), "hi")
+expect("str(True)", str(True), "True")
+expect("str(False)", str(False), "False")
+
+# str() on a variable-typed int.
+n = 5
+expect("str(n)", str(n), "5")
+
 if failures > 0:
     print("FAILURES:", failures)
     raise SystemExit(1)
