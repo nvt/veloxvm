@@ -532,6 +532,7 @@ class TestCallDispatchRegistry(unittest.TestCase):
         # changes.)
         expected = {
             'print', 'len', 'range', 'int', 'str', 'bytes', 'bytearray',
+            'isinstance',
             'abs', 'min', 'max', 'sum', 'sorted', 'reversed', 'map',
             'filter', 'reduce', 'all', 'any', 'list', 'enumerate', 'zip',
         }
@@ -1254,13 +1255,40 @@ class TestClassDef(unittest.TestCase):
                 'b = Box(5)\n'
                 'r = b.get()\n')
 
-    def test_base_class_is_compile_error(self):
+    def test_single_base_class_is_supported(self):
+        # Single inheritance is now supported. The class lowering
+        # references the base class symbol in slot 2 of the class
+        # vector; method dispatch walks the parent chain at runtime.
+        from pyvelox.compiler import compile_string
+        from pyvelox.encoder import encode_symbol
+        bc = compile_string(
+            'class Base:\n    pass\n'
+            'class Sub(Base):\n    pass\n')
+        all_bytes = b''.join(bc.expressions)
+        # Both classes appear in the symbol table.
+        self.assertIn('Base', bc.symbol_table.symbols)
+        self.assertIn('Sub', bc.symbol_table.symbols)
+
+    def test_multiple_inheritance_is_compile_error(self):
         from pyvelox.compiler import compile_string
         with self.assertRaises(PyveloxCompileError) as ctx:
             compile_string(
-                'class Base:\n    pass\n'
-                'class Sub(Base):\n    pass\n')
-        self.assertIn("Base classes", ctx.exception.raw_message)
+                'class A:\n    pass\n'
+                'class B:\n    pass\n'
+                'class C(A, B):\n    pass\n')
+        self.assertIn("Multiple inheritance", ctx.exception.raw_message)
+
+    def test_forward_reference_base_is_compile_error(self):
+        # Base classes must be resolved at the point of class-def;
+        # forward references aren't supported because the class
+        # object's parent slot is filled in eagerly.
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'class A(B):\n    pass\n'
+                'class B:\n    pass\n')
+        self.assertIn("must be a class defined earlier",
+                      ctx.exception.raw_message)
 
     def test_class_decorator_is_compile_error(self):
         from pyvelox.compiler import compile_string
@@ -1313,6 +1341,64 @@ class TestClassDef(unittest.TestCase):
             '    """A docstring."""\n'
             '    def m(self):\n'
             '        return 1\n')
+
+    def test_super_call_lowers_to_lookup_method(self):
+        # super().method(args) should reach _pyvelox_lookup_method;
+        # the receiver of the lookup is the parent slot of the
+        # enclosing class.
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'class A:\n'
+            '    def hi(self):\n'
+            '        return 1\n'
+            'class B(A):\n'
+            '    def hi(self):\n'
+            '        return super().hi() + 1\n')
+        self.assertIn(encode_symbol('_pyvelox_lookup_method', bc), all_bytes)
+
+    def test_bare_super_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'class Foo:\n'
+                '    def m(self):\n'
+                '        x = super()\n'
+                '        return x\n')
+        self.assertIn("super", ctx.exception.raw_message.lower())
+
+    def test_super_with_explicit_args_is_compile_error(self):
+        # super(Class, self) -- the 2-arg form -- isn't supported.
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'class Foo:\n'
+                '    def m(self):\n'
+                '        return super(Foo, self).m()\n')
+        self.assertIn("super", ctx.exception.raw_message.lower())
+
+    def test_super_outside_method_is_compile_error(self):
+        # super() at module scope -- no enclosing class context.
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string('x = super().m()\n')
+        self.assertIn("super", ctx.exception.raw_message.lower())
+
+    def test_isinstance_emits_helper(self):
+        bc, all_bytes, encode_symbol, encode_string = self._compile_collect(
+            'class Foo:\n    pass\n'
+            'x = Foo()\n'
+            'r = isinstance(x, Foo)\n')
+        self.assertIn(encode_symbol('_pyvelox_isinstance', bc), all_bytes)
+
+    def test_isinstance_tuple_arg_is_compile_error(self):
+        from pyvelox.compiler import compile_string
+        with self.assertRaises(PyveloxCompileError) as ctx:
+            compile_string(
+                'class A:\n    pass\n'
+                'class B:\n    pass\n'
+                'x = A()\n'
+                'r = isinstance(x, (A, B))\n')
+        self.assertIn("tuple of classes",
+                      ctx.exception.raw_message.lower())
 
 
 if __name__ == '__main__':

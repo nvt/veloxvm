@@ -165,6 +165,106 @@ t.label = "x"
 expect("Tag.label after set", t.label, "x")
 
 
+# ============================================================
+# Inheritance + super() + isinstance.
+# ============================================================
+
+class Animal:
+    def __init__(self, name):
+        self.name = name
+
+    def describe(self):
+        return self.name
+
+    def shout(self):
+        return "..."
+
+
+class Dog(Animal):
+    def __init__(self, name, breed):
+        super().__init__(name)
+        self.breed = breed
+
+    def shout(self):
+        return "woof"
+
+
+class Puppy(Dog):
+    def shout(self):
+        return f"{super().shout()}-tiny"
+
+
+# Inherited method (parent's describe), no override.
+animal = Animal("generic")
+expect("Animal.describe", animal.describe(), "generic")
+expect("Animal.shout default", animal.shout(), "...")
+
+# Subclass: super().__init__ runs parent constructor.
+dog = Dog("rex", "lab")
+expect("Dog.name (inherited init)", dog.name, "rex")
+expect("Dog.breed (own init)", dog.breed, "lab")
+expect("Dog.describe (inherited)", dog.describe(), "rex")
+expect("Dog.shout (override)", dog.shout(), "woof")
+
+# Grandchild: super().shout() reaches Dog's override, not Animal's.
+puppy = Puppy("milo", "corgi")
+expect("Puppy.name", puppy.name, "milo")
+expect("Puppy.breed", puppy.breed, "corgi")
+expect("Puppy.shout (super chain)", puppy.shout(), "woof-tiny")
+
+# isinstance walks the chain.
+expect("isinstance(puppy, Puppy)", isinstance(puppy, Puppy), True)
+expect("isinstance(puppy, Dog)", isinstance(puppy, Dog), True)
+expect("isinstance(puppy, Animal)", isinstance(puppy, Animal), True)
+expect("isinstance(dog, Puppy)", isinstance(dog, Puppy), False)
+expect("isinstance(animal, Dog)", isinstance(animal, Dog), False)
+expect("isinstance(\"x\", Animal)", isinstance("x", Animal), False)
+expect("isinstance(42, Animal)", isinstance(42, Animal), False)
+
+# Class with no __init__ in the chain still constructs.
+class Bare:
+    def kind(self):
+        return "bare"
+
+
+bare = Bare()
+expect("Bare.kind", bare.kind(), "bare")
+
+# Subclass adds __init__ where the parent has none.
+class WithInit(Bare):
+    def __init__(self, x):
+        self.x = x
+
+
+w = WithInit(7)
+expect("WithInit.x", w.x, 7)
+expect("WithInit.kind (inherited)", w.kind(), "bare")
+expect("isinstance(w, Bare)", isinstance(w, Bare), True)
+
+# Diamond-style chain: A -> B -> C, all calling super().__init__.
+class A:
+    def __init__(self):
+        self.a = 1
+
+
+class B(A):
+    def __init__(self):
+        super().__init__()
+        self.b = 2
+
+
+class C(B):
+    def __init__(self):
+        super().__init__()
+        self.c = 3
+
+
+c = C()
+expect("C.a (from A's init)", c.a, 1)
+expect("C.b (from B's init)", c.b, 2)
+expect("C.c (own init)", c.c, 3)
+
+
 if failures > 0:
     print("FAILURES:", failures)
     raise SystemExit(1)

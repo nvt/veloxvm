@@ -55,6 +55,7 @@ class _BuiltinHandlers:
         'str':       'translate_str',
         'bytes':     'translate_bytes',
         'bytearray': 'translate_bytearray',
+        'isinstance': 'translate_isinstance',
         'abs':       'translate_abs',
         'min':       'translate_min',
         'max':       'translate_max',
@@ -553,6 +554,33 @@ class _BuiltinHandlers:
                     '_pyvelox_bytes_from_list', [arg_token], self.bc))
 
         return self._evaluate_once(arg, build)
+
+    def translate_isinstance(self, args: List[ast.expr]) -> bytes:
+        """Translate `isinstance(obj, cls)` -> `_pyvelox_isinstance`,
+        which walks the instance's class chain checking for `cls` via
+        `eqp` at each step. Returns #t on a match, #f otherwise.
+
+        Tuple-second-arg shape (CPython's `isinstance(x, (A, B))`) is
+        not yet supported -- pass each class explicitly or chain
+        `isinstance` calls with `or`.
+        """
+        if len(args) != 2:
+            raise ValueError(
+                f"isinstance() takes exactly 2 arguments "
+                f"({len(args)} given)")
+        if isinstance(args[1], ast.Tuple):
+            raise NotImplementedError(
+                "isinstance() with a tuple of classes is not yet "
+                "supported; use a single class or chain isinstance "
+                "calls with `or`.")
+        # The OOP helpers are emitted lazily and might not have been
+        # pulled in yet (a program that only does isinstance checks
+        # without defining classes itself would otherwise miss them).
+        self._emit_oop_helpers()
+        obj_bytes = self.translate_expr_with_ref(args[0])
+        cls_bytes = self.translate_expr_with_ref(args[1])
+        return create_inline_call(
+            '_pyvelox_isinstance', [obj_bytes, cls_bytes], self.bc)
 
     def translate_bytearray(self, args: List[ast.expr]) -> bytes:
         """`bytearray` isn't yet distinguished from `bytes` — the VM

@@ -49,7 +49,7 @@ source line; the CLI prints the same and exits non-zero.
 | `nonlocal`, `global` | Yes | Recognised by the scope analyser. |
 | `try` / `except` / `raise` | Partial | Single bare `except:` or `except Exception:`; typed handlers and multiple `except` clauses refused. `raise X(args...)` builds a tagged 3-vector `#(py-exception "TYPE" args-list)`; handlers can read `e.type` (a string), `e.args` (a list), and `str(e)` / `f"{e}"` (returns `args[0]` or `""` for empty args) on the bound exception via `except Exception as e:`. `raise e` on a bound name re-raises the caught object unchanged. |
 | `with` (context managers) | No | |
-| `class` | Partial | `class Foo: def __init__/methods` lowers to a tagged class vector. Instance construction `Foo(args)` runs `__init__`. `self.x = v` / `self.x` / `obj.method(args)` work. No base classes / `super()` / decorators / class-level attributes / nested classes yet. Method names that collide with `_METHOD_HANDLERS` (dict.get, list.append, str.upper, etc.) are shadowed by the builtin handler. |
+| `class` | Partial | `class Foo: def __init__/methods` and `class Bar(Foo): ...` lower to tagged class vectors. Instance construction `Foo(args)` runs `__init__`; classes without `__init__` (in their own body or any ancestor) still construct. `self.x = v` / `self.x` / `obj.method(args)` work. `super().method(args)` walks from the enclosing class's parent. `isinstance(obj, Cls)` walks the class chain. Refused: multiple inheritance, forward-reference base classes, `@classmethod` / `@staticmethod` / `@property` / decorators, class-level attributes, nested classes, dunder operator overloading (`__add__` etc.), `__getattr__` / `__setattr__` / descriptors, metaclasses, bare `super()` standalone, `super(Class, self)` 2-arg form, `isinstance` with a tuple second arg. Method names that collide with `_METHOD_HANDLERS` (`get`, `append`, `upper`, etc.) are shadowed by the builtin handler. |
 | Comparison ops (`<`, `<=`, `>`, `>=`) | Yes | Numeric only. |
 | `==`, `!=` | Yes | Type-aware deep equality (`equalp`). `True == 1` is `False` because the VM keeps booleans and ints as distinct types. |
 | `is`, `is not` | No | Refused at compile time. |
@@ -84,6 +84,7 @@ miscompiles (will be tightened to a refusal).
 | `int`, `str`, `abs`, `min`, `max`, `sum` | Yes | `int` and `str` insert a small runtime type-dispatch for non-literal arguments. |
 | `bytes` | Yes | `bytes()`, `bytes(N)` (N zero-filled), `bytes([b1, b2, …])`, `bytes(b'...')`. Variable arg routes through a `numberp`/`bufferp` runtime dispatch. |
 | `bytearray` | No | Refused at compile time. |
+| `isinstance` | Yes | Single class only -- `isinstance(x, (A, B))` with a tuple is refused. Walks the class chain via `eqp` against the target. |
 | `enumerate`, `zip`, `reversed`, `list` | Yes | |
 | `map`, `filter`, `reduce`, `any`, `all` | Yes | Eager — return lists, not iterators. |
 | `sorted` | No | Refused; sort manually until a VM-level sort is added. |
@@ -99,11 +100,12 @@ Method calls (only on simple variable receivers; expressions like
 
 ## Class object representation
 
-Classes are tagged 3-vectors:
+Classes are tagged 4-vectors:
 
-    #(pyclass "Name" method-alist)
+    #(pyclass "Name" parent method-alist)
 
-where `method-alist` is `((symbol-name . closure) ...)`. Instances
+where `parent` is another class object or `#f` for a root class,
+and `method-alist` is `((symbol-name . closure) ...)`. Instances
 are tagged 3-vectors:
 
     #(pyinstance class-ref slot-alist)
@@ -114,17 +116,25 @@ are tagged 3-vectors:
 access is O(N) in the slot/method count -- fine for typical class
 sizes.
 
-The supporting runtime helpers (`_pyvelox_make_instance`,
-`_pyvelox_lookup_method`, `_pyvelox_get_attr`, `_pyvelox_set_attr`)
-are emitted lazily into the program prologue when the first class
-definition or attribute access is compiled.
+`_pyvelox_lookup_method` walks the class chain through the parent
+slot, so an inherited method is resolved without copying it into
+each subclass's method-alist. `super().method(args)` reaches the
+helper with the enclosing class's parent slot directly, so the walk
+starts above the current class. `isinstance(obj, Cls)` is backed by
+a similar walk against the parent chain.
 
-What's deferred to later steps: single inheritance + `super()`,
-multiple inheritance + MRO, `@classmethod` / `@staticmethod` /
-`@property`, custom exception classes (which need inheritance to
-recognise the base `Exception`), dunder operator overloading
-(`__add__` etc.), `__getattr__`/`__setattr__` and the descriptor
-protocol, metaclasses.
+The supporting runtime helpers (`_pyvelox_make_instance`,
+`_pyvelox_lookup_method`, `_pyvelox_get_attr`, `_pyvelox_set_attr`,
+`_pyvelox_isinstance`, `_pyvelox_class_extends`) are emitted lazily
+into the program prologue when the first class definition or
+attribute access is compiled.
+
+What's deferred to later steps: multiple inheritance + MRO,
+`@classmethod` / `@staticmethod` / `@property`, custom exception
+classes that integrate with the existing `raise` / `except` flow,
+dunder operator overloading (`__add__` etc.),
+`__getattr__`/`__setattr__` and the descriptor protocol,
+metaclasses.
 
 ## Runtime caveats
 
