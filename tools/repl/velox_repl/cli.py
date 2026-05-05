@@ -328,6 +328,19 @@ def _resolve_compiler(spec: Optional[str], language: str) -> Tuple[List[str], st
             )
         return [racket, str(rkt)], f"racket {rkt.relative_to(_repo_root())}"
 
+    if language == "python":
+        # The pyvelox compiler is in-tree Python; spawn it under the
+        # current interpreter so we inherit the user's venv (uv-managed
+        # or otherwise) instead of rolling the dice on `python3` PATH.
+        server = _repo_root() / "languages" / "python" / "pyvelox-repl-server"
+        if not server.exists():
+            raise _ResolutionError(
+                f"compiler not found at {server}; pass --compiler stub "
+                "for the test fixture"
+            )
+        return ([sys.executable, str(server)],
+                f"pyvelox {server.relative_to(_repo_root())}")
+
     raise _ResolutionError(
         f"no auto-detect rule for language={language!r}; pass --compiler "
         "explicitly or --compiler stub for the test fixture"
