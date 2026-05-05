@@ -45,24 +45,45 @@
 #include <unistd.h>
 
 #include "vm.h"
+#include "vm-bytecode.h"
 #include "vm-log.h"
 #include "vm-native.h"
 #include "vm-repl.h"
 
 /* Frame types -- keep in sync with the design doc and the Python
    FrameType enum in tools/repl/velox_repl/protocol.py. */
-#define FT_APPLY    0x01
-#define FT_RUN      0x02
-#define FT_RESET    0x03
-#define FT_KILL     0x04
-#define FT_IO_IN    0x05
-#define FT_RESULT   0x10
-#define FT_ERROR    0x11
-#define FT_IO_OUT   0x12
-#define FT_STATUS   0x13
-#define FT_ACK      0x14
+#define FT_APPLY      0x01
+#define FT_RUN        0x02
+#define FT_RESET      0x03
+#define FT_KILL       0x04
+#define FT_IO_IN      0x05
+#define FT_INFO       0x06
+#define FT_RESULT     0x10
+#define FT_ERROR      0x11
+#define FT_IO_OUT     0x12
+#define FT_STATUS     0x13
+#define FT_ACK        0x14
+#define FT_INFO_REPLY 0x15
 
 #define MAX_PAYLOAD 0xFFFF
+
+/* Wire protocol version. Incremented when the frame format changes in
+   a way that older drivers can't read. */
+#define VM_REPL_PROTOCOL_VERSION 1
+
+/* Capability flags reported in INFO_REPLY. Keep in sync with the
+   CAP_* constants in tools/repl/velox_repl/protocol.py. */
+#define CAP_IO_OUT  0x0001
+#define CAP_IO_IN   0x0002
+#define CAP_KILL    0x0004
+#define CAP_STATUS  0x0008
+
+/* Build identifier. Override on the cc command line for a release
+   build (e.g. -DVM_REPL_BUILD_TAG="\"abc1234\""). The default is
+   informative enough for development. */
+#ifndef VM_REPL_BUILD_TAG
+#define VM_REPL_BUILD_TAG __DATE__ " " __TIME__
+#endif
 
 /* Frame output goes here. We dup STDOUT_FILENO to this fd at startup
    and redirect stdout to stderr so VM_PRINTF (banner, debug, app
@@ -150,6 +171,62 @@ send_ack(uint16_t start_id)
   payload[0] = (uint8_t)((start_id >> 8) & 0xFF);
   payload[1] = (uint8_t)(start_id & 0xFF);
   send_frame(FT_ACK, payload, sizeof(payload));
+}
+
+static void
+send_info_reply(void)
+{
+  /* INFO_REPLY payload layout (matches doc/repl-design.md):
+     [0]    protocol_version  uint8
+     [1]    bytecode_version  uint8
+     [2..3] capabilities      uint16
+     [4]    name_len          uint8 + UTF-8 bytes
+     [..]   version_len       uint8 + UTF-8 bytes
+     [..]   build_len         uint8 + UTF-8 bytes
+   */
+  uint8_t buf[256];
+  size_t pos = 0;
+  uint16_t caps = CAP_IO_OUT;     /* IO_OUT, KILL, STATUS aren't all
+                                     hooked up yet; advertise only
+                                     what the v1 service truly does. */
+  char version[16];
+  const char *name = VM_NAME;
+  const char *build = VM_REPL_BUILD_TAG;
+  size_t name_len = strlen(name);
+  size_t version_len;
+  size_t build_len = strlen(build);
+  int n;
+
+  n = snprintf(version, sizeof(version), "%d.%d",
+               VM_VERSION_MAJOR, VM_VERSION_MINOR);
+  version_len = (n > 0) ? (size_t)n : 0;
+
+  if(name_len > 255) name_len = 255;
+  if(version_len > 255) version_len = 255;
+  if(build_len > 255) build_len = 255;
+
+  buf[pos++] = VM_REPL_PROTOCOL_VERSION;
+  buf[pos++] = VM_BYTECODE_VERSION;
+  buf[pos++] = (uint8_t)((caps >> 8) & 0xFF);
+  buf[pos++] = (uint8_t)(caps & 0xFF);
+
+  if(pos + 1 + name_len <= sizeof(buf)) {
+    buf[pos++] = (uint8_t)name_len;
+    memcpy(buf + pos, name, name_len);
+    pos += name_len;
+  }
+  if(pos + 1 + version_len <= sizeof(buf)) {
+    buf[pos++] = (uint8_t)version_len;
+    memcpy(buf + pos, version, version_len);
+    pos += version_len;
+  }
+  if(pos + 1 + build_len <= sizeof(buf)) {
+    buf[pos++] = (uint8_t)build_len;
+    memcpy(buf + pos, build, build_len);
+    pos += build_len;
+  }
+
+  send_frame(FT_INFO_REPLY, buf, pos);
 }
 
 static void
@@ -323,6 +400,9 @@ main(int argc, char *argv[])
     case FT_IO_IN:
       /* No application-input plumbing on this side; the bytes
          are dropped after the protocol-level ack. */
+      break;
+    case FT_INFO:
+      send_info_reply();
       break;
     default:
       send_error(VM_ERROR_BYTECODE, "unknown frame type");

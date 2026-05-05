@@ -18,9 +18,13 @@ from typing import Dict, Tuple
 import struct as _struct
 
 from velox_repl.protocol import (
+    CAP_IO_OUT,
     Frame,
     FrameType,
+    PROTOCOL_VERSION,
+    VmInfo,
     encode_frame,
+    encode_info_reply,
     read_frame,
 )
 from velox_repl.render.decode import encode_string
@@ -158,6 +162,18 @@ def main() -> int:
 
         if frame.type == FrameType.IO_IN:
             # The stub doesn't model application input; just discard.
+            continue
+
+        if frame.type == FrameType.INFO:
+            info = VmInfo(
+                protocol_version=PROTOCOL_VERSION,
+                bytecode_version=0,            # not a real bytecode runner
+                capabilities=CAP_IO_OUT,
+                name="stub-vm",
+                version="0.1",
+                build="test fixture",
+            )
+            _write(stdout, Frame(FrameType.INFO_REPLY, encode_info_reply(info)))
             continue
 
         _write(stdout, _err_frame(0, f"unexpected frame type {frame.type.name}"))

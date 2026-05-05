@@ -29,6 +29,8 @@ from typing import BinaryIO, Callable, Optional, Sequence, Union
 from velox_repl.protocol import (
     Frame,
     FrameType,
+    VmInfo,
+    decode_info_reply,
     encode_frame,
     read_frame,
 )
@@ -175,6 +177,25 @@ class VmClient:
             raise VmCrash(
                 f"{self.name}: unexpected frame during RUN: {frame.type.name}"
             )
+
+    def info(self) -> Optional[VmInfo]:
+        """Send INFO and synchronously read INFO_REPLY. Returns None if
+        the VM doesn't support the handshake (responds with ERROR or
+        an unexpected frame). Older VMs and stub fixtures that haven't
+        implemented INFO can still drive the REPL; the banner will
+        show 'version unknown' in that case."""
+        self._send(Frame(FrameType.INFO, b""))
+        frame = self._recv_required()
+        if frame.type == FrameType.INFO_REPLY:
+            try:
+                return decode_info_reply(frame.payload)
+            except IOError:
+                return None
+        if frame.type == FrameType.ERROR:
+            return None
+        # Unexpected frame; treat as "no info available" but don't drop
+        # the frame on the floor -- a future read might want it.
+        return None
 
     def reset(self) -> None:
         self._send(Frame(FrameType.RESET, b""))

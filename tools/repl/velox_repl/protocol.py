@@ -30,17 +30,88 @@ class FrameType(IntEnum):
     RESET = 0x03
     KILL = 0x04
     IO_IN = 0x05
+    INFO = 0x06
     RESULT = 0x10
     ERROR = 0x11
     IO_OUT = 0x12
     STATUS = 0x13
     ACK = 0x14
+    INFO_REPLY = 0x15
+
+
+# Wire protocol version this driver speaks. INFO_REPLY exposes the same
+# value from the VM side so a mismatch surfaces with a clear message at
+# connect time.
+PROTOCOL_VERSION = 1
+
+
+# Capability flags reported in INFO_REPLY.
+CAP_IO_OUT = 0x0001
+CAP_IO_IN = 0x0002
+CAP_KILL = 0x0004
+CAP_STATUS = 0x0008
 
 
 @dataclass
 class Frame:
     type: FrameType
     payload: bytes
+
+
+@dataclass
+class VmInfo:
+    """Decoded INFO_REPLY payload."""
+    protocol_version: int
+    bytecode_version: int
+    capabilities: int
+    name: str
+    version: str
+    build: str
+
+    def supports(self, capability: int) -> bool:
+        return bool(self.capabilities & capability)
+
+
+def decode_info_reply(payload: bytes) -> VmInfo:
+    if len(payload) < 5:
+        raise IOError("INFO_REPLY too short")
+    proto = payload[0]
+    bcv = payload[1]
+    caps = (payload[2] << 8) | payload[3]
+    pos = 4
+    fields = []
+    for _ in range(3):  # name, version, build
+        if pos >= len(payload):
+            raise IOError("INFO_REPLY truncated")
+        n = payload[pos]
+        pos += 1
+        if pos + n > len(payload):
+            raise IOError("INFO_REPLY field truncated")
+        fields.append(payload[pos:pos + n].decode("utf-8", errors="replace"))
+        pos += n
+    return VmInfo(
+        protocol_version=proto,
+        bytecode_version=bcv,
+        capabilities=caps,
+        name=fields[0],
+        version=fields[1],
+        build=fields[2],
+    )
+
+
+def encode_info_reply(info: VmInfo) -> bytes:
+    parts = bytearray()
+    parts.append(info.protocol_version & 0xFF)
+    parts.append(info.bytecode_version & 0xFF)
+    parts.append((info.capabilities >> 8) & 0xFF)
+    parts.append(info.capabilities & 0xFF)
+    for s in (info.name, info.version, info.build):
+        b = s.encode("utf-8")
+        if len(b) > 255:
+            b = b[:255]
+        parts.append(len(b))
+        parts.extend(b)
+    return bytes(parts)
 
 
 _FRAME_HEADER = struct.Struct("!BH")

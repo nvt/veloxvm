@@ -83,9 +83,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"velox-repl: spawn error: {e}", file=sys.stderr)
         return 1
 
-    print(f"VeloxVM REPL (language: {args.language})")
-    print(f"  compiler: {compiler_label}")
-    print(f"  vm:       {vm_label}")
+    # Optional handshake. Older VMs and stubs that don't implement INFO
+    # respond with ERROR (or an unexpected frame); we render that as
+    # "version unknown" in the banner rather than failing.
+    try:
+        vm_info = vm.info()
+    except Exception:
+        vm_info = None
+
+    print(_banner(args.language, compiler_label, vm_label, vm_info))
     if sys.stdin.isatty():
         print("Type :help for commands, :quit or Ctrl-D to exit.")
 
@@ -112,7 +118,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 break
 
             if not buffer and line.strip().startswith(":"):
-                if not _handle_meta(repl, line.strip(), args):
+                if not _handle_meta(repl, line.strip(), args, vm_info):
                     break
                 continue
 
@@ -174,6 +180,29 @@ def _make_line_reader(history, primary):
     return read
 
 
+def _banner(language: str, compiler_label: str, vm_label: str, vm_info) -> str:
+    if vm_info is not None:
+        connected = (
+            f"VeloxVM REPL -- connected to {vm_info.name} {vm_info.version} "
+            f"({vm_info.build})"
+        )
+        details = (
+            f"  protocol v{vm_info.protocol_version}  "
+            f"bytecode v{vm_info.bytecode_version}  "
+            f"language: {language}\n"
+            f"  compiler: {compiler_label}\n"
+            f"  vm:       {vm_label}"
+        )
+    else:
+        connected = "VeloxVM REPL -- connected to backend (version unknown)"
+        details = (
+            f"  language: {language}\n"
+            f"  compiler: {compiler_label}\n"
+            f"  vm:       {vm_label}"
+        )
+    return connected + "\n" + details
+
+
 def _print_success(outcome: EvalSuccess, language: str) -> None:
     if outcome.kind == "define":
         name = outcome.name or "<anonymous>"
@@ -192,7 +221,8 @@ def _print_success(outcome: EvalSuccess, language: str) -> None:
     print(rendered)
 
 
-def _handle_meta(repl: ReplSession, command: str, args: argparse.Namespace) -> bool:
+def _handle_meta(repl: ReplSession, command: str, args: argparse.Namespace,
+                 vm_info) -> bool:
     """Returns False if the REPL should exit."""
     parts = command.split(maxsplit=1)
     head = parts[0]
@@ -204,6 +234,7 @@ def _handle_meta(repl: ReplSession, command: str, args: argparse.Namespace) -> b
         print(":reset             reset compiler and VM state")
         print(":threads           show running thread count")
         print(":sync              show sync invariants (debug)")
+        print(":version           show backend version info")
         return True
     if head == ":reset":
         try:
@@ -217,6 +248,15 @@ def _handle_meta(repl: ReplSession, command: str, args: argparse.Namespace) -> b
         return True
     if head == ":sync":
         print(f"; in_sync={repl.in_sync} last_acked_start_id={repl.last_acked_start_id}")
+        return True
+    if head == ":version":
+        if vm_info is None:
+            print("; backend version unknown (no INFO_REPLY received)")
+        else:
+            print(f"; {vm_info.name} {vm_info.version} ({vm_info.build})")
+            print(f"; protocol v{vm_info.protocol_version}  "
+                  f"bytecode v{vm_info.bytecode_version}  "
+                  f"capabilities 0x{vm_info.capabilities:04x}")
         return True
     print(f"; unknown command: {head} (try :help)")
     return True
