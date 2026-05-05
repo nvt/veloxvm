@@ -42,6 +42,18 @@
 #ifdef VM_REPL_ENABLE
 #include "vm-repl.h"
 void vm_repl_coap_init(vm_program_t *program);
+
+#if !CONTIKI_TARGET_NATIVE
+/* On embedded targets the rpl-border-router/embedded module sets up
+   the SLIP fallback interface so the host's tunslip6 can reach the
+   device's IPv6 stack over /dev/ttyACM0 (or whichever UART/CDC the
+   board exposes). The border-router process auto-requests an IPv6
+   prefix from tunslip6 on startup. */
+PROCESS_NAME(border_router_process);
+#define VM_REPL_BR_AUTOSTART &border_router_process,
+#else
+#define VM_REPL_BR_AUTOSTART
+#endif
 #endif
 
 extern vm_lib_t vm_lib_leds;
@@ -53,7 +65,11 @@ extern vm_lib_t vm_lib_sensors;
 void vm_shell_init(void);
 
 PROCESS(vm_process, VM_NAME);
+#ifdef VM_REPL_ENABLE
+AUTOSTART_PROCESSES(VM_REPL_BR_AUTOSTART &vm_process);
+#else
 AUTOSTART_PROCESSES(&vm_process);
+#endif
 
 #ifndef VM_REPL_ENABLE
 extern const char vm_program_name[];

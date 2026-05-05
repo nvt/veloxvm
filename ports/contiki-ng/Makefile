@@ -4,6 +4,8 @@ ifndef TARGET
 TARGET = zoul
 endif
 
+CONTIKI = ../../../contiki-ng
+
 MODULES += os/net/app-layer/coap
 MODULES += os/services/lwm2m
 MODULES += os/services/resolv
@@ -30,6 +32,16 @@ all: vm
 CFLAGS += -DVM_REPL_ENABLE
 PROJECTDIRS_REPL = ../../core/repl repl
 PROJECT_SOURCEFILES_REPL = ${notdir ${wildcard ../../core/repl/*.c repl/*.c}}
+# On embedded targets the device's only viable path to the host-side
+# driver is SLIP over the USB CDC interface. The rpl-border-router
+# embedded module pulls in slip-bridge.c (which initialises the SLIP
+# fallback interface and negotiates the IPv6 prefix with tunslip6).
+# The native target reaches the host through its own tun/tap, so we
+# skip it there.
+ifneq ($(TARGET),native)
+include $(CONTIKI)/Makefile.dir-variables
+MODULES += $(CONTIKI_NG_SERVICES_DIR)/rpl-border-router
+endif
 else
 all: $(VM_APP_IMAGE) vm
 CFLAGS += -DVM_BUNDLE
@@ -83,14 +95,9 @@ endif
 
 NEEDS_CONTIKI_VERSION_FILES += vm-native.c
 
-CONTIKI = ../../../contiki-ng
 include $(CONTIKI)/Makefile.include
 
-$(CONTIKI)/tools/tunslip6:	$(CONTIKI)/tools/tunslip6.c
-	(cd $(CONTIKI)/tools && $(MAKE) tunslip6)
-
-connect-router:	$(CONTIKI)/tools/tunslip6
-	sudo $(CONTIKI)/tools/tunslip6 $(PREFIX)
-
-connect-router-cooja:	$(CONTIKI)/tools/tunslip6
-	sudo $(CONTIKI)/tools/tunslip6 -a 127.0.0.1 $(PREFIX)
+# When VM_REPL=1 on an embedded target, the rpl-border-router/embedded
+# module provides connect-router / connect-router-cooja targets that
+# wire up tunslip6 with the right paths. We deliberately don't supply
+# our own here so as not to override them with stale paths.
