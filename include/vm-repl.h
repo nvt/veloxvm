@@ -83,17 +83,43 @@ vm_repl_status_t vm_repl_apply_delta(vm_program_t *program,
                                      vm_expr_id_t *out_entry_id);
 
 /*
- * Run the entry expression to completion and capture its result. v1
- * is a placeholder that returns NONE; the real implementation will
- * spawn a thread, drive the scheduler, and read thread->result.
+ * Synchronous run: redirects the parked main thread at entry_id,
+ * drives vm_run() until the thread parks again, returns the result.
+ * Suitable for hosted ports (POSIX) where blocking is fine.
  *
- * On success returns 1 and *out_result is initialized.
- * On error returns 0 and *out_error is initialized.
+ * Returns 1 on success with *out_result initialized. Returns 0 on
+ * error with *out_error initialized.
  */
 int vm_repl_run(vm_program_t *program,
                 vm_expr_id_t entry_id,
                 vm_obj_t *out_result,
                 vm_error_t *out_error);
+
+/*
+ * Cooperative variant: redirect the main thread and return
+ * immediately. Lets the host process loop drive vm_run() at its own
+ * cadence (e.g., a Contiki process that must yield between vm_run
+ * invocations to keep the CoAP stack alive). Returns 1 on successful
+ * setup, 0 on error.
+ */
+int vm_repl_start(vm_program_t *program,
+                  vm_expr_id_t entry_id,
+                  vm_error_t *out_error);
+
+/*
+ * Cooperative companion to vm_repl_start. Probes the main thread:
+ *
+ *   1   thread parked; *out_result populated (caller may also
+ *       call vm_repl_encode_obj to serialize for transit)
+ *   0   thread still running; nothing emitted
+ *  -1   thread errored; *out_error populated
+ *
+ * The caller should call vm_run() between vm_repl_collect() polls,
+ * yielding to the host event loop in between.
+ */
+int vm_repl_collect(vm_program_t *program,
+                    vm_obj_t *out_result,
+                    vm_error_t *out_error);
 
 /*
  * Tear down a REPL program. Removes it from the loaded-programs list,

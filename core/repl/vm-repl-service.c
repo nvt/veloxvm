@@ -137,8 +137,8 @@ find_main_thread(vm_program_t *program)
 }
 
 int
-vm_repl_run(vm_program_t *program, vm_expr_id_t entry_id,
-            vm_obj_t *out_result, vm_error_t *out_error)
+vm_repl_start(vm_program_t *program, vm_expr_id_t entry_id,
+              vm_error_t *out_error)
 {
   vm_thread_t *thread;
   vm_expr_t *expr;
@@ -165,9 +165,7 @@ vm_repl_run(vm_program_t *program, vm_expr_id_t entry_id,
 
   /* If the previous turn left the thread in any state other than
      PARKED (e.g. WAITING for a mutex/sleep that never returned, or
-     ERROR), refuse: the driver should reset. The first turn's
-     thread is also PARKED because vm_thread_create_parked starts it
-     that way. */
+     ERROR), refuse: the driver should reset. */
   if(thread->status != VM_THREAD_PARKED) {
     if(out_error != NULL) {
       out_error->error_type = VM_ERROR_THREAD;
@@ -200,29 +198,58 @@ vm_repl_run(vm_program_t *program, vm_expr_id_t entry_id,
   thread->error.error_type = VM_ERROR_INTERNAL;
   thread->status = VM_THREAD_RUNNABLE;
 
-  /* Drive the scheduler until the main thread parks again or
-     transitions to an error/exiting state. Other threads may keep
-     running -- the loop returns once the main thread is no longer
-     making progress for the current turn. */
+  return 1;
+}
+
+int
+vm_repl_collect(vm_program_t *program, vm_obj_t *out_result,
+                vm_error_t *out_error)
+{
+  vm_thread_t *thread = find_main_thread(program);
+  if(thread == NULL) {
+    if(out_error != NULL) {
+      out_error->error_type = VM_ERROR_THREAD;
+      out_error->error_obj.type = VM_TYPE_NONE;
+    }
+    return -1;
+  }
+
+  if(thread->status == VM_THREAD_PARKED) {
+    if(out_result != NULL) {
+      *out_result = thread->result;
+    }
+    return 1;
+  }
+  if(thread->status == VM_THREAD_ERROR ||
+     thread->status == VM_THREAD_EXITING ||
+     thread->status == VM_THREAD_FINISHED) {
+    if(out_error != NULL) {
+      *out_error = thread->error;
+    }
+    return -1;
+  }
+  return 0;
+}
+
+int
+vm_repl_run(vm_program_t *program, vm_expr_id_t entry_id,
+            vm_obj_t *out_result, vm_error_t *out_error)
+{
+  if(!vm_repl_start(program, entry_id, out_error)) {
+    return 0;
+  }
+
   for(;;) {
     vm_result_t r = vm_run();
-    if(thread->status == VM_THREAD_PARKED) {
-      break;
+    int status = vm_repl_collect(program, out_result, out_error);
+    if(status == 1) {
+      return 1;
     }
-    if(thread->status == VM_THREAD_ERROR ||
-       thread->status == VM_THREAD_EXITING ||
-       thread->status == VM_THREAD_FINISHED) {
-      /* A REPL main thread normally parks instead of finishing; if
-         we see any of these it means an unhandled exception or an
-         explicit (exit). Surface as an error and let the driver
-         reset. */
-      if(out_error != NULL) {
-        *out_error = thread->error;
-      }
+    if(status < 0) {
       return 0;
     }
-    if(r == VM_RESULT_FINISHED && thread->status == VM_THREAD_RUNNABLE) {
-      /* Defensive: vm_run returned FINISHED but our thread is still
+    if(r == VM_RESULT_FINISHED) {
+      /* Defensive: vm_run returned FINISHED but the thread is still
          RUNNABLE. Should not happen -- avoid an infinite loop. */
       if(out_error != NULL) {
         out_error->error_type = VM_ERROR_INTERNAL;
@@ -231,11 +258,6 @@ vm_repl_run(vm_program_t *program, vm_expr_id_t entry_id,
       return 0;
     }
   }
-
-  if(out_result != NULL) {
-    *out_result = thread->result;
-  }
-  return 1;
 }
 
 #endif /* VM_REPL_ENABLE */

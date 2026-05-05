@@ -39,6 +39,11 @@
 #include "vm-log.h"
 #include "vm-native.h"
 
+#ifdef VM_REPL_ENABLE
+#include "vm-repl.h"
+void vm_repl_coap_init(vm_program_t *program);
+#endif
+
 extern vm_lib_t vm_lib_leds;
 extern vm_lib_t vm_lib_radio;
 extern vm_lib_t vm_lib_rpl;
@@ -50,11 +55,16 @@ void vm_shell_init(void);
 PROCESS(vm_process, VM_NAME);
 AUTOSTART_PROCESSES(&vm_process);
 
+#ifndef VM_REPL_ENABLE
 extern const char vm_program_name[];
+#endif
 
 PROCESS_THREAD(vm_process, ev, data)
 {
   vm_result_t result;
+#ifdef VM_REPL_ENABLE
+  static vm_program_t *repl_program;
+#endif
 
   PROCESS_BEGIN();
 
@@ -75,11 +85,24 @@ PROCESS_THREAD(vm_process, ev, data)
   serial_shell_init();
   vm_shell_init();
 
+#ifdef VM_REPL_ENABLE
+  /* Create the REPL program once and hand it to the CoAP frontend.
+     vm_repl_coap_init registers the resources and installs the
+     console-writer hook so application output flows through IO_OUT
+     notifications. */
+  repl_program = vm_repl_program_create("repl", NULL);
+  if(repl_program == NULL) {
+    VM_DEBUG(VM_DEBUG_LOW, "Unable to create the REPL program");
+    PROCESS_EXIT();
+  }
+  vm_repl_coap_init(repl_program);
+#else
   if(vm_program_name[0] != '\0') {
     if(vm_load_program(vm_program_name) == 0) {
       VM_DEBUG(VM_DEBUG_LOW, "Failed to autoload %s", vm_program_name);
     }
   }
+#endif
 
   while(1) {
     if(vm_get_programs() == NULL) {

@@ -1176,6 +1176,10 @@ vm_native_char_readyp(vm_port_t *port)
   return VM_TRUE;
 }
 
+#ifdef VM_REPL_ENABLE
+vm_console_writer_t vm_native_console_writer;
+#endif
+
 int
 vm_native_write(vm_port_t *port, const char *format, ...)
 {
@@ -1195,16 +1199,33 @@ vm_native_write_buffer(vm_port_t *port, const char *buf, size_t len)
 {
   int ret;
   struct native_socket *sock;
+#ifdef VM_REPL_ENABLE
+  vm_port_t *original_port = port;
+#endif
 
   if(port == NULL) {
     port = vm_native_default_port(NULL, VM_PORT_FLAG_OUTPUT);
   }
 
+#ifdef VM_REPL_ENABLE
+  if(vm_native_console_writer != NULL && original_port != NULL && port != NULL &&
+     VM_IS_SET(port->flags, VM_PORT_FLAG_CONSOLE | VM_PORT_FLAG_OUTPUT)) {
+    /* Application called display/write/etc. with a console output
+       port. Route through the REPL's IO_OUT framing. VM_PRINTF (which
+       passes NULL) bypasses this path. */
+    ret = vm_native_console_writer(buf, len);
+  } else if(port != NULL && port->io != NULL && port->io->write != NULL) {
+    ret = port->io->write(port, buf, len);
+  } else {
+    ret = printf("%s", buf);
+  }
+#else
   if(port != NULL && port->io != NULL && port->io->write != NULL) {
     ret = port->io->write(port, buf, len);
   } else {
     ret = printf("%s", buf);
   }
+#endif
 
   if(port->thread != NULL) {
     if(ret < 0) {

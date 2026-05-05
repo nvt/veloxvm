@@ -69,6 +69,9 @@ thread_status_name(vm_thread_status_t s)
   case VM_THREAD_ERROR:    return "error";
   case VM_THREAD_EXITING:  return "exiting";
   case VM_THREAD_FINISHED: return "finished";
+#ifdef VM_REPL_ENABLE
+  case VM_THREAD_PARKED:   return "parked";
+#endif
   }
   return "unknown";
 }
