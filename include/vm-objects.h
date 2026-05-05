@@ -145,6 +145,11 @@ typedef struct vm_port {
   struct vm_port *next;
   int fd;
   uint8_t flags;
+  /* One-character pushback for peek-char. has_peek is non-zero when
+     peek_char holds a buffered character that the next read-char should
+     consume. */
+  uint8_t has_peek;
+  vm_character_t peek_char;
 } vm_port_t;
 
 /* VM_TYPE_LIST representation. */

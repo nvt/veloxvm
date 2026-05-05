@@ -201,12 +201,21 @@ VM_FUNCTION(read)
 
 VM_FUNCTION(peek_char)
 {
+  vm_port_t *port;
   vm_character_t c;
 
-  if(vm_native_peek_char(argc == 1 ? argv[0].value.port : NULL, &c) == 1) {
+  port = get_port(thread, argc, argv, VM_PORT_FLAG_INPUT);
+  if(port == NULL) {
+    return;
+  }
+
+  port->thread = thread;
+
+  if(vm_native_peek_char(port, &c) == 1) {
     VM_PUSH_CHARACTER(c);
-  } else {
-    VM_PUSH_CHARACTER('\0');
+    VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
+  } else if(thread->status == VM_THREAD_WAITING) {
+    VM_SET_FLAG(thread->expr->flags, VM_EXPR_RESTART);
   }
 }
 

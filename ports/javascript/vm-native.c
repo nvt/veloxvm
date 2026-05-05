@@ -834,6 +834,12 @@ vm_native_read_char(vm_port_t *port, vm_character_t *c)
   char buf[1];
   int r;
 
+  if(port->has_peek) {
+    *c = port->peek_char;
+    port->has_peek = 0;
+    return 1;
+  }
+
   if(port->io == NULL || port->io->read == NULL) {
     vm_signal_error(port->thread, VM_ERROR_IO);
     return 0;
@@ -865,7 +871,16 @@ vm_native_read_char(vm_port_t *port, vm_character_t *c)
 int
 vm_native_peek_char(vm_port_t *port, vm_character_t *c)
 {
-  return 0;
+  if(port->has_peek) {
+    *c = port->peek_char;
+    return 1;
+  }
+  if(vm_native_read_char(port, c) != 1) {
+    return 0;
+  }
+  port->peek_char = *c;
+  port->has_peek = 1;
+  return 1;
 }
 
 vm_boolean_t
