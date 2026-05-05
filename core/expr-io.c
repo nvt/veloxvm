@@ -309,8 +309,10 @@ VM_FUNCTION(display)
 
 VM_FUNCTION(with_input_from_file)
 {
+  vm_signal_error(thread, VM_ERROR_UNIMPLEMENTED);
 }
 
 VM_FUNCTION(with_output_to_file)
 {
+  vm_signal_error(thread, VM_ERROR_UNIMPLEMENTED);
 }

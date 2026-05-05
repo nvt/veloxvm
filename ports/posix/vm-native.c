@@ -491,6 +491,9 @@ vm_native_time(vm_time_t *current_time)
 void
 vm_native_close_port(vm_port_t *port)
 {
+  if(VM_IS_CLEAR(port->flags, VM_PORT_FLAG_OPEN)) {
+    return;
+  }
   if(port->io != NULL && port->io->close != NULL) {
     port->io->close(port);
   } else {

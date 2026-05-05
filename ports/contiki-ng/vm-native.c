@@ -591,6 +591,9 @@ vm_native_close_port(vm_port_t *port)
   /* Per-IO close also reclaims the underlying native_socket for socket
      ports (see vm-device-uip.c). The same path runs from the GC-sweep
      finaliser in core/vm-memory.c, so leak coverage is uniform. */
+  if((port->flags & VM_PORT_FLAG_OPEN) == 0) {
+    return;
+  }
   if(port->io && port->io->close) {
     port->io->close(port);
   }
