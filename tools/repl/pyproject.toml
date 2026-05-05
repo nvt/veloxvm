@@ -5,6 +5,7 @@ description = "Interactive REPL driver for VeloxVM"
 requires-python = ">=3.11"
 dependencies = [
     "prompt-toolkit>=3.0.43",
+    "aiocoap>=0.4.7",
 ]
 
 [project.scripts]

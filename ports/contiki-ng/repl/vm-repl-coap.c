@@ -458,39 +458,31 @@ events_get_handler(coap_message_t *request, coap_message_t *response,
                    uint8_t *buffer, uint16_t preferred_size,
                    int32_t *offset)
 {
-  pending_frame_t *f;
-  size_t total;
+  size_t pos = 0;
 
-  if(eq_count == 0) {
-    coap_set_payload(response, buffer, 0);
-    return;
-  }
-
-  f = &event_queue[eq_head];
-  total = 3 + f->len;
-  if(total > preferred_size) {
-    /* Frame doesn't fit one notification; truncate and let the
-       caller request the next chunk. With block-wise transfer this
-       would be cleaner; v1 caps EVENT_PAYLOAD_MAX so this branch
-       only fires for unusually large RESULT objects. */
-    total = preferred_size;
-  }
-
-  if(total >= 3) {
-    buffer[0] = f->type;
-    buffer[1] = (uint8_t)((f->len >> 8) & 0xFF);
-    buffer[2] = (uint8_t)(f->len & 0xFF);
-    if(total > 3) {
-      memcpy(buffer + 3, f->bytes, total - 3);
+  /* CoAP observe is a lossy stream: rapid updated_state calls collapse
+     into one notification, so we pack as many queued frames as fit
+     into each response. The driver parses multiple frames per body. */
+  while(eq_count > 0) {
+    pending_frame_t *f = &event_queue[eq_head];
+    size_t need = 3 + f->len;
+    if(pos + need > preferred_size) {
+      break;  /* defer the rest to the next notification */
     }
+    buffer[pos++] = f->type;
+    buffer[pos++] = (uint8_t)((f->len >> 8) & 0xFF);
+    buffer[pos++] = (uint8_t)(f->len & 0xFF);
+    if(f->len > 0) {
+      memcpy(buffer + pos, f->bytes, f->len);
+      pos += f->len;
+    }
+    eq_head = (eq_head + 1) % EVENT_QUEUE_DEPTH;
+    eq_count--;
   }
-  coap_set_payload(response, buffer, total);
 
-  /* Pop the queue. Multiple subscribers would need a per-observer
-     cursor here; for v1 we assume one driver. */
-  eq_head = (eq_head + 1) % EVENT_QUEUE_DEPTH;
-  eq_count--;
+  coap_set_payload(response, buffer, pos);
 
+  /* Anything left over (didn't fit) gets a follow-up notification. */
   if(eq_count > 0) {
     coap_notify_observers(&res_repl_events);
   }

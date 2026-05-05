@@ -43,6 +43,44 @@ synthetic placeholder result, so the protocol still round-trips):
 When the C-side append-loader is built, replace `--vm stub` with the
 real `bin/vm-repl` binary; the protocol on the wire is unchanged.
 
+## Talking to a Contiki-NG device over CoAP
+
+Build a Contiki-NG firmware with REPL support enabled (no baked-in
+program, exposes `/repl/cmd` and `/repl/events` resources):
+
+```
+cd ports/contiki-ng
+make TARGET=native VM_REPL=1
+sudo ./build/native/vm.native fd00::1/64
+```
+
+The argument `fd00::1/64` is the **host side** of the tun0 tunnel.
+The simulated device gets a separate IPv6 address derived from its
+MAC address. With the default MAC `01:02:03:04:05:06:07:08`, the
+device's address is `fd00::302:304:506:708` (after the EUI-64 U-bit
+flip). The firmware logs it on startup as `Added global IPv6
+address ...`. If you change `PLATFORM_CONF_MAC_ADDR` you'll get a
+different address.
+
+A quick sanity check via `aiocoap-client`:
+
+```
+aiocoap-client coap://[fd00::302:304:506:708]/.well-known/core
+```
+
+should list `</repl/cmd>` and `</repl/events>`. Then drive the REPL:
+
+```
+./tools/repl/velox-repl --vm "coap://[fd00::302:304:506:708]/repl"
+```
+
+The same protocol travels over CoAP that travels over stdio, with
+events streamed via CoAP Observe. Block-wise transfer is supported
+by aiocoap automatically when delta payloads exceed the link MTU.
+For Cooja simulation or a real device, swap `TARGET=native` for the
+appropriate target (`zoul`, `cooja-mote`, etc.) and use the address
+the firmware actually announces at boot.
+
 ## Layout
 
 ```

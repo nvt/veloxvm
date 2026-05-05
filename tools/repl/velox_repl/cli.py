@@ -37,6 +37,9 @@ from velox_repl.core import (
 from velox_repl.render import render_for
 from velox_repl.vm import VmClient
 
+# coap_transport pulls in aiocoap which can be slow to import. Defer
+# until we know the user actually wants the CoAP transport.
+
 
 PRIMARY_PROMPT = {"scheme": "velox> ", "python": "pyvelox> "}
 CONT_PROMPT = {"scheme": "...    ", "python": "...      "}
@@ -47,7 +50,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     try:
         compiler_cmd, compiler_label = _resolve_compiler(args.compiler, args.language)
-        vm_cmd, vm_label = _resolve_vm(args.vm)
     except _ResolutionError as e:
         print(f"velox-repl: {e}", file=sys.stderr)
         return 1
@@ -55,7 +57,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     history = _resolve_history(args.history_file)
 
     compiler = CompilerClient(compiler_cmd, name="compiler")
-    vm = VmClient(vm_cmd, name="vm")
+
+    # Pick the VM transport based on the --vm argument.
+    if args.vm and args.vm.startswith("coap://"):
+        from velox_repl.coap_transport import CoapVmClient
+        vm = CoapVmClient(args.vm, name="vm")
+        vm_label = args.vm
+    else:
+        try:
+            vm_cmd, vm_label = _resolve_vm(args.vm)
+        except _ResolutionError as e:
+            print(f"velox-repl: {e}", file=sys.stderr)
+            return 1
+        vm = VmClient(vm_cmd, name="vm")
 
     # Track whether the application emitted IO_OUT during the current turn
     # and whether the last byte was a newline. We use this to decide whether
@@ -86,12 +100,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Optional handshake. Older VMs and stubs that don't implement INFO
     # respond with ERROR (or an unexpected frame); we render that as
     # "version unknown" in the banner rather than failing.
+    info_error: Optional[str] = None
     try:
         vm_info = vm.info()
-    except Exception:
+    except Exception as e:
         vm_info = None
+        info_error = str(e)
+    if vm_info is None and info_error is None:
+        # CoapVmClient stashes a more specific error here.
+        info_error = getattr(vm, "_info_error", None)
 
-    print(_banner(args.language, compiler_label, vm_label, vm_info))
+    print(_banner(args.language, compiler_label, vm_label, vm_info,
+                  info_error))
     if sys.stdin.isatty():
         print("Type :help for commands, :quit or Ctrl-D to exit.")
 
@@ -180,7 +200,8 @@ def _make_line_reader(history, primary):
     return read
 
 
-def _banner(language: str, compiler_label: str, vm_label: str, vm_info) -> str:
+def _banner(language: str, compiler_label: str, vm_label: str, vm_info,
+            info_error: Optional[str] = None) -> str:
     if vm_info is not None:
         connected = (
             f"VeloxVM REPL -- connected to {vm_info.name} {vm_info.version} "
@@ -200,6 +221,8 @@ def _banner(language: str, compiler_label: str, vm_label: str, vm_info) -> str:
             f"  compiler: {compiler_label}\n"
             f"  vm:       {vm_label}"
         )
+        if info_error:
+            details += f"\n  info handshake failed: {info_error}"
     return connected + "\n" + details
 
 
@@ -354,7 +377,8 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
     )
     p.add_argument(
         "--vm",
-        help='VM command; "stub" uses the in-tree test fixture; '
+        help='VM command, "stub" for the in-tree test fixture, or a '
+             '"coap://[host]/repl" URI to talk to a Contiki-NG device; '
              'omit to auto-detect bin/vm-repl',
     )
     p.add_argument(
