@@ -1,0 +1,21 @@
+[project]
+name = "velox-repl"
+version = "0.1.0"
+description = "Interactive REPL driver for VeloxVM"
+requires-python = ">=3.11"
+dependencies = [
+    "prompt-toolkit>=3.0.43",
+]
+
+[project.scripts]
+velox-repl = "velox_repl.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["velox_repl"]
+
+[tool.uv]
+dev-dependencies = []

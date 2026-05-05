@@ -1,0 +1,53 @@
+# velox-repl
+
+Interactive REPL driver for VeloxVM. Coordinates a long-running compiler
+process (Racket Scheme compiler today, PyVelox later) and a long-running
+VeloxVM REPL service over a transport-agnostic frame protocol. The driver
+is the only thing that talks to the user.
+
+## Running
+
+If you have [uv](https://docs.astral.sh/uv/):
+
+```
+./velox-repl                # uses uv's cached env automatically
+```
+
+Without uv, the wrapper falls back to a project-local `.venv`:
+
+```
+./velox-repl                # creates .venv on first run, then uses it
+```
+
+Either way: no manual `source activate`. The wrapper is in `tools/repl/`
+and is intended to be symlinked from `~/.local/bin/` if you want it on
+PATH globally.
+
+## Stage 1 demo
+
+Stage 1 ships in-process Python stubs for both the compiler and the VM,
+so the driver can be exercised end-to-end before the real Racket
+REPL-server mode and the C-side append-loader are implemented:
+
+```
+./velox-repl --compiler stub --vm stub
+```
+
+## Layout
+
+```
+velox_repl/
+  cli.py          argparse + TTY entry point
+  core.py         session state machine (sync invariants, evaluate/reset/interrupt)
+  compiler.py     compiler subprocess client (s-expression protocol)
+  vm.py           VM transport + binary frame protocol (async events)
+  protocol.py     frame codec + s-expr helpers
+  render/
+    scheme.py     vm_obj_t -> Scheme surface syntax
+    python.py     vm_obj_t -> Python surface syntax (placeholder)
+  stubs/
+    stub_compiler.py    fake compiler for stage 1
+    stub_vm.py          fake VM for stage 1
+```
+
+See `doc/repl-design.md` (forthcoming) for the protocol spec.

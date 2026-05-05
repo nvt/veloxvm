@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Wrapper script: prefers uv, falls back to a project-local venv.
+set -e
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$HERE"
+
+if command -v uv >/dev/null 2>&1; then
+    exec uv run --quiet velox-repl "$@"
+fi
+
+if [ ! -d .venv ]; then
+    echo "Setting up venv at $HERE/.venv ..." >&2
+    python3 -m venv .venv
+    .venv/bin/pip install --quiet -e .
+fi
+
+exec .venv/bin/python -m velox_repl "$@"
