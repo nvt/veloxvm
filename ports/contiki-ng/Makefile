@@ -4,6 +4,8 @@ ifndef TARGET
 TARGET = zoul
 endif
 
+CONTIKI = ../../../contiki-ng
+
 MODULES += os/net/app-layer/coap
 MODULES += os/services/lwm2m
 MODULES += os/services/resolv
@@ -22,7 +24,30 @@ REPO_ROOT = ../..
 VM_APP_BYTECODE = $(REPO_ROOT)/apps/$(VM_APP_DIR)bin/$(VM_APP_NAME).vm
 CREATE_RAM_MODULE = $(REPO_ROOT)/tools/create-ram-module
 
+# VM_REPL=1 builds an interactive REPL firmware: no baked-in app
+# image, the device exposes /repl/cmd and /repl/events CoAP resources,
+# and the host-side velox-repl drives the VM over CoAP.
+ifeq ($(VM_REPL),1)
+all: vm
+CFLAGS += -DVM_REPL_ENABLE
+PROJECTDIRS_REPL = ../../core/repl repl
+PROJECT_SOURCEFILES_REPL = ${notdir ${wildcard ../../core/repl/*.c repl/*.c}}
+# On embedded targets the device's only viable path to the host-side
+# driver is SLIP over the USB CDC interface. The rpl-border-router
+# embedded module pulls in slip-bridge.c (which initialises the SLIP
+# fallback interface and negotiates the IPv6 prefix with tunslip6).
+# The native target reaches the host through its own tun/tap, so we
+# skip it there.
+ifneq ($(TARGET),native)
+include $(CONTIKI)/Makefile.dir-variables
+MODULES += $(CONTIKI_NG_SERVICES_DIR)/rpl-border-router
+endif
+else
 all: $(VM_APP_IMAGE) vm
+CFLAGS += -DVM_BUNDLE
+PROJECTDIRS_REPL =
+PROJECT_SOURCEFILES_REPL =
+endif
 
 # Regenerate the RAM-resident image whenever the underlying bytecode (or
 # the embedding tool) changes. compile.sh handles the source-to-bytecode
@@ -56,10 +81,11 @@ FORCE:
 CUSTOM_POLICY_FILE = ../../core/policies/vm-policy-defs-custom.c
 DEFAULT_POLICY_FILE = ../../core/policies/vm-policy-defs-default.c
 
-CFLAGS += -DVM_BUNDLE -I../../include -DVM_PORT=$(VM_PORT) -DPROJECT_CONF_H=\"project-conf.h\"
+CFLAGS += -I../../include -DVM_PORT=$(VM_PORT) -DPROJECT_CONF_H=\"project-conf.h\"
 
-PROJECTDIRS = ../../control ../../core ../../core/policies lib
+PROJECTDIRS = ../../control ../../core ../../core/policies lib $(PROJECTDIRS_REPL)
 PROJECT_SOURCEFILES = ${filter-out vm.c,${notdir ${wildcard ../../core/*.c ../../control/*.c *.c lib/*.c}}}
+PROJECT_SOURCEFILES += $(PROJECT_SOURCEFILES_REPL)
 
 ifeq ($(wildcard $(CUSTOM_POLICY_FILE)),)
 	PROJECT_SOURCEFILES += ${notdir ${wildcard $(DEFAULT_POLICY_FILE)}}
@@ -69,14 +95,9 @@ endif
 
 NEEDS_CONTIKI_VERSION_FILES += vm-native.c
 
-CONTIKI = ../../../contiki-ng
 include $(CONTIKI)/Makefile.include
 
-$(CONTIKI)/tools/tunslip6:	$(CONTIKI)/tools/tunslip6.c
-	(cd $(CONTIKI)/tools && $(MAKE) tunslip6)
-
-connect-router:	$(CONTIKI)/tools/tunslip6
-	sudo $(CONTIKI)/tools/tunslip6 $(PREFIX)
-
-connect-router-cooja:	$(CONTIKI)/tools/tunslip6
-	sudo $(CONTIKI)/tools/tunslip6 -a 127.0.0.1 $(PREFIX)
+# When VM_REPL=1 on an embedded target, the rpl-border-router/embedded
+# module provides connect-router / connect-router-cooja targets that
+# wire up tunslip6 with the right paths. We deliberately don't supply
+# our own here so as not to override them with stale paths.

@@ -39,6 +39,23 @@
 #include "vm-log.h"
 #include "vm-native.h"
 
+#ifdef VM_REPL_ENABLE
+#include "vm-repl.h"
+void vm_repl_coap_init(vm_program_t *program);
+
+#if !CONTIKI_TARGET_NATIVE
+/* On embedded targets the rpl-border-router/embedded module sets up
+   the SLIP fallback interface so the host's tunslip6 can reach the
+   device's IPv6 stack over /dev/ttyACM0 (or whichever UART/CDC the
+   board exposes). The border-router process auto-requests an IPv6
+   prefix from tunslip6 on startup. */
+PROCESS_NAME(border_router_process);
+#define VM_REPL_BR_AUTOSTART &border_router_process,
+#else
+#define VM_REPL_BR_AUTOSTART
+#endif
+#endif
+
 extern vm_lib_t vm_lib_leds;
 extern vm_lib_t vm_lib_radio;
 extern vm_lib_t vm_lib_rpl;
@@ -48,13 +65,22 @@ extern vm_lib_t vm_lib_sensors;
 void vm_shell_init(void);
 
 PROCESS(vm_process, VM_NAME);
+#ifdef VM_REPL_ENABLE
+AUTOSTART_PROCESSES(VM_REPL_BR_AUTOSTART &vm_process);
+#else
 AUTOSTART_PROCESSES(&vm_process);
+#endif
 
+#ifndef VM_REPL_ENABLE
 extern const char vm_program_name[];
+#endif
 
 PROCESS_THREAD(vm_process, ev, data)
 {
   vm_result_t result;
+#ifdef VM_REPL_ENABLE
+  static vm_program_t *repl_program;
+#endif
 
   PROCESS_BEGIN();
 
@@ -75,11 +101,24 @@ PROCESS_THREAD(vm_process, ev, data)
   serial_shell_init();
   vm_shell_init();
 
+#ifdef VM_REPL_ENABLE
+  /* Create the REPL program once and hand it to the CoAP frontend.
+     vm_repl_coap_init registers the resources and installs the
+     console-writer hook so application output flows through IO_OUT
+     notifications. */
+  repl_program = vm_repl_program_create("repl", NULL);
+  if(repl_program == NULL) {
+    VM_DEBUG(VM_DEBUG_LOW, "Unable to create the REPL program");
+    PROCESS_EXIT();
+  }
+  vm_repl_coap_init(repl_program);
+#else
   if(vm_program_name[0] != '\0') {
     if(vm_load_program(vm_program_name) == 0) {
       VM_DEBUG(VM_DEBUG_LOW, "Failed to autoload %s", vm_program_name);
     }
   }
+#endif
 
   while(1) {
     if(vm_get_programs() == NULL) {

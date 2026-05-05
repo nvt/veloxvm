@@ -162,6 +162,12 @@ typedef struct vm_error {
   vm_obj_t error_obj;
   vm_ip_t error_ip;
   vm_error_type_t error_type;
+#ifdef VM_REPL_ENABLE
+  /* Set after the scheduler prints an error on a parked-after-error
+     REPL main thread, so subsequent vm_run iterations don't reprint
+     the same message until vm_repl_collect resets the thread. */
+  uint8_t repl_error_printed;
+#endif
 #if VM_DEBUG_LEVEL >= VM_DEBUG_MEDIUM
   const char *file;
   unsigned line;
@@ -179,6 +185,12 @@ typedef struct vm_thread {
   vm_thread_status_t status;
   vm_id_t id;
   uint8_t exprc;
+#ifdef VM_REPL_ENABLE
+  /* When set, the scheduler parks this thread (instead of destroying
+     it) once its top frame's bytecode runs out. Set only on the
+     program's REPL main thread. */
+  uint8_t repl_main;
+#endif
 } vm_thread_t;
 
 typedef struct vm_port_io {
@@ -216,6 +228,9 @@ int vm_load_program(const char *);
 int vm_unload_program(vm_program_t *);
 vm_program_t *vm_find_program(const char *);
 vm_program_t *vm_get_programs(void);
+#ifdef VM_REPL_ENABLE
+int vm_loader_register_program(vm_program_t *);
+#endif
 
 /* Main functions. (vm-main.c) */
 void vm_print_error(vm_thread_t *);
@@ -318,6 +333,11 @@ void vm_port_register(vm_port_t *port);
 int vm_thread_init(void);
 void thread_obj_create(vm_obj_t *, vm_thread_t *);
 vm_thread_t *vm_thread_create(vm_program_t *);
+#ifdef VM_REPL_ENABLE
+/* Create a parked thread on the program with no entry expression
+   bound; intended as the REPL main thread. */
+vm_thread_t *vm_thread_create_parked(vm_program_t *);
+#endif
 void vm_thread_destroy(vm_thread_t *);
 vm_thread_t *vm_thread_spawn(vm_thread_t *, vm_obj_t *);
 vm_thread_t *vm_thread_fork(vm_thread_t *);

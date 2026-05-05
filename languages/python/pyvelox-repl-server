@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""
+PyVelox Compiler REPL Server
+
+Long-running compiler service for the VeloxVM REPL. Speaks the
+s-expression line protocol from doc/repl-design.md on stdin/stdout
+and emits incremental bytecode deltas (magic 0x5E 0xB6).
+
+Started by tools/repl/velox-repl when --language python is selected.
+"""
+
+import sys
+from pathlib import Path
+
+# Add this directory to path for importing pyvelox (mirrors pyvelox-compile).
+sys.path.insert(0, str(Path(__file__).parent))
+
+from pyvelox.repl_service import main
+
+if __name__ == '__main__':
+    sys.exit(main())

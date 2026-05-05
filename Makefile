@@ -51,6 +51,20 @@ VM_CONTROL_OBJECTS = ${patsubst $(VM_CONTROL_DIR)/%.c,$(VM_OBJ_DIR)/%.o,$(VM_CON
 VM_PORT_FILES = ${wildcard $(VM_PORT_DIR)/*.c}
 VM_PORT_OBJECTS = ${patsubst $(VM_PORT_DIR)/%.c,$(VM_OBJ_DIR)/%.o,$(VM_PORT_FILES)}
 
+# REPL service files. Built only into bin/vm-repl, not into bin/vm.
+# Embedded ports leave VM_REPL_ENABLE undefined and never compile any
+# of these.
+VM_REPL_CORE_DIR = core/repl
+VM_REPL_PORT_DIR = $(VM_PORT_DIR)/repl
+VM_REPL_CORE_FILES = ${wildcard $(VM_REPL_CORE_DIR)/*.c}
+VM_REPL_PORT_FILES = ${wildcard $(VM_REPL_PORT_DIR)/*.c}
+VM_REPL_CORE_OBJECTS = ${patsubst $(VM_REPL_CORE_DIR)/%.c,$(VM_OBJ_DIR)/repl-%.o,$(VM_REPL_CORE_FILES)}
+VM_REPL_PORT_OBJECTS = ${patsubst $(VM_REPL_PORT_DIR)/%.c,$(VM_OBJ_DIR)/repl-port-%.o,$(VM_REPL_PORT_FILES)}
+# bin/vm uses ports/$(VM_PORT)/vm.c for main; bin/vm-repl substitutes
+# its own main from ports/$(VM_PORT)/repl/vm-repl-main.c, so exclude
+# vm.o from the REPL link.
+VM_PORT_OBJECTS_NO_MAIN = ${filter-out $(VM_OBJ_DIR)/vm.o,$(VM_PORT_OBJECTS)}
+
 CFLAGS += -Wall -g -DVM_PORT=$(VM_PORT)
 CFLAGS += -I$(VM_INCLUDE_DIR) -I$(VM_PORT_DIR)
 CFLAGS += $(VM_PORT_CFLAGS)
@@ -72,6 +86,12 @@ $(VM_CONTROL_OBJECTS): $(VM_OBJ_DIR)/%.o: $(VM_CONTROL_DIR)/%.c
 $(VM_PORT_OBJECTS): $(VM_OBJ_DIR)/%.o: $(VM_PORT_DIR)/%.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
 
+$(VM_REPL_CORE_OBJECTS): $(VM_OBJ_DIR)/repl-%.o: $(VM_REPL_CORE_DIR)/%.c
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
+
+$(VM_REPL_PORT_OBJECTS): $(VM_OBJ_DIR)/repl-port-%.o: $(VM_REPL_PORT_DIR)/%.c
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
+
 $(VM_BIN_DIR):
 	@mkdir -p $(VM_BIN_DIR)
 
@@ -83,6 +103,15 @@ vm: $(VM_BIN_DIR) $(VM_OBJ_DIR) $(VM_CORE_OBJECTS) \
 	$(CC) $(CFLAGS) -o $(VM_BIN_DIR)/$(VM_EXECUTABLE_FILE) \
 		$(VM_CORE_OBJECTS) $(VM_POLICY_OBJECTS) \
 		$(VM_CONTROL_OBJECTS) $(VM_PORT_OBJECTS) \
+		$(VM_LIB_DIRS) $(VM_LIBS)
+
+vm-repl: $(VM_BIN_DIR) $(VM_OBJ_DIR) $(VM_CORE_OBJECTS) \
+    $(VM_POLICY_OBJECTS) $(VM_CONTROL_OBJECTS) $(VM_PORT_OBJECTS_NO_MAIN) \
+    $(VM_REPL_CORE_OBJECTS) $(VM_REPL_PORT_OBJECTS)
+	$(CC) $(CFLAGS) -o $(VM_BIN_DIR)/vm-repl \
+		$(VM_CORE_OBJECTS) $(VM_POLICY_OBJECTS) \
+		$(VM_CONTROL_OBJECTS) $(VM_PORT_OBJECTS_NO_MAIN) \
+		$(VM_REPL_CORE_OBJECTS) $(VM_REPL_PORT_OBJECTS) \
 		$(VM_LIB_DIRS) $(VM_LIBS)
 
 docker:

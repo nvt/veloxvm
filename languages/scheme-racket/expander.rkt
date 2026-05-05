@@ -11,6 +11,8 @@
          expand-macros
          process-define-syntax
          reset-macro-table!
+         snapshot-macro-state    ; for REPL session rollback on failed compile
+         restore-macro-state!
          macro-table  ; Export for testing (legacy, now a function)
          *FILTERED*   ; Sentinel value for filtering out define-syntax
          ;; New scope management functions (for let-syntax/letrec-syntax)
@@ -287,6 +289,15 @@
 ;; Reset the macro system to single global scope (useful for testing)
 (define (reset-macro-table!)
   (set! macro-scopes (list (make-hash))))
+
+;; Snapshot macro state for the REPL session so a failed compile can be
+;; rolled back without leaking partially-installed scopes or transformers.
+;; Returned value is opaque to callers.
+(define (snapshot-macro-state)
+  (map hash-copy macro-scopes))
+
+(define (restore-macro-state! snap)
+  (set! macro-scopes snap))
 
 ;; Legacy accessor for testing compatibility
 (define (macro-table)

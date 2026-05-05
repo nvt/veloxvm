@@ -419,9 +419,27 @@ restart:
       expr->eval_completed &= ~(1U << 0);
     }
   } else if(expr->ip == expr->end) {
-    /* We have executed the last instruction of the top-level expr; the program
-       is therefore finished. */
+    /* We have executed the last instruction of the top-level expr.
+       For an ordinary thread this means it is finished and will be
+       destroyed; for the REPL main thread we park instead so the
+       next REPL turn can redirect it to the next entry expression.
+       This always wins over a WAITING status set during the just-
+       evaluated form (e.g. by vm_native_sleep) -- the form has
+       consumed all its bytecode and won't run again. The
+       corresponding wake-up paths in vm_native (POSIX
+       process_timers, Contiki-NG thread_timer_expired) only flip
+       a thread back to RUNNABLE when it is still WAITING; a thread
+       already parked here stays parked and ignores its stale
+       timer. */
+#ifdef VM_REPL_ENABLE
+    if(thread->repl_main) {
+      thread->status = VM_THREAD_PARKED;
+    } else {
+      thread->status = VM_THREAD_FINISHED;
+    }
+#else
     thread->status = VM_THREAD_FINISHED;
+#endif
   } else {
     /* Prepare execution of the next expression in the top-level expr. */
     expr->flags = 0;
@@ -511,6 +529,27 @@ vm_run(void)
       }
       break;
     case VM_THREAD_ERROR:
+#ifdef VM_REPL_ENABLE
+      if(thread->repl_main) {
+        /* The REPL main thread must survive runtime errors so the
+           driver can collect the error and the next turn can redirect
+           the thread to a new entry expression. The scheduler leaves
+           it in ERROR state; vm_repl_collect surfaces the error and
+           transitions it back to PARKED with a clean frame stack.
+
+           Print the error once on the first scheduler tick after the
+           transition, then suppress further prints -- vm_run may be
+           called many times before the polling process gets around to
+           collecting, and we don't want the console flooded with the
+           same message. The "printed" mark is bit 1 of the error_type
+           upper byte; cleared by reset_main_thread_to_parked. */
+        if(!thread->error.repl_error_printed) {
+          vm_print_error(thread);
+          thread->error.repl_error_printed = 1;
+        }
+        break;
+      }
+#endif
       vm_print_error(thread);
       vm_thread_destroy(thread);
       if(program->nthreads == 0) {
@@ -526,6 +565,14 @@ vm_run(void)
         vm_unload_program(program);
       }
       break;
+#ifdef VM_REPL_ENABLE
+    case VM_THREAD_PARKED:
+      /* Wait for the next vm_repl_run to redirect this thread to a
+         new entry expression. Don't promote VM_RESULT_FINISHED to
+         VM_RESULT_RUNNING/SLEEPING -- the parked thread isn't doing
+         work, so the caller can return from vm_run as usual. */
+      break;
+#endif
     default:
       break;
     }
