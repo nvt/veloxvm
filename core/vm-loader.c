@@ -82,20 +82,28 @@ free_program(vm_program_t *program)
       unsigned i;
       for(i = 0; i < program->captures_size; i++) {
         if(program->captures[i] != NULL) {
+          /* cap and cap->symbols come from vm_alloc, so vm_free is
+             correct: it removes the tracked entry from the hash. */
           vm_free(program->captures[i]->symbols);
           vm_free(program->captures[i]);
         }
       }
-      vm_free(program->captures);
+      /* The captures array itself is VM_MALLOC'd (in read_program and
+         in the REPL append-loader's grow_captures), not vm_alloc'd, so
+         it must be released via VM_FREE. Calling vm_free on a
+         VM_MALLOC pointer would corrupt the allocations hash table's
+         items counter, eventually making it report "full" when it
+         isn't. Same applies to program->name and program below. */
+      VM_FREE(program->captures);
       program->captures = NULL;
       program->captures_size = 0;
     }
 
     VM_FREE(program->symbol_bindings);
 
-    vm_free(program->name);
+    VM_FREE(program->name);
     program->name = NULL;
-    vm_free(program);
+    VM_FREE(program);
 }
 
 static int
