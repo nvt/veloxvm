@@ -798,14 +798,14 @@ vm_native_open_file(vm_thread_t *thread, const char *filename, int direction)
 }
 
 int
-vm_native_read(vm_port_t *port, vm_obj_t *obj)
+vm_native_read(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
 {
   char buf[8192]; /* Temporary test buffer. */
   ssize_t len;
   vm_vector_t *vector;
 
   if(port->io == NULL || port->io->read == NULL) {
-    vm_signal_error(port->thread, VM_ERROR_IO);
+    vm_signal_error(thread, VM_ERROR_IO);
     return 0;
   }
 
@@ -814,8 +814,8 @@ vm_native_read(vm_port_t *port, vm_obj_t *obj)
 
     len = port->io->read(port, buf, sizeof(buf));
     if(len < 0) {
-      vm_signal_error(port->thread, VM_ERROR_IO);
-      vm_set_error_string(port->thread, strerror(errno));
+      vm_signal_error(thread, VM_ERROR_IO);
+      vm_set_error_string(thread, strerror(errno));
       return 0;
     } else if(len == 0) {
       return 0;
@@ -823,14 +823,14 @@ vm_native_read(vm_port_t *port, vm_obj_t *obj)
 
     vector = vm_vector_create(obj, len, VM_VECTOR_FLAG_BUFFER) ;
     if(vector == NULL) {
-      vm_signal_error(port->thread, VM_ERROR_HEAP);
+      vm_signal_error(thread, VM_ERROR_HEAP);
       return 0;
     }
 
     memcpy(vector->bytes, buf, len);
     return 1;
   } else {
-    if(vm_posix_poll_port(port->thread, port->fd, 0) == 0) {
+    if(vm_posix_poll_port(thread, port->fd, 0) == 0) {
       VM_DEBUG(VM_DEBUG_MEDIUM, "native: failed to poll fd %d", port->fd);
       return 0;
     }
@@ -841,7 +841,7 @@ vm_native_read(vm_port_t *port, vm_obj_t *obj)
 }
 
 int
-vm_native_read_char(vm_port_t *port, vm_character_t *c)
+vm_native_read_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
 {
   char buf[1];
   int r;
@@ -853,7 +853,7 @@ vm_native_read_char(vm_port_t *port, vm_character_t *c)
   }
 
   if(port->io == NULL || port->io->read == NULL) {
-    vm_signal_error(port->thread, VM_ERROR_IO);
+    vm_signal_error(thread, VM_ERROR_IO);
     return 0;
   }
 
@@ -861,8 +861,8 @@ vm_native_read_char(vm_port_t *port, vm_character_t *c)
     VM_CLEAR_FLAG(ready_port_set[port->fd], ~POLLIN);
     r = port->io->read(port, buf, 1);
     if(r < 0) {
-      vm_signal_error(port->thread, VM_ERROR_IO);
-      vm_set_error_string(port->thread, strerror(errno));
+      vm_signal_error(thread, VM_ERROR_IO);
+      vm_set_error_string(thread, strerror(errno));
       return 0;
     } else if(r == 0) {
       return 0;
@@ -872,7 +872,7 @@ vm_native_read_char(vm_port_t *port, vm_character_t *c)
     return 1;
   }
 
-  if(vm_posix_poll_port(port->thread, port->fd, 0) == 0) {
+  if(vm_posix_poll_port(thread, port->fd, 0) == 0) {
     VM_DEBUG(VM_DEBUG_MEDIUM, "native: failed to poll fd %d", port->fd);
     return 0;
   }
@@ -881,13 +881,13 @@ vm_native_read_char(vm_port_t *port, vm_character_t *c)
 }
 
 int
-vm_native_peek_char(vm_port_t *port, vm_character_t *c)
+vm_native_peek_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
 {
   if(port->has_peek) {
     *c = port->peek_char;
     return 1;
   }
-  if(vm_native_read_char(port, c) != 1) {
+  if(vm_native_read_char(thread, port, c) != 1) {
     return 0;
   }
   port->peek_char = *c;

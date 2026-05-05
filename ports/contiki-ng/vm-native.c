@@ -1129,7 +1129,7 @@ vm_native_open_file(vm_thread_t *thread, const char *filename, int direction)
 }
 
 int
-vm_native_read(vm_port_t *port, vm_obj_t *obj)
+vm_native_read(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
 {
   int r;
 
@@ -1141,8 +1141,8 @@ vm_native_read(vm_port_t *port, vm_obj_t *obj)
 
   if(r < 1) {
     if(r < 0) {
-      vm_signal_error(port->thread, VM_ERROR_IO);
-      vm_set_error_string(port->thread, "port read failed");
+      vm_signal_error(thread, VM_ERROR_IO);
+      vm_set_error_string(thread, "port read failed");
     }
     return 0;
   }
@@ -1151,7 +1151,7 @@ vm_native_read(vm_port_t *port, vm_obj_t *obj)
 }
 
 int
-vm_native_read_char(vm_port_t *port, vm_character_t *c)
+vm_native_read_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
 {
   char buf[1];
   int r;
@@ -1170,8 +1170,8 @@ vm_native_read_char(vm_port_t *port, vm_character_t *c)
 
   if(r < 1) {
     if(r < 0) {
-      vm_signal_error(port->thread, VM_ERROR_IO);
-      vm_set_error_string(port->thread, "port read failed");
+      vm_signal_error(thread, VM_ERROR_IO);
+      vm_set_error_string(thread, "port read failed");
     }
     return 0;
   }
@@ -1181,13 +1181,13 @@ vm_native_read_char(vm_port_t *port, vm_character_t *c)
 }
 
 int
-vm_native_peek_char(vm_port_t *port, vm_character_t *c)
+vm_native_peek_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
 {
   if(port->has_peek) {
     *c = port->peek_char;
     return 1;
   }
-  if(vm_native_read_char(port, c) != 1) {
+  if(vm_native_read_char(thread, port, c) != 1) {
     return 0;
   }
   port->peek_char = *c;

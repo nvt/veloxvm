@@ -165,10 +165,7 @@ VM_FUNCTION(read_char)
     return;
   }
 
-  /* Temporarily assign the default input port to this thread. */
-  port->thread = thread;
-
-  if(vm_native_read_char(port, &c) == 1) {
+  if(vm_native_read_char(thread, port, &c) == 1) {
     VM_PUSH_CHARACTER(c);
     VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
   } else if(thread->status == VM_THREAD_WAITING) {
@@ -185,10 +182,7 @@ VM_FUNCTION(read)
     return;
   }
 
-  /* Temporarily assign the default input port to this thread. */
-  port->thread = thread;
-
-  if(vm_native_read(port, &thread->result) == 0) {
+  if(vm_native_read(thread, port, &thread->result) == 0) {
     VM_PUSH_CHARACTER('\0');
   }
 
@@ -209,9 +203,7 @@ VM_FUNCTION(peek_char)
     return;
   }
 
-  port->thread = thread;
-
-  if(vm_native_peek_char(port, &c) == 1) {
+  if(vm_native_peek_char(thread, port, &c) == 1) {
     VM_PUSH_CHARACTER(c);
     VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
   } else if(thread->status == VM_THREAD_WAITING) {
