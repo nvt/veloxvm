@@ -92,11 +92,16 @@
 #define VM_REPL_BUILD_TAG __DATE__ " " __TIME__
 #endif
 
-/* Maximum payload bytes per outbound async frame. CoAP block-wise
-   transfer would let us exceed this, but for a constrained device
-   keeping each notification fit in a single datagram is simpler and
-   matches what most observers can comfortably consume. */
-#define EVENT_PAYLOAD_MAX 96
+/* Maximum payload bytes per outbound async frame. Sized so that one
+   frame plus its 3-byte header fits within COAP_MAX_CHUNK_SIZE,
+   which is what the CoAP layer can transmit in a single datagram.
+   Anything larger needs block-wise transfer (RFC 7959), which the
+   resource handler doesn't honor yet. EVENT_PAYLOAD_MAX dictates
+   the largest single RESULT/IO_OUT/INFO_REPLY body the driver can
+   receive intact; results bigger than this are emitted as
+   VM_TYPE_NONE so the turn still terminates cleanly with a clear
+   indication that data was lost. */
+#define EVENT_PAYLOAD_MAX (COAP_MAX_CHUNK_SIZE - 3)
 
 /* Depth of the outbound event queue. IO_OUT bursts during evaluation
    are the most common producer; a small ring covers the typical case.
@@ -121,6 +126,8 @@ static vm_program_t *repl_program;
 /* Set between the start of a RUN turn and the next park; tells the
    poll loop to call vm_repl_collect each tick. */
 static int turn_in_flight;
+
+static unsigned poll_ticks_without_progress;
 
 /* Scratch buffer for INFO_REPLY / RESULT serialization. Sized to fit
    the largest response payload comfortably; smaller ones reuse the
@@ -405,6 +412,7 @@ cmd_post_handler(coap_message_t *request, coap_message_t *response,
       return;
     }
     turn_in_flight = 1;
+    poll_ticks_without_progress = 0;
     /* Immediate sync ACK; RESULT/ERROR will arrive via observe once
        the main thread parks. */
     send_response_ack(response, buffer, preferred_size, entry_id);
@@ -462,12 +470,18 @@ events_get_handler(coap_message_t *request, coap_message_t *response,
 
   /* CoAP observe is a lossy stream: rapid updated_state calls collapse
      into one notification, so we pack as many queued frames as fit
-     into each response. The driver parses multiple frames per body. */
+     into each response. The driver parses multiple frames per body.
+     Always pack at least one frame even if it's larger than
+     preferred_size (which is just a chunking hint -- the CoAP layer
+     handles block-wise transfer when needed). Stopping at
+     preferred_size with nothing emitted would deadlock the
+     observation: the driver never sees the frame and we keep
+     re-notifying with empty bodies forever. */
   while(eq_count > 0) {
     pending_frame_t *f = &event_queue[eq_head];
     size_t need = 3 + f->len;
-    if(pos + need > preferred_size) {
-      break;  /* defer the rest to the next notification */
+    if(pos > 0 && pos + need > preferred_size) {
+      break;  /* already have at least one frame; defer the rest */
     }
     buffer[pos++] = f->type;
     buffer[pos++] = (uint8_t)((f->len >> 8) & 0xFF);
@@ -492,6 +506,19 @@ events_get_handler(coap_message_t *request, coap_message_t *response,
 /* Polling: detect main thread park, emit RESULT/ERROR                */
 /* ------------------------------------------------------------------ */
 
+static vm_thread_t *
+peek_main_thread(vm_program_t *program)
+{
+  unsigned i;
+  for(i = 0; i < VM_THREAD_AMOUNT; i++) {
+    vm_thread_t *t = vm_thread_get_by_index(i);
+    if(t != NULL && t->program == program && t->repl_main) {
+      return t;
+    }
+  }
+  return NULL;
+}
+
 static void
 emit_result(void)
 {
@@ -499,17 +526,54 @@ emit_result(void)
   vm_error_t error;
   int s = vm_repl_collect(repl_program, &result, &error);
   if(s == 0) {
-    return;  /* still running */
+    /* Still running. After many ticks without progress, send a STATUS
+       frame revealing the actual thread state so the driver isn't
+       guessing at a silent hang. */
+    poll_ticks_without_progress++;
+    if(poll_ticks_without_progress == 20) {
+      vm_thread_t *t = peek_main_thread(repl_program);
+      uint8_t buf[4];
+      buf[0] = 0;
+      buf[1] = 0;
+      buf[2] = (uint8_t)((t != NULL ? (unsigned)t->status : 0xFF) & 0xFF);
+      buf[3] = (uint8_t)((t != NULL ? t->exprc : 0) & 0xFF);
+      enqueue_event(FT_STATUS, buf, 4);
+    }
+    return;
   }
+  poll_ticks_without_progress = 0;
   turn_in_flight = 0;
   if(s == 1) {
     size_t n = vm_repl_encode_obj(repl_program, &result, scratch,
                                   sizeof(scratch));
-    if(n == 0) {
-      /* Result didn't fit; emit a NONE so the driver still gets a
-         terminal frame. */
-      scratch[0] = 0x01;
-      n = 1;
+    /* If the encoded result doesn't fit in one CoAP datagram, emit
+       an OPAQUE "result too large" descriptor instead of letting
+       enqueue_event silently truncate (which would yield an
+       undecodable frame on the driver side and look like a hang).
+       Block-wise transfer (RFC 7959) is the proper long-term fix
+       and is tracked separately; this gives the user actionable
+       feedback in the meantime. */
+    if(n == 0 || n > EVENT_PAYLOAD_MAX) {
+      char desc[80];
+      int desc_len;
+      if(n == 0) {
+        desc_len = snprintf(desc, sizeof(desc),
+                            "result encoder overflowed (max %u bytes)",
+                            (unsigned)sizeof(scratch));
+      } else {
+        desc_len = snprintf(desc, sizeof(desc),
+                            "result too large: %u bytes, max %u",
+                            (unsigned)n, (unsigned)EVENT_PAYLOAD_MAX);
+      }
+      if(desc_len < 0) desc_len = 0;
+      if(desc_len > (int)(sizeof(scratch) - 3)) {
+        desc_len = (int)(sizeof(scratch) - 3);
+      }
+      scratch[0] = 0xF0;  /* TAG_OPAQUE */
+      scratch[1] = (uint8_t)(((unsigned)desc_len >> 8) & 0xFF);
+      scratch[2] = (uint8_t)((unsigned)desc_len & 0xFF);
+      memcpy(scratch + 3, desc, desc_len);
+      n = 3 + desc_len;
     }
     enqueue_event(FT_RESULT, scratch, n);
   } else {

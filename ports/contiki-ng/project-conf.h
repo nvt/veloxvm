@@ -13,6 +13,18 @@
 #define UIP_CONF_TCP_CONNS 4
 #endif
 
+/* The REPL service emits RESULT/INFO_REPLY frames whose serialized
+   bodies routinely exceed Contiki-NG's default CoAP chunk size of
+   64 bytes (a (system-info) result alone is ~80 bytes; richer
+   results, more so). Bump the per-message chunk to 256 bytes for
+   REPL builds so single-frame notifications fit in one CoAP
+   datagram. Block-wise transfer would scale further but is more
+   intrusive on the resource handler; 256 is comfortably below
+   typical 6LoWPAN MTU after 1280-byte fragmentation. */
+#ifdef VM_REPL_ENABLE
+#define COAP_MAX_CHUNK_SIZE 256
+#endif
+
 #if CONTIKI_TARGET_ZOUL
 #undef LPM_CONF_MAX_PM
 #define LPM_CONF_MAX_PM 1
