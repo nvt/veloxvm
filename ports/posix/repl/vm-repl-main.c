@@ -46,6 +46,7 @@
 
 #include "vm.h"
 #include "vm-log.h"
+#include "vm-native.h"
 #include "vm-repl.h"
 
 /* Frame types -- keep in sync with the design doc and the Python
@@ -67,6 +68,28 @@
    and redirect stdout to stderr so VM_PRINTF (banner, debug, app
    `display`) doesn't corrupt the binary protocol stream. */
 static int frame_out_fd;
+
+static int send_frame(uint8_t type, const void *payload, size_t len);
+
+/* Console writer hook installed into vm-native. Wraps application
+   output bytes (from display/write/newline) into IO_OUT frames and
+   sends them on the protocol stream. */
+static int
+io_out_writer(const char *bytes, size_t len)
+{
+  size_t off = 0;
+  while(off < len) {
+    size_t chunk = len - off;
+    if(chunk > MAX_PAYLOAD) {
+      chunk = MAX_PAYLOAD;
+    }
+    if(!send_frame(FT_IO_OUT, bytes + off, chunk)) {
+      return -1;
+    }
+    off += chunk;
+  }
+  return (int)len;
+}
 
 static int
 read_exactly(int fd, void *buf, size_t n)
@@ -248,6 +271,11 @@ main(int argc, char *argv[])
     fprintf(stderr, "vm-repl: vm_init failed\n");
     return EXIT_FAILURE;
   }
+
+  /* Route application (display/write/newline/...) output through
+     IO_OUT frames so the driver can render it; internal VM_PRINTF
+     log output continues to flow to stderr unintercepted. */
+  vm_native_console_writer = io_out_writer;
 
   program = vm_repl_program_create("repl", NULL);
   if(program == NULL) {

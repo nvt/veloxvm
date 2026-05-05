@@ -46,14 +46,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     compiler = CompilerClient(compiler_cmd, name="compiler")
     vm = VmClient(vm_cmd, name="vm")
 
-    output_buffer: list[bytes] = []
+    # Track whether the application emitted IO_OUT during the current turn
+    # and whether the last byte was a newline. We use this to decide whether
+    # to insert a separator before printing the RESULT or the next prompt.
+    io_state = {"saw_output": False, "ended_with_newline": True}
 
     def io_sink(data: bytes) -> None:
         # Application output during a turn. Print straight to stdout; the
         # prompt is not on screen while we're inside ReplSession.evaluate.
-        sys.stdout.write(data.decode("utf-8", errors="replace"))
+        if not data:
+            return
+        text = data.decode("utf-8", errors="replace")
+        sys.stdout.write(text)
         sys.stdout.flush()
-        output_buffer.append(data)
+        io_state["saw_output"] = True
+        io_state["ended_with_newline"] = text.endswith("\n")
 
     repl = ReplSession(compiler, vm, io_sink=io_sink)
     try:
@@ -98,6 +105,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
             buffer += line + "\n"
 
+            io_state["saw_output"] = False
+            io_state["ended_with_newline"] = True
+
             outcome = repl.evaluate(buffer)
 
             if isinstance(outcome, EvalIncomplete):
@@ -106,6 +116,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
             buffer = ""
             prompt = primary
+
+            # If the form printed output but didn't end with a newline,
+            # add one so the next prompt or REPL message starts cleanly.
+            if io_state["saw_output"] and not io_state["ended_with_newline"]:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
 
             if isinstance(outcome, EvalSuccess):
                 _print_success(outcome, args.language)
@@ -152,6 +168,12 @@ def _print_success(outcome: EvalSuccess, language: str) -> None:
         return
     if outcome.kind == "stmt":
         # Statements yield no value (define-syntax, etc.)
+        return
+    # For expression forms, suppress unspecified results -- e.g. (display ...)
+    # or (set! ...) leave thread->result as VM_TYPE_NONE, and Scheme REPLs
+    # conventionally print nothing in that case. The application's IO_OUT
+    # already surfaced anything it wanted to show.
+    if outcome.obj_encoding[:1] == b"\x01":  # TAG_NONE
         return
     rendered = render_for(language, outcome.obj_encoding)
     print(rendered)

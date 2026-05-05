@@ -877,11 +877,21 @@ vm_native_char_readyp(vm_port_t *port)
   return poll_port_instantly(port->fd, 0);
 }
 
+#ifdef VM_REPL_ENABLE
+vm_console_writer_t vm_native_console_writer;
+#endif
+
 int
 vm_native_write(vm_port_t *port, const char *format, ...)
 {
   va_list args;
   int ret;
+#ifdef VM_REPL_ENABLE
+  /* Distinguish "application called display/write/etc. with this
+     port" from "VM_PRINTF passed NULL." The REPL frontend only wants
+     to intercept the former. */
+  vm_port_t *original_port = port;
+#endif
 
   if(port == NULL) {
     port = vm_native_default_port(NULL, VM_PORT_FLAG_OUTPUT);
@@ -889,9 +899,28 @@ vm_native_write(vm_port_t *port, const char *format, ...)
 
   va_start(args, format);
 
+#ifdef VM_REPL_ENABLE
+  if(vm_native_console_writer != NULL && original_port != NULL && port != NULL &&
+     VM_IS_SET(port->flags, VM_PORT_FLAG_CONSOLE | VM_PORT_FLAG_OUTPUT)) {
+    char buf[BUFSIZ];
+    int n = vsnprintf(buf, sizeof(buf), format, args);
+    va_end(args);
+    if(n < 0) {
+      ret = -1;
+    } else {
+      if((size_t)n > sizeof(buf)) {
+        n = sizeof(buf);
+      }
+      ret = vm_native_console_writer(buf, (size_t)n);
+    }
+  } else {
+    ret = vdprintf(port == NULL ? STDOUT_FILENO : port->fd, format, args);
+    va_end(args);
+  }
+#else
   ret = vdprintf(port == NULL ? STDOUT_FILENO : port->fd, format, args);
-
   va_end(args);
+#endif
 
   if(ret < 0) {
     vm_signal_error(port->thread, VM_ERROR_IO);
@@ -905,12 +934,24 @@ int
 vm_native_write_buffer(vm_port_t *port, const char *buf, size_t len)
 {
   int ret;
+#ifdef VM_REPL_ENABLE
+  vm_port_t *original_port = port;
+#endif
 
   if(port == NULL) {
     port = vm_native_default_port(NULL, VM_PORT_FLAG_OUTPUT);
   }
 
+#ifdef VM_REPL_ENABLE
+  if(vm_native_console_writer != NULL && original_port != NULL && port != NULL &&
+     VM_IS_SET(port->flags, VM_PORT_FLAG_CONSOLE | VM_PORT_FLAG_OUTPUT)) {
+    ret = vm_native_console_writer(buf, len);
+  } else {
+    ret = write(port->fd, buf, len);
+  }
+#else
   ret = write(port->fd, buf, len);
+#endif
 
   if(ret < (int)len) {
     vm_signal_error(port->thread, VM_ERROR_IO);

@@ -116,15 +116,13 @@
       `(write-char #\newline)
       `(write-char #\newline ,(cadr expr))))
 
-;; display: Rewrite to print (matches CL compiler for VM compatibility)
-;; The VM's display operator (ID 152) may be unimplemented or stub.
-;; The working CL compiler rewrites display->print, so we do the same.
-(define-rewriter (display expr)
-  `(print ,@(cdr expr)))
+;; No rewrite for display: it must reach the VM's display operator so
+;; output flows through the port machinery, which is how the REPL
+;; routes application output into IO_OUT frames.
 
 (define-rewriter (println expr)
   `(begin
-     (print ,@(cdr expr))
+     (display ,@(cdr expr))
      (newline)))
 
 ;; Composite car/cdr (all 28 combinations: c[ad]{2,4}r)

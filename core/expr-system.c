@@ -122,9 +122,15 @@ VM_FUNCTION(get_devices)
 VM_FUNCTION(print)
 {
   vm_integer_t i;
+  vm_port_t *port;
 
+  /* Route through the default output port so the REPL frontend can
+     see the bytes via vm_native_console_writer. Calling with NULL
+     would fall back to the same port internally but skip the IO_OUT
+     hook intentionally reserved for application I/O. */
+  port = vm_native_default_port(thread, VM_PORT_FLAG_OUTPUT);
   for(i = 0; i < argc; i++) {
-    vm_write_object(NULL, &argv[i]);
+    vm_write_object(port, &argv[i]);
   }
 }
 

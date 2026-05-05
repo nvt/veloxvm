@@ -57,6 +57,19 @@ int vm_native_read_char(vm_port_t *, vm_character_t *);
 int vm_native_peek_char(vm_port_t *, vm_character_t *);
 int vm_native_write(vm_port_t *, const char *, ...);
 int vm_native_write_buffer(vm_port_t *, const char *, size_t);
+
+#ifdef VM_REPL_ENABLE
+/* Optional hook invoked by vm_native_write / vm_native_write_buffer
+   when an explicit console output port was passed -- i.e., from
+   application-level (display ...) / (write ...) calls, not from the
+   internal VM_PRINTF logging path which passes NULL. The REPL
+   frontend uses this to package application output into IO_OUT
+   frames instead of writing it to a file descriptor. When NULL, the
+   default fd-write path is taken. */
+typedef int (*vm_console_writer_t)(const char *bytes, size_t len);
+extern vm_console_writer_t vm_native_console_writer;
+#endif
+
 vm_boolean_t vm_native_char_readyp(vm_port_t *);
 unsigned vm_native_calculate_power(const vm_program_t *);
 void vm_native_accounting_start(vm_thread_t *);
