@@ -61,7 +61,14 @@ typedef enum vm_thread_status {
   VM_THREAD_WAITING       = 1,
   VM_THREAD_ERROR         = 2,
   VM_THREAD_EXITING       = 3,
-  VM_THREAD_FINISHED      = 4
+  VM_THREAD_FINISHED      = 4,
+#ifdef VM_REPL_ENABLE
+  /* Top frame's bytecode exhausted but the thread is the REPL main
+     thread, so it is parked rather than destroyed. The next REPL
+     turn redirects ip/end to the next entry expression and marks
+     the thread RUNNABLE again. */
+  VM_THREAD_PARKED        = 5
+#endif
 } vm_thread_status_t;
 
 /* Various statistics for individual threads. */

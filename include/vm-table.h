@@ -41,6 +41,15 @@ typedef struct vm_table {
   uint8_t **items;
   uint16_t *item_lengths;
   unsigned item_count;
+#ifdef VM_REPL_ENABLE
+  /* Growable-table extensions. Items at index i < arena_item_count are
+     stored inside raw_table; items at i >= arena_item_count have their
+     own VM_MALLOC allocation and must be freed individually. The items
+     and item_lengths index arrays are reallocated geometrically up to
+     items_capacity entries. */
+  uint32_t arena_item_count;
+  uint32_t items_capacity;
+#endif
 } vm_table_t;
 
 #define VM_TABLE_MAX_BYTES  (255 * 256)
@@ -55,5 +64,14 @@ typedef struct vm_table {
 int vm_table_create(vm_table_t *, unsigned, uint32_t);
 void vm_table_destroy(vm_table_t *);
 int vm_table_set(vm_table_t *, unsigned, void *, unsigned);
+
+#ifdef VM_REPL_ENABLE
+/* Initialize an empty table that will grow via vm_table_append. */
+int vm_table_init_growable(vm_table_t *);
+
+/* Append one freestanding item; returns the index of the new item or
+   -1 on allocation failure. */
+int vm_table_append(vm_table_t *, const void *, unsigned);
+#endif
 
 #endif /* !VM_TABLE_H */

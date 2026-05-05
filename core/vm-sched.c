@@ -419,9 +419,19 @@ restart:
       expr->eval_completed &= ~(1U << 0);
     }
   } else if(expr->ip == expr->end) {
-    /* We have executed the last instruction of the top-level expr; the program
-       is therefore finished. */
+    /* We have executed the last instruction of the top-level expr.
+       For an ordinary thread this means it is finished and will be
+       destroyed; for the REPL main thread we park instead so the
+       next REPL turn can redirect it to the next entry expression. */
+#ifdef VM_REPL_ENABLE
+    if(thread->repl_main) {
+      thread->status = VM_THREAD_PARKED;
+    } else {
+      thread->status = VM_THREAD_FINISHED;
+    }
+#else
     thread->status = VM_THREAD_FINISHED;
+#endif
   } else {
     /* Prepare execution of the next expression in the top-level expr. */
     expr->flags = 0;
@@ -526,6 +536,14 @@ vm_run(void)
         vm_unload_program(program);
       }
       break;
+#ifdef VM_REPL_ENABLE
+    case VM_THREAD_PARKED:
+      /* Wait for the next vm_repl_run to redirect this thread to a
+         new entry expression. Don't promote VM_RESULT_FINISHED to
+         VM_RESULT_RUNNING/SLEEPING -- the parked thread isn't doing
+         work, so the caller can return from vm_run as usual. */
+      break;
+#endif
     default:
       break;
     }

@@ -349,6 +349,45 @@ vm_thread_create(vm_program_t *program)
   return thread;
 }
 
+#ifdef VM_REPL_ENABLE
+vm_thread_t *
+vm_thread_create_parked(vm_program_t *program)
+{
+  vm_thread_t *thread;
+  int index;
+
+  thread = VM_MALLOC(sizeof(*thread));
+  if(thread == NULL) {
+    return NULL;
+  }
+  memset(thread, 0, sizeof(vm_thread_t));
+
+  index = allocate_thread_id();
+  thread->id = vm_id_new(&thread_idg, index);
+  if(index < 0 || thread->id == VM_ID_INVALID) {
+    VM_FREE(thread);
+    return NULL;
+  }
+
+  thread->program = program;
+  thread->status = VM_THREAD_PARKED;
+  thread->error.error_obj.type = VM_TYPE_NONE;
+  thread->specific_obj.type = VM_TYPE_NONE;
+  thread->repl_main = 1;
+
+  /* Push a top frame but leave its ip/end unset; vm_repl_run will
+     initialize them on the first turn. */
+  vm_thread_stack_push(thread);
+  memset(thread->exprv[0], 0, sizeof(vm_expr_t));
+  thread->expr->ip = NULL;
+  thread->expr->end = NULL;
+
+  thread->program->nthreads++;
+  threads[index] = thread;
+  return thread;
+}
+#endif
+
 void
 vm_thread_destroy(vm_thread_t *thread)
 {

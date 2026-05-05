@@ -46,12 +46,9 @@
 
 (define (make-session)
   (define bc (make-bytecode))
-  ;; Reserve expression 0 as a no-op placeholder. The real REPL entry
-  ;; expressions start at index 1 and are appended one per turn.
-  (add-expr bc (expr-encoding 'atom (list)))
   (reset-macro-table!)
-  ;; Watermark "sent-exprs = 0" means "expression 0 has not been
-  ;; shipped to the VM yet"; the first delta will include it.
+  ;; All four watermarks start at zero; the first delta covers
+  ;; everything from index 0 in each table.
   (repl-session bc 0 0 0 0))
 
 ;; ============================================================================
@@ -150,7 +147,6 @@
 
 (define (do-reset session)
   (define bc (make-bytecode))
-  (add-expr bc (expr-encoding 'atom (list)))
   (reset-macro-table!)
   ;; In Racket we can't replace the immutable bytecode field, so update
   ;; the mutable fields in place instead.
@@ -229,15 +225,12 @@
        (define rewritten (map rewrite-expr expanded-list))
        (define finalized (map finalize-guard rewritten))
        (define optimized (map optimize-expr finalized))
-       ;; For kind=expr, wrap the outermost form in (write <form>) so that
-       ;; the VM emits the value as an IO_OUT byte stream the driver can
-       ;; render. Defines and statements are emitted verbatim.
-       (define to-compile
-         (cond
-           [(and (eq? kind 'expr) (= (length optimized) 1))
-            (list `(write ,(car optimized)))]
-           [else optimized]))
-       (define-values (entry-id _) (compile-forms-as-entry bc to-compile))
+       ;; Emit the form verbatim. The VM evaluates it and leaves the
+       ;; resulting value in thread->result; vm_repl_run serializes
+       ;; that value into the RESULT frame for the driver to render.
+       ;; Application-level (display / write ...) calls go through
+       ;; IO_OUT independently.
+       (define-values (entry-id _) (compile-forms-as-entry bc optimized))
        (values entry-id kind)]))
 
   ;; Emit delta covering everything new since last call.

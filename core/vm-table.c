@@ -34,7 +34,9 @@
 #include "vm-log.h"
 #include "vm-table.h"
 
+#include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 int
 vm_table_create(vm_table_t *table, unsigned item_count, uint32_t table_size)
@@ -44,6 +46,11 @@ vm_table_create(vm_table_t *table, unsigned item_count, uint32_t table_size)
              (unsigned long)table_size);
     return 0;
   }
+
+#ifdef VM_REPL_ENABLE
+  table->arena_item_count = item_count;
+  table->items_capacity = item_count;
+#endif
 
   if(item_count == 0) {
     /* We allow empty tables to be created. */
@@ -84,7 +91,23 @@ vm_table_create(vm_table_t *table, unsigned item_count, uint32_t table_size)
 void
 vm_table_destroy(vm_table_t *table)
 {
-  if(table->item_count > 0) {
+#ifdef VM_REPL_ENABLE
+  /* Free items appended outside the arena. arena_item_count equals
+     item_count for tables that never grew, so this loop is a no-op
+     in that case. */
+  if(table->items != NULL) {
+    unsigned i;
+    for(i = table->arena_item_count; i < table->item_count; i++) {
+      VM_FREE(table->items[i]);
+    }
+  }
+#endif
+
+  if(table->item_count > 0
+#ifdef VM_REPL_ENABLE
+     || table->items_capacity > 0
+#endif
+     ) {
     VM_FREE(table->raw_table);
     VM_FREE(table->items);
     VM_FREE(table->item_lengths);
@@ -108,3 +131,89 @@ vm_table_set(vm_table_t *table, unsigned index, void *ptr, unsigned item_length)
 
   return 1;
 }
+
+#ifdef VM_REPL_ENABLE
+
+int
+vm_table_init_growable(vm_table_t *table)
+{
+  table->raw_table = NULL;
+  table->size = 0;
+  table->available_size = 0;
+  table->next_free = NULL;
+  table->items = NULL;
+  table->item_lengths = NULL;
+  table->item_count = 0;
+  table->arena_item_count = 0;
+  table->items_capacity = 0;
+  return 1;
+}
+
+static int
+grow_index_arrays(vm_table_t *table, unsigned needed)
+{
+  unsigned new_cap;
+  uint8_t **new_items;
+  uint16_t *new_lengths;
+
+  if(needed <= table->items_capacity) {
+    return 1;
+  }
+
+  new_cap = table->items_capacity == 0 ? 8 : table->items_capacity;
+  while(new_cap < needed) {
+    if(new_cap > UINT32_MAX / 2) {
+      return 0;
+    }
+    new_cap *= 2;
+  }
+
+  new_items = VM_REALLOC(table->items, sizeof(*new_items) * new_cap);
+  if(new_items == NULL) {
+    return 0;
+  }
+  table->items = new_items;
+
+  new_lengths = VM_REALLOC(table->item_lengths,
+                           sizeof(*new_lengths) * new_cap);
+  if(new_lengths == NULL) {
+    return 0;
+  }
+  table->item_lengths = new_lengths;
+
+  table->items_capacity = new_cap;
+  return 1;
+}
+
+int
+vm_table_append(vm_table_t *table, const void *bytes, unsigned len)
+{
+  uint8_t *copy;
+  unsigned index;
+
+  if(len > UINT16_MAX) {
+    VM_DEBUG(VM_DEBUG_LOW, "vm_table_append: item too large (%u)", len);
+    return -1;
+  }
+
+  if(grow_index_arrays(table, table->item_count + 1) == 0) {
+    return -1;
+  }
+
+  copy = VM_MALLOC(len + 1);
+  if(copy == NULL) {
+    return -1;
+  }
+  if(len > 0) {
+    memcpy(copy, bytes, len);
+  }
+  copy[len] = '\0';
+
+  index = table->item_count;
+  table->items[index] = copy;
+  table->item_lengths[index] = (uint16_t)len;
+  table->item_count = index + 1;
+  return (int)index;
+}
+
+#endif /* VM_REPL_ENABLE */

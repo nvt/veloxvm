@@ -515,3 +515,31 @@ vm_get_programs(void)
 {
   return loaded_programs;
 }
+
+#ifdef VM_REPL_ENABLE
+/* Register a program object that was constructed outside of
+   read_program (e.g. by vm_repl_program_create). The caller has
+   already populated name, tables, captures, and symbol_bindings. */
+int
+vm_loader_register_program(vm_program_t *program)
+{
+  if(next_program_id + 1 < next_program_id) {
+    return 0;
+  }
+  program->flags = 0;
+  memset(&program->perf_attr, 0, sizeof(vm_perf_attr_t));
+  program->perf_attr.exec_instr_per_invocation = VM_EXEC_INSTR_PER_INVOCATION;
+  vm_filter_init(&program->perf_attr.bandwidth, 2);
+  vm_filter_init(&program->perf_attr.power, 2);
+  if(!vm_native_time(&program->perf_attr.start_time)) {
+    return 0;
+  }
+  VM_TIME_COPY(program->perf_attr.last_comm, program->perf_attr.start_time);
+  vm_policy_init_program(program);
+  program->next = loaded_programs;
+  loaded_programs = program;
+  program->program_id = next_program_id++;
+  vm_control_register_app(program);
+  return 1;
+}
+#endif /* VM_REPL_ENABLE */
