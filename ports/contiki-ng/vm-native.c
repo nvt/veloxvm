@@ -408,6 +408,14 @@ tcp_event_callback(struct tcp_socket *socket, void *ptr,
   switch(event) {
   case TCP_SOCKET_CONNECTED:
     nsock->state = NATIVE_TCP_CONNECTED;
+    /* Capture the peer's address from the underlying uIP connection
+       so peer-name returns something meaningful for sockets that
+       transitioned from listening to connected. tcp-socket.c does
+       not expose a getter, so we read directly from socket->c. */
+    if(socket->c != NULL) {
+      uip_ipaddr_copy(&nsock->peer_addr, &socket->c->ripaddr);
+      nsock->peer_port = uip_ntohs(socket->c->rport);
+    }
     VM_DEBUG(VM_DEBUG_LOW, "TCP connected");
     break;
   case TCP_SOCKET_CLOSED:
@@ -744,43 +752,83 @@ vm_native_open_client(vm_thread_t *thread, vm_socket_type_t socket_type,
   }
 }
 
+/* Set up a TCP listener on the given native_tcp_socket. Used both
+   when first opening the server and when replenishing the listener
+   slot after accept-client hands the connected one off to a new
+   client port. */
+static int
+start_tcp_listen(struct native_tcp_socket *sock, vm_integer_t listen_port)
+{
+  if(tcp_socket_register(&sock->socket, sock,
+                         sock->inbuf, sizeof(sock->inbuf),
+                         sock->outbuf, sizeof(sock->outbuf),
+                         tcp_data_callback, tcp_event_callback) < 0) {
+    return 0;
+  }
+  if(tcp_socket_listen(&sock->socket, listen_port) < 0) {
+    tcp_socket_unregister(&sock->socket);
+    return 0;
+  }
+  sock->state = NATIVE_TCP_PENDING;
+  sock->lport = listen_port;
+  return 1;
+}
+
 vm_port_t *
 vm_native_open_server(vm_thread_t *thread,
                    vm_vector_t *address,
                    vm_integer_t listen_port)
 {
-  /* TCP server support (C5 in doc/contiki-ng-port-improvements.md)
-     lands in a follow-up commit. Refuse explicitly so callers see a
-     typed error rather than an unhelpful NULL. */
-  vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
-  vm_set_error_string(thread, "server sockets not yet implemented");
-  return NULL;
+  /* Bind address is ignored: tcp-socket.c only takes a port and
+     listens on every local IPv6 address. The argument stays in the
+     API for symmetry with the POSIX port and for future expansion. */
+  struct native_tcp_socket *sock;
+  vm_port_t *port;
+
+  (void)address;
+
+  sock = allocate_tcp_socket();
+  if(sock == NULL) {
+    VM_DEBUG(VM_DEBUG_MEDIUM, "Failed to allocate a TCP socket");
+    return NULL;
+  }
+
+  port = vm_alloc(sizeof(vm_port_t));
+  if(port == NULL) {
+    vm_native_release_tcp_socket(sock);
+    return NULL;
+  }
+  vm_port_register(port);
+
+  port->thread = thread;
+  port->flags = VM_PORT_FLAG_OPEN | VM_PORT_FLAG_SOCKET |
+                VM_PORT_FLAG_INPUT | VM_PORT_FLAG_OUTPUT;
+  port->io = &device_tcp;
+  port->opaque_desc = sock;
+  sock->port = port;
+
+  if(!start_tcp_listen(sock, listen_port)) {
+    VM_DEBUG(VM_DEBUG_LOW, "Failed to start TCP listen on port %ld",
+             (long)listen_port);
+    sock->port = NULL;
+    port->opaque_desc = NULL;
+    port->flags = 0;
+    vm_native_release_tcp_socket(sock);
+    return NULL;
+  }
+
+  LOG_INFO("Listening on TCP port %u\n", (unsigned)listen_port);
+  return port;
 }
 
-int
-vm_native_get_peer_name(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
+
+static int
+peer_addr_to_vector(vm_thread_t *thread, const uip_ipaddr_t *peeraddr,
+                    vm_obj_t *obj)
 {
-  struct native_socket *sock;
   vm_vector_t *vector;
   vm_obj_t item;
   unsigned i;
-  const uip_ipaddr_t *peeraddr;
-
-  sock = port->opaque_desc;
-  if(sock == NULL) {
-    return 0;
-  }
-
-  /* Prefer the source of the last datagram we received (so server
-     flows can tell who sent what). Fall back to the connected
-     ripaddr for client flows that have not yet received anything. */
-  if(sock->last_src_valid) {
-    peeraddr = &sock->last_src_addr;
-  } else if(sock->socket.udp_conn != NULL) {
-    peeraddr = &sock->socket.udp_conn->ripaddr;
-  } else {
-    return 0;
-  }
 
   vector = vm_vector_create(obj, sizeof(peeraddr->u8), VM_VECTOR_FLAG_REGULAR);
   if(vector == NULL) {
@@ -797,14 +845,164 @@ vm_native_get_peer_name(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
   return 1;
 }
 
+int
+vm_native_get_peer_name(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
+{
+  const uip_ipaddr_t *peeraddr;
+
+  if(port->io == &device_tcp) {
+    struct native_tcp_socket *tsock = port->opaque_desc;
+    if(tsock == NULL) {
+      return 0;
+    }
+    peeraddr = &tsock->peer_addr;
+  } else {
+    struct native_socket *sock = port->opaque_desc;
+    if(sock == NULL) {
+      return 0;
+    }
+    /* Prefer the source of the last datagram we received (so server
+       flows can tell who sent what). Fall back to the connected
+       ripaddr for client flows that have not yet received anything. */
+    if(sock->last_src_valid) {
+      peeraddr = &sock->last_src_addr;
+    } else if(sock->socket.udp_conn != NULL) {
+      peeraddr = &sock->socket.udp_conn->ripaddr;
+    } else {
+      return 0;
+    }
+  }
+
+  return peer_addr_to_vector(thread, peeraddr, obj);
+}
+
+/*
+ * Accept-client model on Contiki-NG:
+ *
+ *   A server vm_port_t owns one native_tcp_socket in listening mode
+ *   (PENDING). When TCP_SOCKET_CONNECTED fires for that slot, its
+ *   state flips to CONNECTED and incoming-client? returns #t.
+ *
+ *   accept-client then:
+ *     1. detaches the connected slot from the server port,
+ *     2. allocates a fresh native_tcp_socket and starts a new
+ *        tcp_socket_listen on the same port for the server,
+ *     3. allocates a new vm_port_t for the client and binds the
+ *        connected slot to it.
+ *
+ *   This keeps memory linear in the number of concurrent clients
+ *   (one MEMB slot per active connection plus one for the listener)
+ *   and avoids needing to "move" a struct tcp_socket -- the
+ *   already-registered slot just changes which port owns it.
+ *
+ *   While the listener is being replenished there is a tiny window
+ *   where new SYNs hit a closed port, but tcp-socket.c does not
+ *   queue connections so nothing is lost beyond what the OS would
+ *   already drop.
+ */
 void
 vm_native_accept_client(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
 {
+  struct native_tcp_socket *connected;
+  struct native_tcp_socket *listener;
+  vm_port_t *client_port;
+  vm_integer_t listen_port;
+
+  if(port->io != &device_tcp) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    vm_set_error_string(thread, "accept-client requires a TCP server port");
+    return;
+  }
+
+  connected = port->opaque_desc;
+  if(connected == NULL) {
+    vm_signal_error(thread, VM_ERROR_IO);
+    vm_set_error_string(thread, "server port not open");
+    return;
+  }
+
+  if(connected->state != NATIVE_TCP_CONNECTED) {
+    /* No client ready yet. Park the calling thread; the event
+       callback will wake us when one arrives, or the polling timer
+       will retry shortly. The eval loop re-enters accept-client on
+       wake-up via VM_EXPR_RESTART. */
+    vm_native_sleep(thread, VM_POLL_TIME);
+    if(thread->expr != NULL) {
+      VM_SET_FLAG(thread->expr->flags, VM_EXPR_RESTART);
+    }
+    return;
+  }
+
+  listen_port = connected->lport;
+
+  /* Allocate a fresh listener for the server before we hand off the
+     connected slot, so a failure leaves the server still listening
+     instead of in a half-broken state. */
+  listener = allocate_tcp_socket();
+  if(listener == NULL) {
+    vm_signal_error(thread, VM_ERROR_HEAP);
+    vm_set_error_string(thread, "TCP socket pool exhausted");
+    return;
+  }
+  listener->port = port;
+  if(!start_tcp_listen(listener, listen_port)) {
+    vm_native_release_tcp_socket(listener);
+    vm_signal_error(thread, VM_ERROR_IO);
+    vm_set_error_string(thread, "failed to relisten after accept");
+    return;
+  }
+
+  /* Allocate the new client port. */
+  client_port = vm_alloc(sizeof(vm_port_t));
+  if(client_port == NULL) {
+    /* Tear down the fresh listener we just brought up; we cannot
+       complete the accept and we should not silently leak it. The
+       server keeps its previous slot (still in CONNECTED state) so
+       a retry can succeed. */
+    tcp_socket_close(&listener->socket);
+    tcp_socket_unregister(&listener->socket);
+    vm_native_release_tcp_socket(listener);
+    vm_signal_error(thread, VM_ERROR_HEAP);
+    return;
+  }
+  vm_port_register(client_port);
+
+  client_port->thread = thread;
+  client_port->flags = VM_PORT_FLAG_OPEN | VM_PORT_FLAG_SOCKET |
+                       VM_PORT_FLAG_INPUT | VM_PORT_FLAG_OUTPUT;
+  client_port->io = &device_tcp;
+  client_port->opaque_desc = connected;
+  connected->port = client_port;
+
+  /* The server port now owns the fresh listener. */
+  port->opaque_desc = listener;
+
+  obj->type = VM_TYPE_PORT;
+  obj->value.port = client_port;
+
+  LOG_INFO("Accepted TCP client on port %u\n", (unsigned)listen_port);
 }
 
 void
 vm_native_incoming_clientp(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
 {
+  struct native_tcp_socket *sock;
+
+  obj->type = VM_TYPE_BOOLEAN;
+  obj->value.boolean = VM_FALSE;
+
+  if(port->io != &device_tcp) {
+    return;
+  }
+
+  sock = port->opaque_desc;
+  if(sock == NULL) {
+    return;
+  }
+
+  if(sock->state == NATIVE_TCP_CONNECTED) {
+    obj->value.boolean = VM_TRUE;
+  }
 }
 
 int
