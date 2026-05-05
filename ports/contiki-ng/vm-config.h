@@ -297,4 +297,35 @@
 #endif
 #endif
 
+/* Maximum number of in-flight TCP sockets across all loaded programs.
+   Each slot owns its own input/output buffer plus a struct
+   tcp_socket, so the per-slot footprint is roughly
+   VM_TCP_INBUF_SIZE + VM_TCP_OUTBUF_SIZE + ~80 bytes. */
+#ifndef VM_MAX_TCP_SOCKETS
+#if CONTIKI_TARGET_ZOUL
+#define VM_MAX_TCP_SOCKETS 2
+#else
+#define VM_MAX_TCP_SOCKETS 4
+#endif
+#endif
+
+/* tcp-socket.c input/output buffer sizes in bytes. The library
+   throttles reads if the input buffer fills, so size for the largest
+   message your protocol expects to handle in one go. */
+#ifndef VM_TCP_INBUF_SIZE
+#if CONTIKI_TARGET_ZOUL
+#define VM_TCP_INBUF_SIZE 128
+#else
+#define VM_TCP_INBUF_SIZE 256
+#endif
+#endif
+
+#ifndef VM_TCP_OUTBUF_SIZE
+#if CONTIKI_TARGET_ZOUL
+#define VM_TCP_OUTBUF_SIZE 128
+#else
+#define VM_TCP_OUTBUF_SIZE 256
+#endif
+#endif
+
 #endif /* !VM_CONFIG_H */

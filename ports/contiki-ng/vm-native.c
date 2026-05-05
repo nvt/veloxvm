@@ -79,12 +79,16 @@ extern const vm_port_io_t device_cfs;
 extern const vm_port_io_t device_leds;
 extern const vm_port_io_t device_sensors;
 extern const vm_port_io_t device_serial;
+extern const vm_port_io_t device_tcp;
 extern const vm_port_io_t device_uip;
 
 static struct ctimer timers[VM_THREAD_AMOUNT];
 
 MEMB(socket_memb, struct native_socket, VM_MAX_SOCKETS);
 LIST(socket_list);
+
+MEMB(tcp_socket_memb, struct native_tcp_socket, VM_MAX_TCP_SOCKETS);
+LIST(tcp_socket_list);
 
 static vm_port_t serial_port = {.fd = 0, .io = &device_serial,
                                 .flags = VM_PORT_FLAG_OPEN    |
@@ -140,6 +144,29 @@ vm_native_release_socket(struct native_socket *sock)
   }
   list_remove(socket_list, sock);
   memb_free(&socket_memb, sock);
+}
+
+static struct native_tcp_socket *
+allocate_tcp_socket(void)
+{
+  struct native_tcp_socket *sock;
+
+  sock = memb_alloc(&tcp_socket_memb);
+  if(sock != NULL) {
+    memset(sock, 0, sizeof(*sock));
+    list_push(tcp_socket_list, sock);
+  }
+  return sock;
+}
+
+void
+vm_native_release_tcp_socket(struct native_tcp_socket *sock)
+{
+  if(sock == NULL) {
+    return;
+  }
+  list_remove(tcp_socket_list, sock);
+  memb_free(&tcp_socket_memb, sock);
 }
 
 static int
@@ -313,6 +340,94 @@ udp_input(struct udp_socket *sock, void *ptr,
   wake_thread(thread);
 }
 
+/* Drain incoming TCP bytes into the per-socket rx slot. tcp-socket.c
+   contracts:
+     - the callback should return how many bytes to LEAVE in its
+       input buffer for the next call.
+     - returning 0 consumes everything; the library is then free to
+       reuse the buffer immediately.
+   We copy whatever fits in our rx slot, ask the library to drop the
+   consumed prefix, and tell it to keep the rest for the next call.
+   That way the TCP receive window naturally throttles when the VM
+   reader is slow. */
+static int
+tcp_data_callback(struct tcp_socket *socket, void *ptr,
+                  const uint8_t *input_data, int input_len)
+{
+  struct native_tcp_socket *nsock;
+  vm_port_t *port;
+  vm_thread_t *thread;
+  uint16_t free_bytes;
+  uint16_t copy;
+
+  nsock = ptr;
+  if(nsock == NULL || input_len <= 0) {
+    return 0;
+  }
+  port = nsock->port;
+  thread = port != NULL ? port->thread : NULL;
+
+  if(nsock->rx_pos < nsock->rx_len) {
+    /* Reader has not drained yet -- ask the library to keep
+       everything until next time so we do not lose bytes. */
+    return input_len;
+  }
+
+  free_bytes = sizeof(nsock->rx_buf);
+  copy = (uint16_t)input_len > free_bytes ? free_bytes : (uint16_t)input_len;
+  memcpy(nsock->rx_buf, input_data, copy);
+  nsock->rx_pos = 0;
+  nsock->rx_len = copy;
+
+  if(thread != NULL) {
+    attribute_communication(thread, UIP_PROTO_TCP,
+                            VM_MIN(nsock->lport, nsock->rport));
+  }
+  wake_thread(thread);
+
+  /* Anything we did not absorb stays buffered; the library will hand
+     it back the next time the reader calls us. */
+  return input_len - copy;
+}
+
+static void
+tcp_event_callback(struct tcp_socket *socket, void *ptr,
+                   tcp_socket_event_t event)
+{
+  struct native_tcp_socket *nsock;
+  vm_port_t *port;
+  vm_thread_t *thread;
+
+  nsock = ptr;
+  if(nsock == NULL) {
+    return;
+  }
+  port = nsock->port;
+  thread = port != NULL ? port->thread : NULL;
+
+  switch(event) {
+  case TCP_SOCKET_CONNECTED:
+    nsock->state = NATIVE_TCP_CONNECTED;
+    VM_DEBUG(VM_DEBUG_LOW, "TCP connected");
+    break;
+  case TCP_SOCKET_CLOSED:
+  case TCP_SOCKET_TIMEDOUT:
+  case TCP_SOCKET_ABORTED:
+    nsock->state = NATIVE_TCP_CLOSED;
+    VM_DEBUG(VM_DEBUG_LOW, "TCP closed/aborted (event %d)", (int)event);
+    break;
+  case TCP_SOCKET_DATA_SENT:
+    /* Output buffer drained; nothing to do here for now. */
+    break;
+  default:
+    break;
+  }
+
+  /* Any state change can unblock a reader: connect completing means
+     writes can flow, close means reads should return EOF. */
+  wake_thread(thread);
+}
+
 static void
 attribute_energy(vm_thread_t *thread, int done)
 {
@@ -474,27 +589,12 @@ vm_native_default_port(vm_thread_t *thread, int direction)
   return &serial_port;
 }
 
-vm_port_t *
-vm_native_open_client(vm_thread_t *thread, vm_socket_type_t socket_type,
-                      vm_vector_t *address, vm_integer_t dest_port,
-                      vm_integer_t source_port)
+static vm_port_t *
+open_udp_client(vm_thread_t *thread, const uip_ipaddr_t *addr,
+                vm_integer_t dest_port, vm_integer_t source_port)
 {
   struct native_socket *sock;
-  uip_ipaddr_t addr;
   vm_port_t *port;
-
-  if(socket_type != VM_SOCKET_DATAGRAM) {
-    /* TCP support lands in a follow-up commit; refuse with a typed
-       error rather than silently falling back to UDP. */
-    vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
-    vm_set_error_string(thread, "TCP not yet implemented on this port");
-    return NULL;
-  }
-
-  if(vector_to_ip(address, &addr) == 0) {
-    VM_DEBUG(VM_DEBUG_MEDIUM, "Failed to convert an IP address");
-    return NULL;
-  }
 
   sock = allocate_socket();
   if(sock == NULL) {
@@ -540,7 +640,7 @@ vm_native_open_client(vm_thread_t *thread, vm_socket_type_t socket_type,
 
   udp_socket_bind(&sock->socket, sock->lport);
 
-  if(udp_socket_connect(&sock->socket, &addr, dest_port) < 0) {
+  if(udp_socket_connect(&sock->socket, addr, dest_port) < 0) {
     VM_DEBUG(VM_DEBUG_LOW, "Failed to connect a UDP socket");
     udp_socket_close(&sock->socket);
     sock->port = NULL;
@@ -551,10 +651,97 @@ vm_native_open_client(vm_thread_t *thread, vm_socket_type_t socket_type,
   }
 
   LOG_INFO("Created a UDP connection to ");
-  LOG_INFO_6ADDR(&addr);
+  LOG_INFO_6ADDR(addr);
   LOG_INFO("\n");
 
   return port;
+}
+
+static vm_port_t *
+open_tcp_client(vm_thread_t *thread, const uip_ipaddr_t *addr,
+                vm_integer_t dest_port)
+{
+  struct native_tcp_socket *sock;
+  vm_port_t *port;
+
+  sock = allocate_tcp_socket();
+  if(sock == NULL) {
+    VM_DEBUG(VM_DEBUG_MEDIUM, "Failed to allocate a TCP socket");
+    return NULL;
+  }
+
+  port = vm_alloc(sizeof(vm_port_t));
+  if(port == NULL) {
+    vm_native_release_tcp_socket(sock);
+    return NULL;
+  }
+  vm_port_register(port);
+
+  port->thread = thread;
+  port->flags = VM_PORT_FLAG_OPEN | VM_PORT_FLAG_SOCKET |
+                VM_PORT_FLAG_INPUT | VM_PORT_FLAG_OUTPUT;
+  port->io = &device_tcp;
+  port->opaque_desc = sock;
+
+  sock->port = port;
+  sock->state = NATIVE_TCP_PENDING;
+  sock->rport = dest_port;
+  uip_ipaddr_copy(&sock->peer_addr, addr);
+  sock->peer_port = dest_port;
+
+  if(tcp_socket_register(&sock->socket, sock,
+                         sock->inbuf, sizeof(sock->inbuf),
+                         sock->outbuf, sizeof(sock->outbuf),
+                         tcp_data_callback, tcp_event_callback) < 0) {
+    VM_DEBUG(VM_DEBUG_LOW, "Failed to register a TCP socket");
+    sock->port = NULL;
+    port->opaque_desc = NULL;
+    port->flags = 0;
+    vm_native_release_tcp_socket(sock);
+    return NULL;
+  }
+
+  if(tcp_socket_connect(&sock->socket, addr, dest_port) < 0) {
+    VM_DEBUG(VM_DEBUG_LOW, "Failed to start TCP connect");
+    tcp_socket_unregister(&sock->socket);
+    sock->port = NULL;
+    port->opaque_desc = NULL;
+    port->flags = 0;
+    vm_native_release_tcp_socket(sock);
+    return NULL;
+  }
+
+  LOG_INFO("Started TCP connect to ");
+  LOG_INFO_6ADDR(addr);
+  LOG_INFO(":%u\n", (unsigned)dest_port);
+
+  /* Returns immediately; reads/writes block until the event callback
+     transitions sock->state to NATIVE_TCP_CONNECTED. */
+  return port;
+}
+
+vm_port_t *
+vm_native_open_client(vm_thread_t *thread, vm_socket_type_t socket_type,
+                      vm_vector_t *address, vm_integer_t dest_port,
+                      vm_integer_t source_port)
+{
+  uip_ipaddr_t addr;
+
+  if(vector_to_ip(address, &addr) == 0) {
+    VM_DEBUG(VM_DEBUG_MEDIUM, "Failed to convert an IP address");
+    return NULL;
+  }
+
+  switch(socket_type) {
+  case VM_SOCKET_DATAGRAM:
+    return open_udp_client(thread, &addr, dest_port, source_port);
+  case VM_SOCKET_STREAM:
+    return open_tcp_client(thread, &addr, dest_port);
+  default:
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+    vm_set_error_string(thread, "unknown socket type");
+    return NULL;
+  }
 }
 
 vm_port_t *
@@ -562,6 +749,11 @@ vm_native_open_server(vm_thread_t *thread,
                    vm_vector_t *address,
                    vm_integer_t listen_port)
 {
+  /* TCP server support (C5 in doc/contiki-ng-port-improvements.md)
+     lands in a follow-up commit. Refuse explicitly so callers see a
+     typed error rather than an unhelpful NULL. */
+  vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+  vm_set_error_string(thread, "server sockets not yet implemented");
   return NULL;
 }
 
