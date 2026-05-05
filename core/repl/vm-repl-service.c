@@ -201,6 +201,33 @@ vm_repl_start(vm_program_t *program, vm_expr_id_t entry_id,
   return 1;
 }
 
+/* Tear the main thread's evaluation frame stack back down to a single
+   top frame so the next vm_repl_start has a clean slate. After a
+   normal park the stack is already at exprc==1, but after an error
+   it can be deep in a sub-frame. */
+static void
+reset_main_thread_to_parked(vm_thread_t *thread)
+{
+  while(thread->exprc > 1) {
+    vm_thread_stack_pop(thread);
+  }
+  if(thread->expr != NULL) {
+    thread->expr->flags = 0;
+    thread->expr->argc = 0;
+    thread->expr->bindc = 0;
+    thread->expr->eval_completed = 0;
+    thread->expr->eval_requested = 0;
+    thread->expr->eval_arg = 0;
+    thread->expr->procedure = NULL;
+    thread->expr->ip = NULL;
+    thread->expr->end = NULL;
+  }
+  thread->error.error_obj.type = VM_TYPE_NONE;
+  thread->error.error_type = VM_ERROR_INTERNAL;
+  thread->error.repl_error_printed = 0;
+  thread->status = VM_THREAD_PARKED;
+}
+
 int
 vm_repl_collect(vm_program_t *program, vm_obj_t *out_result,
                 vm_error_t *out_error)
@@ -226,6 +253,8 @@ vm_repl_collect(vm_program_t *program, vm_obj_t *out_result,
     if(out_error != NULL) {
       *out_error = thread->error;
     }
+    /* Recover so the next REPL turn can run on the same thread. */
+    reset_main_thread_to_parked(thread);
     return -1;
   }
   return 0;

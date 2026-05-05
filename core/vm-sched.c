@@ -521,6 +521,27 @@ vm_run(void)
       }
       break;
     case VM_THREAD_ERROR:
+#ifdef VM_REPL_ENABLE
+      if(thread->repl_main) {
+        /* The REPL main thread must survive runtime errors so the
+           driver can collect the error and the next turn can redirect
+           the thread to a new entry expression. The scheduler leaves
+           it in ERROR state; vm_repl_collect surfaces the error and
+           transitions it back to PARKED with a clean frame stack.
+
+           Print the error once on the first scheduler tick after the
+           transition, then suppress further prints -- vm_run may be
+           called many times before the polling process gets around to
+           collecting, and we don't want the console flooded with the
+           same message. The "printed" mark is bit 1 of the error_type
+           upper byte; cleared by reset_main_thread_to_parked. */
+        if(!thread->error.repl_error_printed) {
+          vm_print_error(thread);
+          thread->error.repl_error_printed = 1;
+        }
+        break;
+      }
+#endif
       vm_print_error(thread);
       vm_thread_destroy(thread);
       if(program->nthreads == 0) {

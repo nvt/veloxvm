@@ -162,6 +162,12 @@ typedef struct vm_error {
   vm_obj_t error_obj;
   vm_ip_t error_ip;
   vm_error_type_t error_type;
+#ifdef VM_REPL_ENABLE
+  /* Set after the scheduler prints an error on a parked-after-error
+     REPL main thread, so subsequent vm_run iterations don't reprint
+     the same message until vm_repl_collect resets the thread. */
+  uint8_t repl_error_printed;
+#endif
 #if VM_DEBUG_LEVEL >= VM_DEBUG_MEDIUM
   const char *file;
   unsigned line;
