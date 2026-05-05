@@ -57,6 +57,7 @@
 #define TAG_LIST    0x08
 #define TAG_VECTOR  0x09
 #define TAG_PAIR    0x0A
+#define TAG_RATIONAL 0x0B
 #define TAG_OPAQUE  0xF0
 
 typedef struct {
@@ -232,6 +233,18 @@ encode_value(encbuf_t *e, vm_program_t *program,
     emit_byte(e, TAG_INT);
     emit_i64_be(e, (int64_t)obj->value.integer);
     break;
+  case VM_TYPE_RATIONAL: {
+    vm_rational_t *r = obj->value.rational;
+    if(r == NULL) {
+      emit_byte(e, TAG_OPAQUE);
+      emit_string_payload(e, "rational", 8);
+      break;
+    }
+    emit_byte(e, TAG_RATIONAL);
+    emit_i64_be(e, (int64_t)r->numerator);
+    emit_i64_be(e, (int64_t)r->denominator);
+    break;
+  }
 #if VM_ENABLE_REALS
   case VM_TYPE_REAL: {
     /* Convert to network-byte-order IEEE 754 double. We do this by

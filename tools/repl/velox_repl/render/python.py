@@ -25,6 +25,15 @@ def _fmt(obj: VObj) -> str:
         return str(obj.value)
     if k == "real":
         return repr(obj.value)
+    if k == "rational":
+        # Python has no first-class rational literal; show the same
+        # value the user would get from `num / den` in Python source.
+        # The wire format preserves the exact form for the Scheme
+        # renderer; we lose exactness only at display time.
+        num, den = obj.value
+        if den == 0:
+            return f"<rational {num}/0>"
+        return repr(num / den)
     if k == "char":
         return repr(obj.value)
     if k == "string":

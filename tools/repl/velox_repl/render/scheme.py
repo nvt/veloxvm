@@ -19,6 +19,13 @@ def _fmt(obj: VObj) -> str:
         return str(obj.value)
     if k == "real":
         return _fmt_real(obj.value)
+    if k == "rational":
+        num, den = obj.value
+        # Defensive: a denominator of 0 should never reach the wire,
+        # but render as a fallback rather than raising on display.
+        if den == 0:
+            return f"#<rational {num}/0>"
+        return f"{num}/{den}"
     if k == "char":
         return _fmt_char(obj.value)
     if k == "string":

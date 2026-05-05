@@ -17,6 +17,7 @@ Format:
     0x08  LIST      2B count + count * sub-value
     0x09  VECTOR    2B count + count * sub-value
     0x0A  PAIR      car + cdr (improper lists / dotted pairs)
+    0x0B  RATIONAL  8B numerator + 8B denominator, both signed big-endian
     0xF0  OPAQUE    2B length + UTF-8 descriptor (closures, ports, ...)
 
 This is a v1 schema; extend as VM types come online.
@@ -45,6 +46,7 @@ _TAG_SYMBOL = 0x07
 _TAG_LIST = 0x08
 _TAG_VECTOR = 0x09
 _TAG_PAIR = 0x0A
+_TAG_RATIONAL = 0x0B
 _TAG_OPAQUE = 0xF0
 
 
@@ -106,6 +108,10 @@ def _read(c: _Cursor) -> VObj:
         car = _read(c)
         cdr = _read(c)
         return VObj("pair", (car, cdr))
+    if tag == _TAG_RATIONAL:
+        (num,) = struct.unpack("!q", c.take(8))
+        (den,) = struct.unpack("!q", c.take(8))
+        return VObj("rational", (num, den))
     if tag == _TAG_OPAQUE:
         (n,) = struct.unpack("!H", c.take(2))
         return VObj("opaque", c.take(n).decode("utf-8", errors="replace"))
