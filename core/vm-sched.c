@@ -422,7 +422,15 @@ restart:
     /* We have executed the last instruction of the top-level expr.
        For an ordinary thread this means it is finished and will be
        destroyed; for the REPL main thread we park instead so the
-       next REPL turn can redirect it to the next entry expression. */
+       next REPL turn can redirect it to the next entry expression.
+       This always wins over a WAITING status set during the just-
+       evaluated form (e.g. by vm_native_sleep) -- the form has
+       consumed all its bytecode and won't run again. The
+       corresponding wake-up paths in vm_native (POSIX
+       process_timers, Contiki-NG thread_timer_expired) only flip
+       a thread back to RUNNABLE when it is still WAITING; a thread
+       already parked here stays parked and ignores its stale
+       timer. */
 #ifdef VM_REPL_ENABLE
     if(thread->repl_main) {
       thread->status = VM_THREAD_PARKED;

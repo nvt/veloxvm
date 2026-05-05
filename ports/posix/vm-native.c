@@ -331,7 +331,13 @@ process_timers(void)
   for(timer = timers; timer != NULL && timer->wakeup_time <= time_msec;) {
     sleeping_threads--;
 
-    if(timer->thread != NULL) {
+    /* Only flip back to RUNNABLE if the thread is still actually
+       WAITING. If the post-eval path parked or finished the thread
+       since this timer was queued (e.g. thread-sleep! was the last
+       form in the entry expression), the timer is stale and must
+       not override the more recent state. */
+    if(timer->thread != NULL &&
+       timer->thread->status == VM_THREAD_WAITING) {
       timer->thread->status = VM_THREAD_RUNNABLE;
     }
     tmp_timer = timer->next;

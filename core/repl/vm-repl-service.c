@@ -42,6 +42,7 @@
 
 #include "vm.h"
 #include "vm-log.h"
+#include "vm-native.h"
 #include "vm-repl.h"
 #include "vm-table.h"
 
@@ -277,9 +278,20 @@ vm_repl_run(vm_program_t *program, vm_expr_id_t entry_id,
     if(status < 0) {
       return 0;
     }
+    /* If the scheduler reports SLEEPING, a thread is in WAITING --
+       most commonly waiting on a thread-sleep! timer or a port. We
+       must let the host's poll path service those waits or the
+       timer never fires and the REPL turn hangs. vm_native_poll
+       blocks until something becomes ready (timer expires, fd
+       ready, etc.) and dispatches. */
+    if(r == VM_RESULT_SLEEPING) {
+      vm_native_poll();
+      continue;
+    }
     if(r == VM_RESULT_FINISHED) {
       /* Defensive: vm_run returned FINISHED but the thread is still
-         RUNNABLE. Should not happen -- avoid an infinite loop. */
+         RUNNABLE (per collect). Should not happen -- avoid an
+         infinite loop. */
       if(out_error != NULL) {
         out_error->error_type = VM_ERROR_INTERNAL;
         out_error->error_obj.type = VM_TYPE_NONE;

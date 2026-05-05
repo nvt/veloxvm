@@ -109,8 +109,15 @@ thread_timer_expired(void *arg)
     return;
   }
 
-  thread->status = VM_THREAD_RUNNABLE;
-  process_poll(&vm_process);
+  /* Only flip back to RUNNABLE if the thread is still actually
+     WAITING. If post-eval parked or finished the thread since this
+     timer was queued (e.g. thread-sleep! was the last form in the
+     entry expression), the timer is stale and must not override
+     the newer status. */
+  if(thread->status == VM_THREAD_WAITING) {
+    thread->status = VM_THREAD_RUNNABLE;
+    process_poll(&vm_process);
+  }
 
   VM_DEBUG(VM_DEBUG_HIGH, "The timer expired for thread ID %lu",
            (unsigned long)thread->id);
