@@ -273,4 +273,59 @@
 #define VM_BUNDLE 0
 #endif
 
+/* Maximum number of in-flight network sockets across *all* loaded
+   programs. Each slot is one struct native_socket in the MEMB pool,
+   so the cost on a tight target is small. The legacy value of 2 is
+   too low for any realistic multi-program deployment. */
+#ifndef VM_MAX_SOCKETS
+#if CONTIKI_TARGET_ZOUL
+#define VM_MAX_SOCKETS 4
+#else
+#define VM_MAX_SOCKETS 8
+#endif
+#endif
+
+/* Per-socket inbound datagram buffer in bytes. Sized for one IPv6
+   payload by default; packets larger than this on UDP are truncated
+   (the rx callback never receives reassembled fragments larger than
+   one datagram, so this is the natural unit). */
+#ifndef VM_SOCKET_RX_BUFSIZE
+#if CONTIKI_TARGET_ZOUL
+#define VM_SOCKET_RX_BUFSIZE 128
+#else
+#define VM_SOCKET_RX_BUFSIZE 256
+#endif
+#endif
+
+/* Maximum number of in-flight TCP sockets across all loaded programs.
+   Each slot owns its own input/output buffer plus a struct
+   tcp_socket, so the per-slot footprint is roughly
+   VM_TCP_INBUF_SIZE + VM_TCP_OUTBUF_SIZE + ~80 bytes. */
+#ifndef VM_MAX_TCP_SOCKETS
+#if CONTIKI_TARGET_ZOUL
+#define VM_MAX_TCP_SOCKETS 2
+#else
+#define VM_MAX_TCP_SOCKETS 4
+#endif
+#endif
+
+/* tcp-socket.c input/output buffer sizes in bytes. The library
+   throttles reads if the input buffer fills, so size for the largest
+   message your protocol expects to handle in one go. */
+#ifndef VM_TCP_INBUF_SIZE
+#if CONTIKI_TARGET_ZOUL
+#define VM_TCP_INBUF_SIZE 128
+#else
+#define VM_TCP_INBUF_SIZE 256
+#endif
+#endif
+
+#ifndef VM_TCP_OUTBUF_SIZE
+#if CONTIKI_TARGET_ZOUL
+#define VM_TCP_OUTBUF_SIZE 128
+#else
+#define VM_TCP_OUTBUF_SIZE 256
+#endif
+#endif
+
 #endif /* !VM_CONFIG_H */

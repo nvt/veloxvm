@@ -1,11 +1,20 @@
 #!/bin/sh
+#
+# Bake a compiled .vm app into vm-app-image.h so the firmware ships
+# with a RAM-resident program ready to autorun.
+#
+# This is a thin wrapper around the Makefile: it just sets VM_APP and
+# asks make to (re)generate the image. The Makefile takes care of the
+# compile.sh + create-ram-module steps. The script is kept for
+# backwards compatibility and as a "do this one thing" helper -- the
+# canonical flow is `make TARGET=zoul VM_APP=<app>`.
 
-target=vm-app-image.h
+set -eu
 
 if [ $# -eq 0 ]; then
-  echo "No program specified"
+  echo "Usage: $0 <category/name>" >&2
   exit 1
 fi
 
-(cd ../../ && ./compile.sh $1 && echo Creating $1 in $target && rm -f ports/contiki-ng/$target && tools/create-ram-module apps/$(dirname $1)/bin/$(basename $1).vm >ports/contiki-ng/$target)
-echo "const char vm_program_name[] = \"$(basename $1).vm\";" >> $target
+script_dir=$(cd "$(dirname "$0")" && pwd)
+exec make -C "$script_dir" VM_APP="$1" vm-app-image.h

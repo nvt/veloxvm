@@ -107,8 +107,12 @@ unload(vm_program_t *program)
   return 1;
 }
 
-static unsigned char
-get_led_value(vm_program_t *program, vm_symbol_ref_t *symref)
+/* Resolve a LED symbol to its bitmask. Returns 1 on success, 0 if the
+   symbol is unknown -- callers signal a typed error in that case so a
+   typo is not silently absorbed by leds_off(0). */
+static int
+get_led_value(vm_program_t *program, vm_symbol_ref_t *symref,
+              unsigned char *out)
 {
   const char *name;
   int i;
@@ -120,40 +124,68 @@ get_led_value(vm_program_t *program, vm_symbol_ref_t *symref)
 
   for(i = 0; i < VM_ARRAY_SIZE(sym_to_led_map); i++) {
     if(vm_strcasecmp(name, sym_to_led_map[i].sym_name) == 0) {
-      return sym_to_led_map[i].led;
+      *out = sym_to_led_map[i].led;
+      return 1;
     }
   }
 
   return 0;
 }
 
+static int
+resolve_led_arg(vm_thread_t *thread, vm_obj_t *arg, unsigned char *out)
+{
+  if(!get_led_value(thread->program, &arg->value.symbol_ref, out)) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+    vm_set_error_string(thread, "unknown LED name");
+    return 0;
+  }
+  return 1;
+}
+
 VM_FUNCTION(leds_on)
 {
-  leds_on(get_led_value(thread->program, &argv[0].value.symbol_ref));
+  unsigned char led;
+
+  if(resolve_led_arg(thread, &argv[0], &led)) {
+    leds_on(led);
+  }
 }
 
 VM_FUNCTION(leds_off)
 {
-  leds_off(get_led_value(thread->program, &argv[0].value.symbol_ref));
+  unsigned char led;
+
+  if(resolve_led_arg(thread, &argv[0], &led)) {
+    leds_off(led);
+  }
 }
 
 VM_FUNCTION(leds_set)
 {
-  leds_set(get_led_value(thread->program, &argv[0].value.symbol_ref));
+  unsigned char led;
+
+  if(resolve_led_arg(thread, &argv[0], &led)) {
+    leds_set(led);
+  }
 }
 
 VM_FUNCTION(leds_get)
 {
-  leds_get();
+  VM_PUSH_INTEGER(leds_get());
 }
 
 VM_FUNCTION(leds_toggle)
 {
+  unsigned char led;
+
   if(VM_DEBUG_LEVEL >= VM_DEBUG_MEDIUM) {
     VM_PRINTF("Toggle LEDs ");
     vm_write_object(NULL, &argv[0]);
     VM_PRINTF("\n");
   }
 
-  leds_toggle(get_led_value(thread->program, &argv[0].value.symbol_ref));
+  if(resolve_led_arg(thread, &argv[0], &led)) {
+    leds_toggle(led);
+  }
 }

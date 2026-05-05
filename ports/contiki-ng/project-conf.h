@@ -2,6 +2,17 @@
 
 #define COAP_OBSERVE_CLIENT 1
 
+/* Enable TCP support so the VM can offer stream sockets. Contiki-NG's
+   default build disables TCP to save memory; the VM's UDP-only path
+   stays unchanged when the user explicitly overrides this back to 0. */
+#ifndef UIP_CONF_TCP
+#define UIP_CONF_TCP 1
+#endif
+
+#ifndef UIP_CONF_TCP_CONNS
+#define UIP_CONF_TCP_CONNS 4
+#endif
+
 #if CONTIKI_TARGET_ZOUL
 #undef LPM_CONF_MAX_PM
 #define LPM_CONF_MAX_PM 1

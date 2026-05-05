@@ -37,12 +37,6 @@
 
 PROCESS(vm_perfmon_process, VM_NAME" Monitor");
 
-/* Print out performance data for each program at the following interval,
-   which is expressed in seconds. */
-#ifndef VM_PERF_MONITOR_INTERVAL
-#define VM_PERF_MONITOR_INTERVAL 5
-#endif
-
 static void
 print_perf_cpu(const vm_program_t *program)
 {
@@ -61,35 +55,39 @@ print_perf_cpu(const vm_program_t *program)
 unsigned
 calculate_system_power(void)
 {
-  unsigned long e_cpu, e_lpm, e_transmit, e_listen;
+  uint64_t e_cpu, e_lpm, e_transmit, e_listen;
   uint64_t power;
+  unsigned long uptime;
 
   /* TODO: Include the new Contiki-NG type ENERGEST_TYPE_DEEP_LPM. */
 
+  /* Cast through uint64_t up front: on 32-bit MCUs with a 32 kHz
+     RTIMER, e_cpu * 13000 overflows unsigned long after ~10 seconds
+     of accumulated CPU time. */
   e_cpu      = energest_type_time(ENERGEST_TYPE_CPU);
   e_lpm      = energest_type_time(ENERGEST_TYPE_LPM);
   e_transmit = energest_type_time(ENERGEST_TYPE_TRANSMIT);
   e_listen   = energest_type_time(ENERGEST_TYPE_LISTEN);
 
 #if CONTIKI_TARGET_ZOUL
-  power = (uint64_t)e_cpu * 13000;
-  power += (uint64_t)e_lpm * 600;
-  power += (uint64_t)e_transmit * 21000;
-  power += (uint64_t)e_listen * 11000;
-  power = 3 * (power / RTIMER_SECOND);
+  power  = e_cpu * 13000;
+  power += e_lpm * 600;
+  power += e_transmit * 21000;
+  power += e_listen * 11000;
 #else
-  power = (uint64_t)e_cpu * 1800;
-  power += (uint64_t)e_lpm * 55;
-  power += (uint64_t)e_transmit * 17700;
-  power += (uint64_t)e_listen * 20000;
-  power = 3 * (power / RTIMER_SECOND);
+  power  = e_cpu * 1800;
+  power += e_lpm * 55;
+  power += e_transmit * 17700;
+  power += e_listen * 20000;
 #endif /* CONTIKI_TARGET_ZOUL */
+  power = 3 * (power / RTIMER_SECOND);
 
-  if(clock_seconds() > 0) {
-    power /= clock_seconds();
+  uptime = clock_seconds();
+  if(uptime > 0) {
+    power /= uptime;
   }
 
-  return power;
+  return (unsigned)power;
 }
 
 static void
