@@ -1,52 +1,123 @@
 # velox-repl
 
-Interactive REPL driver for VeloxVM. Coordinates a long-running compiler
-process (Racket Scheme compiler today, PyVelox later) and a long-running
-VeloxVM REPL service over a transport-agnostic frame protocol. The driver
-is the only thing that talks to the user.
+Interactive REPL for VeloxVM. Drives a long-running compiler service
+(Racket Scheme today, PyVelox for Python) and a long-running VeloxVM
+REPL service over a transport-agnostic frame protocol. State persists
+across forms — definitions, classes, instance attributes, and
+top-level bindings stay live until you exit or `:reset`.
 
-## Running
+The driver is the only thing that talks to the user. Compiler and VM
+are both subprocesses (or the VM may be a Contiki-NG device reached
+over CoAP).
 
-If you have [uv](https://docs.astral.sh/uv/):
+---
 
-```
-./velox-repl                # uses uv's cached env automatically
-```
+## Quick start
 
-Without uv, the wrapper falls back to a project-local `.venv`:
+You need:
 
-```
-./velox-repl                # creates .venv on first run, then uses it
-```
+- [`uv`](https://docs.astral.sh/uv/) on PATH (or a Python `.venv` the
+  wrapper can fall back to).
+- For Scheme: `racket` on PATH.
+- For Python: nothing extra — `pyvelox` is in-tree and runs under the
+  same Python interpreter as the REPL itself.
+- A built `bin/vm-repl` (POSIX VM with REPL support):
 
-Either way: no manual `source activate`. The wrapper is in `tools/repl/`
-and is intended to be symlinked from `~/.local/bin/` if you want it on
-PATH globally.
+  ```
+  make vm-repl VM_PORT=posix
+  ```
 
-## Demo
-
-Default backends are the in-tree stubs, which let the driver be
-exercised end-to-end without any other components built:
-
-```
-./velox-repl --compiler stub --vm stub
-```
-
-The real Racket compiler service can be plugged in independently of
-the C-side VM (the stub VM accepts real-format deltas and returns a
-synthetic placeholder result, so the protocol still round-trips):
+Then, from `tools/repl/`:
 
 ```
-./velox-repl --compiler "racket ../../languages/scheme-racket/repl-server.rkt"
+./velox-repl                       # Scheme (default)
+./velox-repl --language python     # Python
 ```
 
-When the C-side append-loader is built, replace `--vm stub` with the
-real `bin/vm-repl` binary; the protocol on the wire is unchanged.
+You'll see a banner reporting the auto-detected compiler and VM, then
+a `velox> ` (or `pyvelox> `) prompt. Ctrl-D to exit, Ctrl-C to clear
+an in-progress multi-line buffer.
 
-## Talking to a Contiki-NG device over CoAP
+```
+velox> (define square (lambda (x) (* x x)))
+; defined square
+velox> (square 7)
+49
 
-Build a Contiki-NG firmware with REPL support enabled (no baked-in
-program, exposes `/repl/cmd` and `/repl/events` resources):
+pyvelox> def square(x): return x * x
+; defined square
+pyvelox> square(7)
+49
+```
+
+---
+
+## Multi-line input
+
+The prompt switches to `... ` while the form you're typing is still
+incomplete, then back when it's ready to evaluate.
+
+**Scheme** terminates on matching parens; you can split a form across
+lines naturally:
+
+```
+velox> (define fact
+...      (lambda (n)
+...        (if (<= n 1) 1
+...            (* n (fact (- n 1))))))
+; defined fact
+velox> (fact 5)
+120
+```
+
+**Python** uses CPython's interactive convention: indented blocks
+(`def`, `class`, `if`, `for`, `while`, `try`, ...) stay open until you
+**press Enter on a blank line**:
+
+```
+pyvelox> def fact(n):
+...          if n <= 1:
+...              return 1
+...          return n * fact(n - 1)
+...                                ← blank Enter terminates the def
+; defined fact
+pyvelox> fact(5)
+120
+```
+
+One-line bodies (`def f(): return 1`) need no blank line; the empty
+line is only required to terminate multi-statement indented blocks.
+
+---
+
+## Meta-commands
+
+Anything starting with `:` at the prompt is a driver command, not
+source.
+
+| Command          | Effect                                                      |
+|------------------|-------------------------------------------------------------|
+| `:help`          | List the meta-commands.                                     |
+| `:quit`, `:q`, `:exit` | Exit. Same as Ctrl-D.                                 |
+| `:reset`         | Reset compiler and VM session state (forgets all definitions). |
+| `:threads`       | Show running thread count on the VM.                        |
+| `:sync`          | Print sync invariants (debug aid).                          |
+| `:version`       | Show backend version info from the INFO_REPLY.              |
+
+`:reset` is the recovery hatch when the driver reports `; session
+desynced`. Both sides start fresh and the next form goes through
+cleanly.
+
+---
+
+## Connecting to a Contiki-NG device
+
+Build a Contiki-NG firmware with REPL support. There's no baked-in
+program — the device exposes `/repl/cmd` and `/repl/events` CoAP
+resources, and the host-side driver speaks to them.
+
+For the **native target** (a hosted Contiki-NG process talking to the
+host kernel through tun0):
 
 ```
 cd ports/contiki-ng
@@ -54,15 +125,12 @@ make TARGET=native VM_REPL=1
 sudo ./build/native/vm.native fd00::1/64
 ```
 
-The argument `fd00::1/64` is the **host side** of the tun0 tunnel.
-The simulated device gets a separate IPv6 address derived from its
-MAC address. With the default MAC `01:02:03:04:05:06:07:08`, the
-device's address is `fd00::302:304:506:708` (after the EUI-64 U-bit
-flip). The firmware logs it on startup as `Added global IPv6
-address ...`. If you change `PLATFORM_CONF_MAC_ADDR` you'll get a
-different address.
+The argument `fd00::1/64` is the **host side** of the tun0 tunnel. The
+process gets its own IPv6 address derived from its (default) MAC
+address — typically `fd00::302:304:506:708`. The firmware logs it on
+startup as `Added global IPv6 address ...`.
 
-A quick sanity check via `aiocoap-client`:
+Sanity-check the resources:
 
 ```
 aiocoap-client coap://[fd00::302:304:506:708]/.well-known/core
@@ -74,28 +142,123 @@ should list `</repl/cmd>` and `</repl/events>`. Then drive the REPL:
 ./tools/repl/velox-repl --vm "coap://[fd00::302:304:506:708]/repl"
 ```
 
-The same protocol travels over CoAP that travels over stdio, with
-events streamed via CoAP Observe. Block-wise transfer is supported
-by aiocoap automatically when delta payloads exceed the link MTU.
-For Cooja simulation or a real device, swap `TARGET=native` for the
-appropriate target (`zoul`, `cooja-mote`, etc.) and use the address
+The same protocol that runs over stdio runs over CoAP, with events
+streamed via CoAP Observe (RFC 7641). Block-wise transfer (RFC 7959)
+kicks in automatically for deltas larger than the link MTU.
+
+For an embedded target, swap `TARGET=native` for the right target
+(`zoul`, etc.), flash with `make ... vm.upload`, and use the address
 the firmware actually announces at boot.
+
+---
+
+## Where the auto-detect looks
+
+`--compiler` and `--vm` accept four shapes each:
+
+- **omitted** — auto-detect; this is the normal mode.
+- `stub` — use the in-tree test fixture (see *Test fixtures* below).
+- a shell command — split with `shlex` and spawned as a subprocess.
+- (`--vm` only) a `coap://[host]/repl` URI for the CoAP transport.
+
+Auto-detect resolves, relative to the repo root:
+
+| What       | Scheme                                              | Python                                       |
+|------------|-----------------------------------------------------|----------------------------------------------|
+| Compiler   | `racket languages/scheme-racket/repl-server.rkt`    | `languages/python/pyvelox-repl-server`       |
+| VM         | `bin/vm-repl`                                       | (same)                                       |
+
+Override examples:
+
+```
+./velox-repl --compiler "racket /path/to/custom-server.rkt"
+./velox-repl --vm /tmp/my-vm-build
+./velox-repl --vm coap://[fd00::1]/repl
+```
+
+---
+
+## Test fixtures
+
+Driver-side smoke testing without needing a real compiler or VM built:
+
+```
+./velox-repl --compiler stub --vm stub
+```
+
+The fixtures live in `tests/fixtures/`:
+
+- `stub_compiler.py` — accepts a tiny Scheme-ish source dialect, emits
+  real-format deltas. Useful for exercising the driver's sync
+  invariants and the wire format end-to-end.
+- `stub_vm.py` — accepts those deltas, returns synthetic results.
+- `stub_delta.py` — shared utilities for the two stubs.
+
+Either side can be stubbed independently — the protocol is the same
+on the wire either way.
+
+---
+
+## Recovering from errors
+
+| What you see                          | What it means                                                                        |
+|---------------------------------------|--------------------------------------------------------------------------------------|
+| `; compile error: ...`                | The compiler rejected the form. Session is intact; just retype.                      |
+| `; runtime error [...]: ...`          | The VM raised an error during evaluation. The REPL main thread is auto-recovered.    |
+| `; session desynced: ...`             | Compiler and VM disagree on table watermarks. Run `:reset`.                          |
+| Prompt stuck at `... `                | Something is incomplete. Ctrl-C clears the buffer.                                   |
+| `info handshake failed: ...`          | Banner reported the version unknown. The session is still usable; capabilities just aren't surfaced. |
+
+---
+
+## Troubleshooting
+
+**Banner shows "version unknown"** — the VM didn't respond to the INFO
+frame, usually because it predates the handshake. Functionality still
+works; only the version line is missing.
+
+**CoAP: `info handshake failed: ResponseTimedOut`** — device isn't
+reachable. Check `ping6` to the device's address first.
+
+**CoAP: replies stop after one form on the embedded target** —
+oversized RESULT frames get encoded as `OPAQUE "result too large: NN
+bytes, max MM"` rather than dropped. If you see that, simplify the
+form's output or raise `COAP_MAX_CHUNK_SIZE` in the firmware's
+`project-conf.h`.
+
+**Python: `Variable 'X' conflicts with VM primitive, renamed to
+'py_X'`** — pyvelox emits this on stderr the first time it remaps a
+name (e.g. `add` collides with the `add` primitive). It's a heads-up,
+not an error; the binding still works under the renamed identifier
+internally.
+
+**Scheme: very first form on a fresh CoAP backend hangs briefly** —
+the driver issues a RESET on connect to make sure the device starts
+the session fresh. That round-trip can take a few hundred ms.
+
+---
 
 ## Layout
 
 ```
 velox_repl/
-  cli.py          argparse + TTY entry point
-  core.py         session state machine (sync invariants, evaluate/reset/interrupt)
-  compiler.py     compiler subprocess client (s-expression protocol)
-  vm.py           VM transport + binary frame protocol (async events)
-  protocol.py     frame codec + s-expr helpers
+  cli.py            argparse + TTY entry point
+  core.py           session state machine (sync invariants, evaluate/reset)
+  compiler.py       compiler subprocess client (s-expression protocol)
+  vm.py             VM stdio transport + binary frame codec
+  coap_transport.py CoAP transport for Contiki-NG devices (aiocoap)
+  protocol.py       frame codec + s-expr helpers + INFO_REPLY decoder
   render/
-    scheme.py     vm_obj_t -> Scheme surface syntax
-    python.py     vm_obj_t -> Python surface syntax (placeholder)
-  stubs/
-    stub_compiler.py    fake compiler for stage 1
-    stub_vm.py          fake VM for stage 1
+    decode.py       wire-format VObj decoder
+    scheme.py       VObj -> Scheme surface syntax
+    python.py       VObj -> Python surface syntax
+tests/
+  fixtures/
+    stub_compiler.py
+    stub_vm.py
+    stub_delta.py
+  test_coap_loopback.py
 ```
 
-See `doc/repl-design.md` (forthcoming) for the protocol spec.
+Protocol-level details (frame layout, delta wire format, append-loader
+semantics, INFO_REPLY fields) live in `doc/repl-design.md`.
