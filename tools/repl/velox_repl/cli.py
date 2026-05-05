@@ -1,9 +1,15 @@
 """TTY frontend.
 
-Spawns a compiler subprocess and a VM subprocess (defaulting to the
-stage-1 stubs), then runs a prompt_toolkit-driven loop. The frontend is
-deliberately thin: all evaluation logic lives in ``ReplSession`` and all
-rendering in ``velox_repl.render``.
+Spawns a compiler subprocess and a VM subprocess, then runs a
+prompt_toolkit-driven loop. The frontend is deliberately thin: all
+evaluation logic lives in ``ReplSession`` and all rendering in
+``velox_repl.render``.
+
+By default the wrapper auto-detects the real Racket REPL server
+(``languages/scheme-racket/repl-server.rkt`` + ``racket`` on PATH) and
+the real C VM (``bin/vm-repl``), both resolved relative to the package
+location. ``--compiler stub`` / ``--vm stub`` switch to the in-tree
+test fixtures under ``tests/fixtures/`` for driver-side testing.
 """
 
 from __future__ import annotations
@@ -11,9 +17,10 @@ from __future__ import annotations
 import argparse
 import os
 import shlex
+import shutil
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory, InMemoryHistory
@@ -38,8 +45,12 @@ CONT_PROMPT = {"scheme": "...    ", "python": "...      "}
 def main(argv: Optional[List[str]] = None) -> int:
     args = _parse_args(argv)
 
-    compiler_cmd = _resolve_subprocess(args.compiler, "stub_compiler", args.language)
-    vm_cmd = _resolve_subprocess(args.vm, "stub_vm", args.language)
+    try:
+        compiler_cmd, compiler_label = _resolve_compiler(args.compiler, args.language)
+        vm_cmd, vm_label = _resolve_vm(args.vm)
+    except _ResolutionError as e:
+        print(f"velox-repl: {e}", file=sys.stderr)
+        return 1
 
     history = _resolve_history(args.history_file)
 
@@ -73,6 +84,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     print(f"VeloxVM REPL (language: {args.language})")
+    print(f"  compiler: {compiler_label}")
+    print(f"  vm:       {vm_label}")
     if sys.stdin.isatty():
         print("Type :help for commands, :quit or Ctrl-D to exit.")
 
@@ -209,13 +222,70 @@ def _handle_meta(repl: ReplSession, command: str, args: argparse.Namespace) -> b
     return True
 
 
-def _resolve_subprocess(spec: Optional[str], stub_module: str, language: str) -> List[str]:
-    """Translate the --compiler / --vm CLI argument into argv."""
-    if spec is None or spec == "stub":
-        # Run the stub via the *current* Python interpreter so it picks
-        # up the same env (uv-cached venv or the project venv).
-        return [sys.executable, "-m", f"velox_repl.stubs.{stub_module}"]
-    return shlex.split(spec)
+class _ResolutionError(RuntimeError):
+    pass
+
+
+def _repo_root() -> Path:
+    """Locate the repo root by walking up from this file's location."""
+    return Path(__file__).resolve().parents[3]
+
+
+def _stub_argv(fixture_module: str) -> List[str]:
+    """Run a stub fixture via the current Python interpreter."""
+    return [sys.executable, "-m", f"tests.fixtures.{fixture_module}"]
+
+
+def _resolve_compiler(spec: Optional[str], language: str) -> Tuple[List[str], str]:
+    """Returns (argv, label) for the compiler subprocess.
+
+    spec is one of:
+      None   -> auto-detect a real compiler for the language
+      "stub" -> use the in-tree test fixture
+      else   -> shlex-split the user-supplied command line
+    """
+    if spec == "stub":
+        return _stub_argv("stub_compiler"), "stub fixture"
+
+    if spec is not None:
+        return shlex.split(spec), spec
+
+    # Auto-detect.
+    if language == "scheme":
+        racket = shutil.which("racket")
+        if racket is None:
+            raise _ResolutionError(
+                "racket not on PATH; install Racket from https://racket-lang.org/ "
+                "or pass --compiler stub for the test fixture"
+            )
+        rkt = _repo_root() / "languages" / "scheme-racket" / "repl-server.rkt"
+        if not rkt.exists():
+            raise _ResolutionError(
+                f"compiler not found at {rkt}; pass --compiler stub for the test fixture"
+            )
+        return [racket, str(rkt)], f"racket {rkt.relative_to(_repo_root())}"
+
+    raise _ResolutionError(
+        f"no auto-detect rule for language={language!r}; pass --compiler "
+        "explicitly or --compiler stub for the test fixture"
+    )
+
+
+def _resolve_vm(spec: Optional[str]) -> Tuple[List[str], str]:
+    """Returns (argv, label) for the VM subprocess."""
+    if spec == "stub":
+        return _stub_argv("stub_vm"), "stub fixture"
+
+    if spec is not None:
+        return shlex.split(spec), spec
+
+    binary = _repo_root() / "bin" / "vm-repl"
+    if not binary.exists():
+        raise _ResolutionError(
+            f"{binary} not built; run `make vm-repl` from the repo root, "
+            "or pass --vm stub for the test fixture"
+        )
+    return [str(binary)], str(binary.relative_to(_repo_root()))
 
 
 def _resolve_history(history_file: Optional[str]):
@@ -239,11 +309,13 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
     )
     p.add_argument(
         "--compiler",
-        help='compiler command; "stub" (default) uses the in-tree stub',
+        help='compiler command; "stub" uses the in-tree test fixture; '
+             'omit to auto-detect the real Racket repl-server',
     )
     p.add_argument(
         "--vm",
-        help='VM command; "stub" (default) uses the in-tree stub',
+        help='VM command; "stub" uses the in-tree test fixture; '
+             'omit to auto-detect bin/vm-repl',
     )
     p.add_argument(
         "--history-file",

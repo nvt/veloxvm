@@ -36,7 +36,7 @@ from velox_repl.render.decode import (
     encode_string,
     encode_symbol,
 )
-from velox_repl.stubs.stub_delta import StubDelta, encode as encode_delta
+from tests.fixtures.stub_delta import StubDelta, encode as encode_delta
 
 
 @dataclass

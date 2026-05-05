@@ -24,7 +24,7 @@ from velox_repl.protocol import (
     read_frame,
 )
 from velox_repl.render.decode import encode_string
-from velox_repl.stubs.stub_delta import (
+from tests.fixtures.stub_delta import (
     MAGIC,
     STUB_MARKER,
     StubDelta,
