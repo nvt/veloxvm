@@ -23,15 +23,25 @@ Either way: no manual `source activate`. The wrapper is in `tools/repl/`
 and is intended to be symlinked from `~/.local/bin/` if you want it on
 PATH globally.
 
-## Stage 1 demo
+## Demo
 
-Stage 1 ships in-process Python stubs for both the compiler and the VM,
-so the driver can be exercised end-to-end before the real Racket
-REPL-server mode and the C-side append-loader are implemented:
+Default backends are the in-tree stubs, which let the driver be
+exercised end-to-end without any other components built:
 
 ```
 ./velox-repl --compiler stub --vm stub
 ```
+
+The real Racket compiler service can be plugged in independently of
+the C-side VM (the stub VM accepts real-format deltas and returns a
+synthetic placeholder result, so the protocol still round-trips):
+
+```
+./velox-repl --compiler "racket ../../languages/scheme-racket/repl-server.rkt"
+```
+
+When the C-side append-loader is built, replace `--vm stub` with the
+real `bin/vm-repl` binary; the protocol on the wire is unchanged.
 
 ## Layout
 

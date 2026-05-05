@@ -15,13 +15,83 @@ import struct
 import sys
 from typing import Dict, Tuple
 
+import struct as _struct
+
 from velox_repl.protocol import (
     Frame,
     FrameType,
     encode_frame,
     read_frame,
 )
-from velox_repl.stubs.stub_delta import StubDelta, decode as decode_delta
+from velox_repl.render.decode import encode_string
+from velox_repl.stubs.stub_delta import (
+    MAGIC,
+    STUB_MARKER,
+    StubDelta,
+    decode as decode_delta,
+)
+
+
+# Real-format delta tags from doc/repl-design.md
+_TAG_STRINGS = 0x01
+_TAG_SYMBOLS = 0x02
+_TAG_EXPRS = 0x03
+_TAG_CAPTURES = 0x04
+_TAG_ENTRY = 0x05
+_TAG_END = 0xFF
+
+
+def _is_stub_delta(data: bytes) -> bool:
+    return (
+        len(data) >= 4
+        and data[0:2] == MAGIC
+        and data[3] == STUB_MARKER
+    )
+
+
+def _summarize_real_delta(data: bytes) -> tuple[int, str]:
+    """Inspect a real-format delta and return (entry_expr_id, summary).
+    The stub doesn't actually execute; it just hands back a synthetic
+    description so the driver pipeline can be exercised end-to-end."""
+    if len(data) < 3 or data[0:2] != MAGIC:
+        raise ValueError(f"bad magic: {data[0:2]!r}")
+    version = data[2]
+    if version != 1:
+        raise ValueError(f"unsupported delta version: {version}")
+    counts = {"strings": 0, "symbols": 0, "exprs": 0, "captures": 0}
+    entry = 0
+    pos = 3
+    while pos < len(data):
+        tag = data[pos]
+        if pos + 3 > len(data):
+            raise ValueError("truncated section header")
+        (plen,) = _struct.unpack("!H", data[pos + 1 : pos + 3])
+        payload = data[pos + 3 : pos + 3 + plen]
+        if len(payload) < plen:
+            raise ValueError("truncated section payload")
+        if tag == _TAG_END:
+            break
+        if tag in (_TAG_STRINGS, _TAG_SYMBOLS, _TAG_EXPRS):
+            if len(payload) >= 4:
+                (_, count) = _struct.unpack("!HH", payload[:4])
+                key = {
+                    _TAG_STRINGS: "strings",
+                    _TAG_SYMBOLS: "symbols",
+                    _TAG_EXPRS: "exprs",
+                }[tag]
+                counts[key] += count
+        elif tag == _TAG_CAPTURES:
+            if len(payload) >= 2:
+                (count,) = _struct.unpack("!H", payload[:2])
+                counts["captures"] += count
+        elif tag == _TAG_ENTRY:
+            if len(payload) >= 2:
+                (entry,) = _struct.unpack("!H", payload[:2])
+        pos += 3 + plen
+    summary = "; ".join(
+        f"{k}+{v}" for k, v in counts.items() if v
+    ) or "no new items"
+    return entry, f"<real delta: {summary}, entry={entry}>"
 
 
 def main() -> int:
@@ -43,12 +113,22 @@ def main() -> int:
 
         if frame.type == FrameType.APPLY:
             try:
-                delta = decode_delta(frame.payload)
+                if _is_stub_delta(frame.payload):
+                    delta = decode_delta(frame.payload)
+                    program[delta.entry_expr_id] = (
+                        delta.kind, delta.name, delta.obj_encoding,
+                    )
+                    ack_id = max(next_expected_start, delta.entry_expr_id)
+                else:
+                    # Real-format delta. We don't execute, but we record
+                    # a synthetic placeholder result keyed by entry id so
+                    # RUN works end-to-end against a real compiler.
+                    entry, summary = _summarize_real_delta(frame.payload)
+                    program[entry] = ("expr", "", encode_string(summary))
+                    ack_id = max(next_expected_start, entry)
             except ValueError as e:
                 _write(stdout, _err_frame(2, f"bad delta: {e}"))
                 continue
-            program[delta.entry_expr_id] = (delta.kind, delta.name, delta.obj_encoding)
-            ack_id = max(next_expected_start, delta.entry_expr_id)
             next_expected_start = ack_id + 1
             _write(stdout, Frame(FrameType.ACK, struct.pack("!H", ack_id)))
             continue
