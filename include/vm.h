@@ -112,6 +112,7 @@ typedef struct vm_program {
 #define VM_EXPR_SAVE_FRAME   0x10
 #define VM_EXPR_CONTINUATION 0x20
 #define VM_EXPR_GUARD_IN_HANDLER  0x40  /* Guard is executing handler, not body (R6RS/R7RS) */
+#define VM_EXPR_REWRITTEN_BY_APPLY 0x80 /* Apply did in-place argv rewrite; cut_tail_call_frames re-executes the call site instead of preserving argv */
 
 typedef uint32_t vm_arg_set_t;
 

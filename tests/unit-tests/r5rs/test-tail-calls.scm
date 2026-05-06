@@ -93,4 +93,28 @@
       (apply loop-apply (list (- n 1)))))
 (assert-equal 'ok (loop-apply TCO-DEPTH) "apply in tail position: 50k tail calls")
 
+(test-suite "Tail Recursion - Side-Effecting Argument Expressions")
+
+;; Regression: cut_tail_call_frames previously re-executed the call-site
+;; bytecode, double-firing side-effecting argument expressions on each
+;; tail call. See doc/apply-tail-call-investigation.md.
+
+(define se-counter 0)
+(define (next!)
+  (let ((v se-counter))
+    (set! se-counter (+ se-counter 1))
+    v))
+
+(define (loop-side-effect c limit)
+  (if (>= c limit)
+      'done
+      (loop-side-effect (next!) limit)))
+
+(set! se-counter 0)
+(assert-equal 'done (loop-side-effect (next!) 100)
+              "tail call with side-effecting arg: termination")
+;; 101 = one seed call + one per iteration; pre-fix advanced ~2x.
+(assert-equal 101 se-counter
+              "side-effecting arg evaluated exactly once per call")
+
 (test-summary)

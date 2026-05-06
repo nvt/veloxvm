@@ -695,6 +695,9 @@ VM_FUNCTION(apply)
   thread->expr->argc = 1 + list->length;
   thread->expr->eval_requested = 1;
   thread->expr->eval_completed = 0;
+  /* Tell cut_tail_call_frames to re-execute the call site so apply
+     re-runs and re-spreads, rather than preserve the rewritten argv. */
+  VM_SET_FLAG(thread->expr->flags, VM_EXPR_REWRITTEN_BY_APPLY);
 
   vm_list_destroy(list);
 }
