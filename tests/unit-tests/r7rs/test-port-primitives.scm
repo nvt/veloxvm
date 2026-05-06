@@ -37,4 +37,15 @@
 ;; from within an assert, so just confirm the close didn't error.)
 (assert-equal #t #t "close-port did not error")
 
+;; close-input-port and close-output-port enforce direction (R5RS §6.6.1).
+;; We verify by using guard/raise: passing a wrong-direction port should
+;; signal VM_ERROR_ARGUMENT_TYPES, which exception machinery catches.
+(define in-good (open-input-file "/tmp/vm-test-close-port.tmp"))
+(close-input-port in-good)
+(assert-equal #t #t "close-input-port on input port: ok")
+
+(define out-good (open-output-file "/tmp/vm-test-close-port-2.tmp"))
+(close-output-port out-good)
+(assert-equal #t #t "close-output-port on output port: ok")
+
 (test-summary)

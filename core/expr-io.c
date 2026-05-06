@@ -151,11 +151,19 @@ VM_FUNCTION(open_output_file)
 
 VM_FUNCTION(close_input_port)
 {
+  if(VM_IS_CLEAR(argv[0].value.port->flags, VM_PORT_FLAG_INPUT)) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
   vm_native_close_port(argv[0].value.port);
 }
 
 VM_FUNCTION(close_output_port)
 {
+  if(VM_IS_CLEAR(argv[0].value.port->flags, VM_PORT_FLAG_OUTPUT)) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
   vm_native_close_port(argv[0].value.port);
 }
 
