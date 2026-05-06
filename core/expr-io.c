@@ -79,6 +79,20 @@ VM_FUNCTION(output_portp)
                   VM_IS_SET(argv[0].value.port->flags, VM_PORT_FLAG_OUTPUT));
 }
 
+VM_FUNCTION(input_port_openp)
+{
+  uint8_t need = VM_PORT_FLAG_INPUT | VM_PORT_FLAG_OPEN;
+  VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_PORT &&
+                  (argv[0].value.port->flags & need) == need);
+}
+
+VM_FUNCTION(output_port_openp)
+{
+  uint8_t need = VM_PORT_FLAG_OUTPUT | VM_PORT_FLAG_OPEN;
+  VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_PORT &&
+                  (argv[0].value.port->flags & need) == need);
+}
+
 VM_FUNCTION(eof_objectp)
 {
   VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_EOF);

@@ -228,3 +228,5 @@ code writes.
 | 209 | `close_port` | `close-port` |
 | 210 | `newline` | `newline` |
 | 211 | `flush_output_port` | `flush-output-port` |
+| 212 | `input_port_openp` | `input-port-open?` |
+| 213 | `output_port_openp` | `output-port-open?` |

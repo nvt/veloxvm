@@ -95,7 +95,8 @@
     bind_function_rest
     string->symbol
     eof-object
-    close-port newline flush-output-port))
+    close-port newline flush-output-port
+    input-port-open? output-port-open?))
 
 ;; Check if symbol is a VM primitive
 (define (vm-primitive? sym)

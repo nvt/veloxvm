@@ -437,6 +437,12 @@ static const vm_procedure_t operators[] = {
               VM_PROCEDURE_EVAL_ARGS, 0, 1),
   VM_OPERATOR(flush_output_port, VM_TYPE_FLAG(VM_TYPE_PORT),
               VM_PROCEDURE_EVAL_ARGS, 0, 1),
+
+  /* R7RS §6.13.1 port-open predicates. */
+  VM_OPERATOR(input_port_openp, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(output_port_openp, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
 };
 
 #define MAX_COMMON_SYMBOL_ID 127

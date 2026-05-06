@@ -174,7 +174,10 @@ static vm_symbol_t symbol_map[] = {
   SYM("eof-object"),
 
   /* Unified close (R7RS); newline (R5RS); flush-output-port (R7RS). */
-  SYM("close-port"), SYM("newline"), SYM("flush-output-port")
+  SYM("close-port"), SYM("newline"), SYM("flush-output-port"),
+
+  /* R7RS §6.13.1 port-open predicates. */
+  SYM("input-port-open?"), SYM("output-port-open?")
 };
 
 #define CORE_SYMBOL_COUNT VM_ARRAY_SIZE(symbol_map)

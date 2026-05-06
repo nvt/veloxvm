@@ -58,6 +58,8 @@ VM_DECLARE_FUNCTION(read);
 VM_DECLARE_FUNCTION(peek_char);
 VM_DECLARE_FUNCTION(eof_objectp);
 VM_DECLARE_FUNCTION(eof_object);
+VM_DECLARE_FUNCTION(input_port_openp);
+VM_DECLARE_FUNCTION(output_port_openp);
 VM_DECLARE_FUNCTION(char_readyp);
 VM_DECLARE_FUNCTION(close_port);
 VM_DECLARE_FUNCTION(newline);

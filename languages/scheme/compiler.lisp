@@ -128,7 +128,9 @@
 ;; what read-char / read / peek-char return at end of stream).
     eof-object
 ;; Unified close (R7RS), newline (R5RS), flush-output-port (R7RS).
-    close-port newline flush-output-port))
+    close-port newline flush-output-port
+;; R7RS port-open predicates.
+    input-port-open? output-port-open?))
 
 ;; The following values are stored in the first two bytes of a VM app
 ;; to be able to identify the app.
