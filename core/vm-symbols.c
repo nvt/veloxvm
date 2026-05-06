@@ -181,7 +181,11 @@ static vm_symbol_t symbol_map[] = {
 
   /* R7RS string ports (§6.13.1, §6.13.3). */
   SYM("open-input-string"), SYM("open-output-string"),
-  SYM("get-output-string")
+  SYM("get-output-string"),
+
+  /* R7RS bytevector ports. */
+  SYM("open-input-bytevector"), SYM("open-output-bytevector"),
+  SYM("get-output-bytevector")
 };
 
 #define CORE_SYMBOL_COUNT VM_ARRAY_SIZE(symbol_map)

@@ -152,6 +152,9 @@ VM_PRIMITIVES = [
 
     # R7RS string ports.
     'open_input_string', 'open_output_string', 'get_output_string',
+
+    # R7RS bytevector ports.
+    'open_input_bytevector', 'open_output_bytevector', 'get_output_bytevector',
 ]
 
 # Create reverse lookup dictionary (name -> ID)
@@ -304,6 +307,9 @@ SCHEME_ALIASES = {
     'open-input-string': 'open_input_string',
     'open-output-string': 'open_output_string',
     'get-output-string': 'get_output_string',
+    'open-input-bytevector': 'open_input_bytevector',
+    'open-output-bytevector': 'open_output_bytevector',
+    'get-output-bytevector': 'get_output_bytevector',
 }
 
 
@@ -353,4 +359,4 @@ def get_primitive_name(symbol_id: int) -> str:
 
 
 # The primitive count must match core/vm-procedures.c exactly.
-assert len(VM_PRIMITIVES) == 217, f"Expected 217 primitives, got {len(VM_PRIMITIVES)}"
+assert len(VM_PRIMITIVES) == 220, f"Expected 220 primitives, got {len(VM_PRIMITIVES)}"

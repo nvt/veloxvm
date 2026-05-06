@@ -97,7 +97,8 @@
     eof-object
     close-port newline flush-output-port
     input-port-open? output-port-open?
-    open-input-string open-output-string get-output-string))
+    open-input-string open-output-string get-output-string
+    open-input-bytevector open-output-bytevector get-output-bytevector))
 
 ;; Check if symbol is a VM primitive
 (define (vm-primitive? sym)

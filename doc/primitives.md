@@ -233,3 +233,6 @@ code writes.
 | 214 | `open_input_string` | `open-input-string` |
 | 215 | `open_output_string` | `open-output-string` |
 | 216 | `get_output_string` | `get-output-string` |
+| 217 | `open_input_bytevector` | `open-input-bytevector` |
+| 218 | `open_output_bytevector` | `open-output-bytevector` |
+| 219 | `get_output_bytevector` | `get-output-bytevector` |

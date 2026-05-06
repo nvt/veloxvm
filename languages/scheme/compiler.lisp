@@ -132,7 +132,9 @@
 ;; R7RS port-open predicates.
     input-port-open? output-port-open?
 ;; R7RS string ports.
-    open-input-string open-output-string get-output-string))
+    open-input-string open-output-string get-output-string
+;; R7RS bytevector ports.
+    open-input-bytevector open-output-bytevector get-output-bytevector))
 
 ;; The following values are stored in the first two bytes of a VM app
 ;; to be able to identify the app.

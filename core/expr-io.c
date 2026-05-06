@@ -129,6 +129,36 @@ VM_FUNCTION(get_output_string)
   vm_string_port_get_output(thread, argv[0].value.port, &thread->result);
 }
 
+VM_FUNCTION(open_input_bytevector)
+{
+  vm_vector_t *vec;
+  vm_port_t *port;
+
+  vec = argv[0].value.vector;
+  if(VM_IS_CLEAR(vec->flags, VM_VECTOR_FLAG_BUFFER)) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+  port = vm_bytevector_port_open_input(thread, vec->bytes,
+                                       (size_t)vec->length);
+  if(port != NULL) {
+    VM_PUSH_PORT(port);
+  }
+}
+
+VM_FUNCTION(open_output_bytevector)
+{
+  vm_port_t *port = vm_bytevector_port_open_output(thread);
+  if(port != NULL) {
+    VM_PUSH_PORT(port);
+  }
+}
+
+VM_FUNCTION(get_output_bytevector)
+{
+  vm_bytevector_port_get_output(thread, argv[0].value.port, &thread->result);
+}
+
 VM_FUNCTION(current_input_port)
 {
   vm_port_t *port;
