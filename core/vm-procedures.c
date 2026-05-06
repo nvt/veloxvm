@@ -429,6 +429,14 @@ static const vm_procedure_t operators[] = {
      value is what read-char / read / peek-char return at end of
      input; this constructor lets user code synthesise one. */
   VM_OPERATOR(eof_object, VM_TYPE_NONE, VM_PROCEDURE_EVAL_ARGS, 0, 0),
+
+  /* R7RS unified close-port; R5RS newline; R7RS flush-output-port. */
+  VM_OPERATOR(close_port, VM_TYPE_FLAG(VM_TYPE_PORT),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(newline, VM_TYPE_FLAG(VM_TYPE_PORT),
+              VM_PROCEDURE_EVAL_ARGS, 0, 1),
+  VM_OPERATOR(flush_output_port, VM_TYPE_FLAG(VM_TYPE_PORT),
+              VM_PROCEDURE_EVAL_ARGS, 0, 1),
 };
 
 #define MAX_COMMON_SYMBOL_ID 127

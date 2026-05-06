@@ -200,6 +200,8 @@ typedef struct vm_port_io {
   int (*read_object)(vm_port_t *, vm_obj_t *);
   int (*write)(vm_port_t *, const char *, size_t);
   void (*close)(vm_port_t *);
+  /* Optional. NULL means the port is unbuffered and flush is a no-op. */
+  int (*flush)(vm_port_t *);
 } vm_port_io_t;
 
 typedef struct vm_device {

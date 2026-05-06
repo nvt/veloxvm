@@ -1216,6 +1216,18 @@ vm_native_char_readyp(vm_port_t *port)
   return VM_TRUE;
 }
 
+int
+vm_native_flush_port(vm_port_t *port)
+{
+  if(port == NULL) {
+    return 0;
+  }
+  if(port->io != NULL && port->io->flush != NULL) {
+    return port->io->flush(port);
+  }
+  return 0;
+}
+
 #ifdef VM_REPL_ENABLE
 vm_console_writer_t vm_native_console_writer;
 #endif

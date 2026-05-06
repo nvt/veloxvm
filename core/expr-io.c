@@ -325,6 +325,36 @@ VM_FUNCTION(display)
   vm_write_object(port, &argv[0]);
 }
 
+VM_FUNCTION(close_port)
+{
+  vm_native_close_port(argv[0].value.port);
+}
+
+VM_FUNCTION(newline)
+{
+  vm_port_t *port;
+
+  port = get_port(thread, argc, argv, VM_PORT_FLAG_OUTPUT);
+  if(port == NULL) {
+    return;
+  }
+
+  if(vm_native_write(port, "\n") == 0) {
+    vm_signal_error(thread, VM_ERROR_IO);
+  }
+}
+
+VM_FUNCTION(flush_output_port)
+{
+  vm_port_t *port;
+
+  port = get_port(thread, argc, argv, VM_PORT_FLAG_OUTPUT);
+  if(port == NULL) {
+    return;
+  }
+  vm_native_flush_port(port);
+}
+
 VM_FUNCTION(with_input_from_file)
 {
   vm_signal_error(thread, VM_ERROR_UNIMPLEMENTED);

@@ -126,7 +126,9 @@
     string->symbol
 ;; R7RS eof-object constructor (returns a value of the disjoint EOF type;
 ;; what read-char / read / peek-char return at end of stream).
-    eof-object))
+    eof-object
+;; Unified close (R7RS), newline (R5RS), flush-output-port (R7RS).
+    close-port newline flush-output-port))
 
 ;; The following values are stored in the first two bytes of a VM app
 ;; to be able to identify the app.

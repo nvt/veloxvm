@@ -900,7 +900,22 @@ vm_native_peek_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
 vm_boolean_t
 vm_native_char_readyp(vm_port_t *port)
 {
+  if(port->has_peek || VM_IS_SET(port->flags, VM_PORT_FLAG_EOF)) {
+    return VM_TRUE;
+  }
   return poll_port_instantly(port->fd, 0);
+}
+
+int
+vm_native_flush_port(vm_port_t *port)
+{
+  if(port == NULL) {
+    return 0;
+  }
+  if(port->io != NULL && port->io->flush != NULL) {
+    return port->io->flush(port);
+  }
+  return 0;
 }
 
 int

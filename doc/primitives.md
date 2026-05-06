@@ -225,3 +225,6 @@ code writes.
 | 206 | `bind_function_rest` | `bind_function_rest` |
 | 207 | `string_to_symbol` | `string->symbol` |
 | 208 | `eof_object` | `eof-object` |
+| 209 | `close_port` | `close-port` |
+| 210 | `newline` | `newline` |
+| 211 | `flush_output_port` | `flush-output-port` |

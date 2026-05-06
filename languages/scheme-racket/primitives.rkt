@@ -94,7 +94,8 @@
     box box-ref box-set!
     bind_function_rest
     string->symbol
-    eof-object))
+    eof-object
+    close-port newline flush-output-port))
 
 ;; Check if symbol is a VM primitive
 (define (vm-primitive? sym)

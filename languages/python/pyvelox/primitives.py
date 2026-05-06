@@ -143,6 +143,9 @@ VM_PRIMITIVES = [
     # R7RS eof-object constructor (disjoint EOF type returned by
     # read-char / read / peek-char at end of stream).
     'eof_object',
+
+    # Unified close (R7RS); newline (R5RS); flush-output-port (R7RS).
+    'close_port', 'newline', 'flush_output_port',
 ]
 
 # Create reverse lookup dictionary (name -> ID)
@@ -288,6 +291,8 @@ SCHEME_ALIASES = {
     'symbol->string': 'symbol_to_string',
     'string->symbol': 'string_to_symbol',
     'eof-object': 'eof_object',
+    'close-port': 'close_port',
+    'flush-output-port': 'flush_output_port',
 }
 
 
@@ -337,4 +342,4 @@ def get_primitive_name(symbol_id: int) -> str:
 
 
 # The primitive count must match core/vm-procedures.c exactly.
-assert len(VM_PRIMITIVES) == 209, f"Expected 209 primitives, got {len(VM_PRIMITIVES)}"
+assert len(VM_PRIMITIVES) == 212, f"Expected 212 primitives, got {len(VM_PRIMITIVES)}"

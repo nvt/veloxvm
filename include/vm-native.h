@@ -67,6 +67,7 @@ int vm_native_read_char(vm_thread_t *, vm_port_t *, vm_character_t *);
 int vm_native_peek_char(vm_thread_t *, vm_port_t *, vm_character_t *);
 int vm_native_write(vm_port_t *, const char *, ...);
 int vm_native_write_buffer(vm_port_t *, const char *, size_t);
+int vm_native_flush_port(vm_port_t *);
 
 #ifdef VM_REPL_ENABLE
 /* Optional hook invoked by vm_native_write / vm_native_write_buffer
