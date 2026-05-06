@@ -53,7 +53,12 @@ typedef enum vm_obj_type {
   VM_TYPE_EXTERNAL  = 13,
   VM_TYPE_NONE      = 14,
   VM_TYPE_BOX       = 15,
-  VM_TYPE_CLOSURE   = 16
+  VM_TYPE_CLOSURE   = 16,
+  /* R7RS §6.13.2 disjoint EOF type. The tag is the value; the union
+     payload is unused. eof-object? tests this tag, eof-object
+     constructs a value of this type, and read-char / read /
+     peek-char return one on real end-of-stream (not on poll-block). */
+  VM_TYPE_EOF       = 17
 } vm_obj_type_t;
 
 /* Definitions for denoting multiple object types; e.g., in specifications

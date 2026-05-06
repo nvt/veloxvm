@@ -168,7 +168,10 @@ static vm_symbol_t symbol_map[] = {
 
   /* R7RS string->symbol (restricted form: looks up names already in
      the program's symbol table; raises if not found). */
-  SYM("string->symbol")
+  SYM("string->symbol"),
+
+  /* R7RS §6.13.2 EOF object constructor. */
+  SYM("eof-object")
 };
 
 #define CORE_SYMBOL_COUNT VM_ARRAY_SIZE(symbol_map)

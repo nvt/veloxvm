@@ -279,6 +279,9 @@ write_object_depth(vm_port_t *port, vm_obj_t *obj, int depth)
   case VM_TYPE_NONE:
     vm_write(port, "#<unspecified>");
     break;
+  case VM_TYPE_EOF:
+    vm_write(port, "#<eof>");
+    break;
   case VM_TYPE_BOOLEAN:
     vm_write(port, "%s", obj->value.boolean == 0 ? "#f" : "#t");
     break;

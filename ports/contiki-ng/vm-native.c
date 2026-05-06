@@ -1133,21 +1133,28 @@ vm_native_read(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
 {
   int r;
 
+  if(VM_IS_SET(port->flags, VM_PORT_FLAG_EOF)) {
+    return -1;
+  }
+
   if(port->io && port->io->read_object) {
     r = port->io->read_object(port, obj);
   } else {
-    r = -1;
+    r = -2;
   }
 
-  if(r < 1) {
-    if(r < 0) {
-      vm_signal_error(thread, VM_ERROR_IO);
-      vm_set_error_string(thread, "port read failed");
-    }
-    return 0;
+  if(r >= 1) {
+    return 1;
   }
-
-  return 1;
+  if(r == 0) {
+    /* End of stream. */
+    port->flags |= VM_PORT_FLAG_EOF;
+    return -1;
+  }
+  /* r < 0: real I/O error. */
+  vm_signal_error(thread, VM_ERROR_IO);
+  vm_set_error_string(thread, "port read failed");
+  return 0;
 }
 
 int
@@ -1162,33 +1169,41 @@ vm_native_read_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
     return 1;
   }
 
+  if(VM_IS_SET(port->flags, VM_PORT_FLAG_EOF)) {
+    return -1;
+  }
+
   if(port->io && port->io->read) {
     r = port->io->read(port, buf, 1);
   } else {
-    r = -1;
+    r = -2;
   }
 
-  if(r < 1) {
-    if(r < 0) {
-      vm_signal_error(thread, VM_ERROR_IO);
-      vm_set_error_string(thread, "port read failed");
-    }
-    return 0;
+  if(r >= 1) {
+    *c = buf[0];
+    return 1;
   }
-
-  *c = buf[0];
-  return 1;
+  if(r == 0) {
+    port->flags |= VM_PORT_FLAG_EOF;
+    return -1;
+  }
+  vm_signal_error(thread, VM_ERROR_IO);
+  vm_set_error_string(thread, "port read failed");
+  return 0;
 }
 
 int
 vm_native_peek_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
 {
+  int r;
+
   if(port->has_peek) {
     *c = port->peek_char;
     return 1;
   }
-  if(vm_native_read_char(thread, port, c) != 1) {
-    return 0;
+  r = vm_native_read_char(thread, port, c);
+  if(r != 1) {
+    return r;
   }
   port->peek_char = *c;
   port->has_peek = 1;

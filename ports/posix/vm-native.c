@@ -804,6 +804,10 @@ vm_native_read(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
   ssize_t len;
   vm_vector_t *vector;
 
+  if(VM_IS_SET(port->flags, VM_PORT_FLAG_EOF)) {
+    return -1;
+  }
+
   if(port->io == NULL || port->io->read == NULL) {
     vm_signal_error(thread, VM_ERROR_IO);
     return 0;
@@ -818,7 +822,8 @@ vm_native_read(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
       vm_set_error_string(thread, strerror(errno));
       return 0;
     } else if(len == 0) {
-      return 0;
+      VM_SET_FLAG(port->flags, VM_PORT_FLAG_EOF);
+      return -1;
     }
 
     vector = vm_vector_create(obj, len, VM_VECTOR_FLAG_BUFFER) ;
@@ -852,6 +857,10 @@ vm_native_read_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
     return 1;
   }
 
+  if(VM_IS_SET(port->flags, VM_PORT_FLAG_EOF)) {
+    return -1;
+  }
+
   if(port->io == NULL || port->io->read == NULL) {
     vm_signal_error(thread, VM_ERROR_IO);
     return 0;
@@ -865,7 +874,8 @@ vm_native_read_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
       vm_set_error_string(thread, strerror(errno));
       return 0;
     } else if(r == 0) {
-      return 0;
+      VM_SET_FLAG(port->flags, VM_PORT_FLAG_EOF);
+      return -1;
     }
 
     *c = buf[0];
@@ -883,12 +893,15 @@ vm_native_read_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
 int
 vm_native_peek_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
 {
+  int r;
+
   if(port->has_peek) {
     *c = port->peek_char;
     return 1;
   }
-  if(vm_native_read_char(thread, port, c) != 1) {
-    return 0;
+  r = vm_native_read_char(thread, port, c);
+  if(r != 1) {
+    return r;
   }
   port->peek_char = *c;
   port->has_peek = 1;

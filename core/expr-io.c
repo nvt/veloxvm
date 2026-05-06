@@ -81,8 +81,12 @@ VM_FUNCTION(output_portp)
 
 VM_FUNCTION(eof_objectp)
 {
-  VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_CHARACTER &&
-                  argv[0].value.character == '\0');
+  VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_EOF);
+}
+
+VM_FUNCTION(eof_object)
+{
+  VM_PUSH_EOF();
 }
 
 VM_FUNCTION(current_input_port)
@@ -159,14 +163,19 @@ VM_FUNCTION(read_char)
 {
   vm_port_t *port;
   vm_character_t c;
+  int r;
 
   port = get_port(thread, argc, argv, VM_PORT_FLAG_INPUT);
   if(port == NULL) {
     return;
   }
 
-  if(vm_native_read_char(thread, port, &c) == 1) {
+  r = vm_native_read_char(thread, port, &c);
+  if(r == 1) {
     VM_PUSH_CHARACTER(c);
+    VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
+  } else if(r == -1) {
+    VM_PUSH_EOF();
     VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
   } else if(thread->status == VM_THREAD_WAITING) {
     VM_SET_FLAG(thread->expr->flags, VM_EXPR_RESTART);
@@ -176,17 +185,19 @@ VM_FUNCTION(read_char)
 VM_FUNCTION(read)
 {
   vm_port_t *port;
+  int r;
 
   port = get_port(thread, argc, argv, VM_PORT_FLAG_INPUT);
   if(port == NULL) {
     return;
   }
 
-  if(vm_native_read(thread, port, &thread->result) == 0) {
-    VM_PUSH_CHARACTER('\0');
+  r = vm_native_read(thread, port, &thread->result);
+  if(r == -1) {
+    VM_PUSH_EOF();
   }
 
-  if(thread->status == VM_THREAD_WAITING) {
+  if(r != 1 && r != -1 && thread->status == VM_THREAD_WAITING) {
     VM_SET_FLAG(thread->expr->flags, VM_EXPR_RESTART);
   } else {
     VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
@@ -197,14 +208,19 @@ VM_FUNCTION(peek_char)
 {
   vm_port_t *port;
   vm_character_t c;
+  int r;
 
   port = get_port(thread, argc, argv, VM_PORT_FLAG_INPUT);
   if(port == NULL) {
     return;
   }
 
-  if(vm_native_peek_char(thread, port, &c) == 1) {
+  r = vm_native_peek_char(thread, port, &c);
+  if(r == 1) {
     VM_PUSH_CHARACTER(c);
+    VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
+  } else if(r == -1) {
+    VM_PUSH_EOF();
     VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
   } else if(thread->status == VM_THREAD_WAITING) {
     VM_SET_FLAG(thread->expr->flags, VM_EXPR_RESTART);

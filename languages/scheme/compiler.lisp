@@ -123,7 +123,10 @@
     bind_function_rest
 ;; R7RS string->symbol (restricted form: looks up names already in the
 ;; program's symbol table; raises if not found).
-    string->symbol))
+    string->symbol
+;; R7RS eof-object constructor (returns a value of the disjoint EOF type;
+;; what read-char / read / peek-char return at end of stream).
+    eof-object))
 
 ;; The following values are stored in the first two bytes of a VM app
 ;; to be able to identify the app.

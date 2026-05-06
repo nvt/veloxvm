@@ -136,6 +136,11 @@
                   thread->result.value.port = (x); \
                 } while (0)
 
+#define VM_PUSH_EOF() \
+                do { \
+                  thread->result.type = VM_TYPE_EOF; \
+                } while (0)
+
 /* Debugging macro. */
 #define VM_DEBUG_FORCE   0
 #define VM_DEBUG_LOW     1
