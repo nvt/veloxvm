@@ -1134,9 +1134,11 @@ vm_native_read(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
   int r;
 
   if(VM_IS_SET(port->flags, VM_PORT_FLAG_EOF)) {
-    return -1;
+    return VM_NATIVE_READ_EOF;
   }
 
+  /* The io->read_object callback's own return convention: >=1 bytes
+     read, 0 EOF, <0 I/O error. -2 stands in for "no read callback". */
   if(port->io && port->io->read_object) {
     r = port->io->read_object(port, obj);
   } else {
@@ -1144,17 +1146,15 @@ vm_native_read(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
   }
 
   if(r >= 1) {
-    return 1;
+    return VM_NATIVE_READ_OK;
   }
   if(r == 0) {
-    /* End of stream. */
     port->flags |= VM_PORT_FLAG_EOF;
-    return -1;
+    return VM_NATIVE_READ_EOF;
   }
-  /* r < 0: real I/O error. */
   vm_signal_error(thread, VM_ERROR_IO);
   vm_set_error_string(thread, "port read failed");
-  return 0;
+  return VM_NATIVE_READ_ERROR;
 }
 
 int
@@ -1166,11 +1166,11 @@ vm_native_read_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
   if(port->has_peek) {
     *c = port->peek_char;
     port->has_peek = 0;
-    return 1;
+    return VM_NATIVE_READ_OK;
   }
 
   if(VM_IS_SET(port->flags, VM_PORT_FLAG_EOF)) {
-    return -1;
+    return VM_NATIVE_READ_EOF;
   }
 
   if(port->io && port->io->read) {
@@ -1181,15 +1181,15 @@ vm_native_read_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
 
   if(r >= 1) {
     *c = buf[0];
-    return 1;
+    return VM_NATIVE_READ_OK;
   }
   if(r == 0) {
     port->flags |= VM_PORT_FLAG_EOF;
-    return -1;
+    return VM_NATIVE_READ_EOF;
   }
   vm_signal_error(thread, VM_ERROR_IO);
   vm_set_error_string(thread, "port read failed");
-  return 0;
+  return VM_NATIVE_READ_ERROR;
 }
 
 int
@@ -1199,15 +1199,15 @@ vm_native_peek_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
 
   if(port->has_peek) {
     *c = port->peek_char;
-    return 1;
+    return VM_NATIVE_READ_OK;
   }
   r = vm_native_read_char(thread, port, c);
-  if(r != 1) {
+  if(r != VM_NATIVE_READ_OK) {
     return r;
   }
   port->peek_char = *c;
   port->has_peek = 1;
-  return 1;
+  return VM_NATIVE_READ_OK;
 }
 
 vm_boolean_t

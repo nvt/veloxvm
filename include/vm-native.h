@@ -52,6 +52,16 @@ void vm_native_incoming_clientp(vm_thread_t *, vm_port_t *, vm_obj_t *);
 int vm_native_resolve(vm_thread_t *, const char *hostname);
 int vm_native_parse_address(const char *str, uint8_t *bytes, size_t *len);
 vm_port_t *vm_native_open_file(vm_thread_t *, const char *, int);
+/* Return values for vm_native_read, vm_native_read_char, and
+   vm_native_peek_char. ERROR means the impl already called
+   vm_signal_error; the caller does not need to check thread->status. */
+typedef enum {
+  VM_NATIVE_READ_OK      =  1,
+  VM_NATIVE_READ_BLOCKED =  0,
+  VM_NATIVE_READ_EOF     = -1,
+  VM_NATIVE_READ_ERROR   = -2
+} vm_native_read_result_t;
+
 int vm_native_read(vm_thread_t *, vm_port_t *, vm_obj_t *);
 int vm_native_read_char(vm_thread_t *, vm_port_t *, vm_character_t *);
 int vm_native_peek_char(vm_thread_t *, vm_port_t *, vm_character_t *);
