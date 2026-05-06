@@ -502,6 +502,7 @@ vm_port_register(vm_port_t *port)
   if(port == NULL) {
     return;
   }
+  port->has_peek = 0;
   port->next = port_list_head;
   port_list_head = port;
 }

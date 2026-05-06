@@ -591,6 +591,9 @@ vm_native_close_port(vm_port_t *port)
   /* Per-IO close also reclaims the underlying native_socket for socket
      ports (see vm-device-uip.c). The same path runs from the GC-sweep
      finaliser in core/vm-memory.c, so leak coverage is uniform. */
+  if((port->flags & VM_PORT_FLAG_OPEN) == 0) {
+    return;
+  }
   if(port->io && port->io->close) {
     port->io->close(port);
   }
@@ -1126,55 +1129,85 @@ vm_native_open_file(vm_thread_t *thread, const char *filename, int direction)
 }
 
 int
-vm_native_read(vm_port_t *port, vm_obj_t *obj)
+vm_native_read(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
 {
   int r;
+
+  if(VM_IS_SET(port->flags, VM_PORT_FLAG_EOF)) {
+    return -1;
+  }
 
   if(port->io && port->io->read_object) {
     r = port->io->read_object(port, obj);
   } else {
-    r = -1;
+    r = -2;
   }
 
-  if(r < 1) {
-    if(r < 0) {
-      vm_signal_error(port->thread, VM_ERROR_IO);
-      vm_set_error_string(port->thread, "port read failed");
-    }
-    return 0;
+  if(r >= 1) {
+    return 1;
   }
-
-  return 1;
+  if(r == 0) {
+    /* End of stream. */
+    port->flags |= VM_PORT_FLAG_EOF;
+    return -1;
+  }
+  /* r < 0: real I/O error. */
+  vm_signal_error(thread, VM_ERROR_IO);
+  vm_set_error_string(thread, "port read failed");
+  return 0;
 }
 
 int
-vm_native_read_char(vm_port_t *port, vm_character_t *c)
+vm_native_read_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
 {
   char buf[1];
   int r;
 
+  if(port->has_peek) {
+    *c = port->peek_char;
+    port->has_peek = 0;
+    return 1;
+  }
+
+  if(VM_IS_SET(port->flags, VM_PORT_FLAG_EOF)) {
+    return -1;
+  }
+
   if(port->io && port->io->read) {
     r = port->io->read(port, buf, 1);
   } else {
-    r = -1;
+    r = -2;
   }
 
-  if(r < 1) {
-    if(r < 0) {
-      vm_signal_error(port->thread, VM_ERROR_IO);
-      vm_set_error_string(port->thread, "port read failed");
-    }
-    return 0;
+  if(r >= 1) {
+    *c = buf[0];
+    return 1;
   }
-
-  *c = buf[0];
-  return 1;
+  if(r == 0) {
+    port->flags |= VM_PORT_FLAG_EOF;
+    return -1;
+  }
+  vm_signal_error(thread, VM_ERROR_IO);
+  vm_set_error_string(thread, "port read failed");
+  return 0;
 }
 
 int
-vm_native_peek_char(vm_port_t *port, vm_character_t *c)
+vm_native_peek_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
 {
-  return 0;
+  int r;
+
+  if(port->has_peek) {
+    *c = port->peek_char;
+    return 1;
+  }
+  r = vm_native_read_char(thread, port, c);
+  if(r != 1) {
+    return r;
+  }
+  port->peek_char = *c;
+  port->has_peek = 1;
+  return 1;
 }
 
 vm_boolean_t

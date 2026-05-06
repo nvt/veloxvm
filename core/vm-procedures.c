@@ -424,6 +424,11 @@ static const vm_procedure_t operators[] = {
   VM_OPERATOR(bind_function_rest, VM_TYPE_FLAG_ANY, 0, -1, -1),
   VM_OPERATOR(string_to_symbol, VM_TYPE_FLAG(VM_TYPE_STRING),
               VM_PROCEDURE_EVAL_ARGS, 1, 1),
+
+  /* R7RS §6.13.2 EOF object constructor. The disjoint VM_TYPE_EOF
+     value is what read-char / read / peek-char return at end of
+     input; this constructor lets user code synthesise one. */
+  VM_OPERATOR(eof_object, VM_TYPE_NONE, VM_PROCEDURE_EVAL_ARGS, 0, 0),
 };
 
 #define MAX_COMMON_SYMBOL_ID 127

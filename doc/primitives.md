@@ -224,3 +224,4 @@ code writes.
 | 205 | `box_set` | `box-set!` |
 | 206 | `bind_function_rest` | `bind_function_rest` |
 | 207 | `string_to_symbol` | `string->symbol` |
+| 208 | `eof_object` | `eof-object` |

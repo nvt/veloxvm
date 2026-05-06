@@ -53,7 +53,12 @@ typedef enum vm_obj_type {
   VM_TYPE_EXTERNAL  = 13,
   VM_TYPE_NONE      = 14,
   VM_TYPE_BOX       = 15,
-  VM_TYPE_CLOSURE   = 16
+  VM_TYPE_CLOSURE   = 16,
+  /* R7RS §6.13.2 disjoint EOF type. The tag is the value; the union
+     payload is unused. eof-object? tests this tag, eof-object
+     constructs a value of this type, and read-char / read /
+     peek-char return one on real end-of-stream (not on poll-block). */
+  VM_TYPE_EOF       = 17
 } vm_obj_type_t;
 
 /* Definitions for denoting multiple object types; e.g., in specifications
@@ -145,6 +150,11 @@ typedef struct vm_port {
   struct vm_port *next;
   int fd;
   uint8_t flags;
+  /* One-character pushback for peek-char. has_peek is non-zero when
+     peek_char holds a buffered character that the next read-char should
+     consume. */
+  uint8_t has_peek;
+  vm_character_t peek_char;
 } vm_port_t;
 
 /* VM_TYPE_LIST representation. */

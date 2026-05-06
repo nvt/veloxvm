@@ -139,6 +139,10 @@ VM_PRIMITIVES = [
 
     # R7RS string->symbol (restricted form; looks up existing symbols only)
     'string_to_symbol',
+
+    # R7RS eof-object constructor (disjoint EOF type returned by
+    # read-char / read / peek-char at end of stream).
+    'eof_object',
 ]
 
 # Create reverse lookup dictionary (name -> ID)
@@ -282,6 +286,8 @@ SCHEME_ALIASES = {
     'construct-packet': 'construct_packet',
     'deconstruct-packet': 'deconstruct_packet',
     'symbol->string': 'symbol_to_string',
+    'string->symbol': 'string_to_symbol',
+    'eof-object': 'eof_object',
 }
 
 
@@ -331,4 +337,4 @@ def get_primitive_name(symbol_id: int) -> str:
 
 
 # The primitive count must match core/vm-procedures.c exactly.
-assert len(VM_PRIMITIVES) == 208, f"Expected 208 primitives, got {len(VM_PRIMITIVES)}"
+assert len(VM_PRIMITIVES) == 209, f"Expected 209 primitives, got {len(VM_PRIMITIVES)}"
