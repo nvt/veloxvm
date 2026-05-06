@@ -171,15 +171,16 @@ VM_FUNCTION(read_char)
   }
 
   r = vm_native_read_char(thread, port, &c);
-  if(r == 1) {
+  if(r == VM_NATIVE_READ_OK) {
     VM_PUSH_CHARACTER(c);
     VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
-  } else if(r == -1) {
+  } else if(r == VM_NATIVE_READ_EOF) {
     VM_PUSH_EOF();
     VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
-  } else if(thread->status == VM_THREAD_WAITING) {
+  } else if(r == VM_NATIVE_READ_BLOCKED) {
     VM_SET_FLAG(thread->expr->flags, VM_EXPR_RESTART);
   }
+  /* VM_NATIVE_READ_ERROR: vm_signal_error already issued. */
 }
 
 VM_FUNCTION(read)
@@ -193,13 +194,13 @@ VM_FUNCTION(read)
   }
 
   r = vm_native_read(thread, port, &thread->result);
-  if(r == -1) {
+  if(r == VM_NATIVE_READ_EOF) {
     VM_PUSH_EOF();
-  }
-
-  if(r != 1 && r != -1 && thread->status == VM_THREAD_WAITING) {
+    VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
+  } else if(r == VM_NATIVE_READ_BLOCKED) {
     VM_SET_FLAG(thread->expr->flags, VM_EXPR_RESTART);
   } else {
+    /* OK or ERROR: don't keep restarting; the result (or signal) is in. */
     VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
   }
 }
@@ -216,13 +217,13 @@ VM_FUNCTION(peek_char)
   }
 
   r = vm_native_peek_char(thread, port, &c);
-  if(r == 1) {
+  if(r == VM_NATIVE_READ_OK) {
     VM_PUSH_CHARACTER(c);
     VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
-  } else if(r == -1) {
+  } else if(r == VM_NATIVE_READ_EOF) {
     VM_PUSH_EOF();
     VM_CLEAR_FLAG(thread->expr->flags, VM_EXPR_RESTART);
-  } else if(thread->status == VM_THREAD_WAITING) {
+  } else if(r == VM_NATIVE_READ_BLOCKED) {
     VM_SET_FLAG(thread->expr->flags, VM_EXPR_RESTART);
   }
 }

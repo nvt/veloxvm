@@ -793,12 +793,12 @@ vm_native_read(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
   vm_vector_t *vector;
 
   if(VM_IS_SET(port->flags, VM_PORT_FLAG_EOF)) {
-    return -1;
+    return VM_NATIVE_READ_EOF;
   }
 
   if(port->io == NULL || port->io->read == NULL) {
     vm_signal_error(thread, VM_ERROR_IO);
-    return 0;
+    return VM_NATIVE_READ_ERROR;
   }
 
   if(port_is_ready(port->fd, 0)) {
@@ -808,29 +808,30 @@ vm_native_read(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
     if(len < 0) {
       vm_signal_error(thread, VM_ERROR_IO);
       vm_set_error_string(thread, strerror(errno));
-      return 0;
+      return VM_NATIVE_READ_ERROR;
     } else if(len == 0) {
       VM_SET_FLAG(port->flags, VM_PORT_FLAG_EOF);
-      return -1;
+      return VM_NATIVE_READ_EOF;
     }
 
     vector = vm_vector_create(obj, len, VM_VECTOR_FLAG_BUFFER) ;
     if(vector == NULL) {
       vm_signal_error(thread, VM_ERROR_HEAP);
-      return 0;
+      return VM_NATIVE_READ_ERROR;
     }
 
     memcpy(vector->bytes, buf, len);
-    return 1;
-  } else {
-    if(vm_posix_poll_port(thread, port->fd, 0) == 0) {
-      VM_DEBUG(VM_DEBUG_MEDIUM, "native: failed to poll fd %d", port->fd);
-      return 0;
-    }
-    return 1;
+    return VM_NATIVE_READ_OK;
   }
 
-  return 0;
+  if(vm_posix_poll_port(thread, port->fd, 0) == 0) {
+    /* Poll table full -- treat as an I/O error; the read couldn't be
+       parked and there is nothing the caller can usefully retry. */
+    VM_DEBUG(VM_DEBUG_MEDIUM, "native: failed to poll fd %d", port->fd);
+    vm_signal_error(thread, VM_ERROR_IO);
+    return VM_NATIVE_READ_ERROR;
+  }
+  return VM_NATIVE_READ_BLOCKED;
 }
 
 int
@@ -842,16 +843,16 @@ vm_native_read_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
   if(port->has_peek) {
     *c = port->peek_char;
     port->has_peek = 0;
-    return 1;
+    return VM_NATIVE_READ_OK;
   }
 
   if(VM_IS_SET(port->flags, VM_PORT_FLAG_EOF)) {
-    return -1;
+    return VM_NATIVE_READ_EOF;
   }
 
   if(port->io == NULL || port->io->read == NULL) {
     vm_signal_error(thread, VM_ERROR_IO);
-    return 0;
+    return VM_NATIVE_READ_ERROR;
   }
 
   if(port_is_ready(port->fd, 0)) {
@@ -860,22 +861,22 @@ vm_native_read_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
     if(r < 0) {
       vm_signal_error(thread, VM_ERROR_IO);
       vm_set_error_string(thread, strerror(errno));
-      return 0;
+      return VM_NATIVE_READ_ERROR;
     } else if(r == 0) {
       VM_SET_FLAG(port->flags, VM_PORT_FLAG_EOF);
-      return -1;
+      return VM_NATIVE_READ_EOF;
     }
 
     *c = buf[0];
-    return 1;
+    return VM_NATIVE_READ_OK;
   }
 
   if(vm_posix_poll_port(thread, port->fd, 0) == 0) {
     VM_DEBUG(VM_DEBUG_MEDIUM, "native: failed to poll fd %d", port->fd);
-    return 0;
+    vm_signal_error(thread, VM_ERROR_IO);
+    return VM_NATIVE_READ_ERROR;
   }
-
-  return 0;
+  return VM_NATIVE_READ_BLOCKED;
 }
 
 int
@@ -885,15 +886,15 @@ vm_native_peek_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
 
   if(port->has_peek) {
     *c = port->peek_char;
-    return 1;
+    return VM_NATIVE_READ_OK;
   }
   r = vm_native_read_char(thread, port, c);
-  if(r != 1) {
+  if(r != VM_NATIVE_READ_OK) {
     return r;
   }
   port->peek_char = *c;
   port->has_peek = 1;
-  return 1;
+  return VM_NATIVE_READ_OK;
 }
 
 vm_boolean_t
