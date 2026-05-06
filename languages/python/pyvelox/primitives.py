@@ -149,6 +149,9 @@ VM_PRIMITIVES = [
 
     # R7RS port-open predicates.
     'input_port_openp', 'output_port_openp',
+
+    # R7RS string ports.
+    'open_input_string', 'open_output_string', 'get_output_string',
 ]
 
 # Create reverse lookup dictionary (name -> ID)
@@ -298,6 +301,9 @@ SCHEME_ALIASES = {
     'flush-output-port': 'flush_output_port',
     'input-port-open?': 'input_port_openp',
     'output-port-open?': 'output_port_openp',
+    'open-input-string': 'open_input_string',
+    'open-output-string': 'open_output_string',
+    'get-output-string': 'get_output_string',
 }
 
 
@@ -347,4 +353,4 @@ def get_primitive_name(symbol_id: int) -> str:
 
 
 # The primitive count must match core/vm-procedures.c exactly.
-assert len(VM_PRIMITIVES) == 214, f"Expected 214 primitives, got {len(VM_PRIMITIVES)}"
+assert len(VM_PRIMITIVES) == 217, f"Expected 217 primitives, got {len(VM_PRIMITIVES)}"

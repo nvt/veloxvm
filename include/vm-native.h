@@ -52,6 +52,13 @@ void vm_native_incoming_clientp(vm_thread_t *, vm_port_t *, vm_obj_t *);
 int vm_native_resolve(vm_thread_t *, const char *hostname);
 int vm_native_parse_address(const char *str, uint8_t *bytes, size_t *len);
 vm_port_t *vm_native_open_file(vm_thread_t *, const char *, int);
+
+/* R7RS string ports (core/vm-device-string.c). Backing storage is
+   raw VM_MALLOC'd memory attached to vm_port_t->opaque_desc; the
+   port's close callback frees it. */
+vm_port_t *vm_string_port_open_input(vm_thread_t *, const char *, size_t);
+vm_port_t *vm_string_port_open_output(vm_thread_t *);
+int vm_string_port_get_output(vm_thread_t *, vm_port_t *, vm_obj_t *);
 /* Return values for vm_native_read, vm_native_read_char, and
    vm_native_peek_char. ERROR means the impl already called
    vm_signal_error; the caller does not need to check thread->status. */

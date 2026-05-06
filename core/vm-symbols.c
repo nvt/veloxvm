@@ -177,7 +177,11 @@ static vm_symbol_t symbol_map[] = {
   SYM("close-port"), SYM("newline"), SYM("flush-output-port"),
 
   /* R7RS §6.13.1 port-open predicates. */
-  SYM("input-port-open?"), SYM("output-port-open?")
+  SYM("input-port-open?"), SYM("output-port-open?"),
+
+  /* R7RS string ports (§6.13.1, §6.13.3). */
+  SYM("open-input-string"), SYM("open-output-string"),
+  SYM("get-output-string")
 };
 
 #define CORE_SYMBOL_COUNT VM_ARRAY_SIZE(symbol_map)

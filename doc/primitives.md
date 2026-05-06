@@ -230,3 +230,6 @@ code writes.
 | 211 | `flush_output_port` | `flush-output-port` |
 | 212 | `input_port_openp` | `input-port-open?` |
 | 213 | `output_port_openp` | `output-port-open?` |
+| 214 | `open_input_string` | `open-input-string` |
+| 215 | `open_output_string` | `open-output-string` |
+| 216 | `get_output_string` | `get-output-string` |

@@ -103,6 +103,32 @@ VM_FUNCTION(eof_object)
   VM_PUSH_EOF();
 }
 
+VM_FUNCTION(open_input_string)
+{
+  vm_string_t *string;
+  vm_port_t *port;
+
+  string = argv[0].value.string;
+  port = vm_string_port_open_input(thread, string->str,
+                                   (size_t)string->length);
+  if(port != NULL) {
+    VM_PUSH_PORT(port);
+  }
+}
+
+VM_FUNCTION(open_output_string)
+{
+  vm_port_t *port = vm_string_port_open_output(thread);
+  if(port != NULL) {
+    VM_PUSH_PORT(port);
+  }
+}
+
+VM_FUNCTION(get_output_string)
+{
+  vm_string_port_get_output(thread, argv[0].value.port, &thread->result);
+}
+
 VM_FUNCTION(current_input_port)
 {
   vm_port_t *port;

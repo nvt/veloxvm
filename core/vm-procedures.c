@@ -443,6 +443,14 @@ static const vm_procedure_t operators[] = {
               VM_PROCEDURE_EVAL_ARGS, 1, 1),
   VM_OPERATOR(output_port_openp, VM_TYPE_FLAG_ANY,
               VM_PROCEDURE_EVAL_ARGS, 1, 1),
+
+  /* R7RS string ports. */
+  VM_OPERATOR(open_input_string, VM_TYPE_FLAG(VM_TYPE_STRING),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(open_output_string, VM_TYPE_NONE,
+              VM_PROCEDURE_EVAL_ARGS, 0, 0),
+  VM_OPERATOR(get_output_string, VM_TYPE_FLAG(VM_TYPE_PORT),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
 };
 
 #define MAX_COMMON_SYMBOL_ID 127

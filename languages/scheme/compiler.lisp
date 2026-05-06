@@ -130,7 +130,9 @@
 ;; Unified close (R7RS), newline (R5RS), flush-output-port (R7RS).
     close-port newline flush-output-port
 ;; R7RS port-open predicates.
-    input-port-open? output-port-open?))
+    input-port-open? output-port-open?
+;; R7RS string ports.
+    open-input-string open-output-string get-output-string))
 
 ;; The following values are stored in the first two bytes of a VM app
 ;; to be able to identify the app.
