@@ -101,20 +101,25 @@ vm_string_resolve(vm_thread_t *thread, vm_string_t *string)
 {
   if(VM_IS_SET(string->flags, VM_STRING_FLAG_ID) &&
      VM_IS_CLEAR(string->flags, VM_STRING_FLAG_RESOLVED)) {
-    VM_SET_FLAG(string->flags, VM_STRING_FLAG_RESOLVED | VM_STRING_FLAG_IMMUTABLE);
+    const char *resolved = NULL;
 
     if(thread == NULL) {
       thread = vm_current_thread();
     }
     if(thread != NULL) {
-      string->str = (char *)string_lookup(thread->program,
-                                          string->string_id);
+      resolved = string_lookup(thread->program, string->string_id);
     }
-    if(string->str != NULL) {
-      string->length = strlen(string->str);
-    } else {
+    if(resolved == NULL) {
+      /* Leave RESOLVED clear so a stray future call signals the error
+         again rather than silently returning a cached NULL ->str. The
+         union still holds the original string_id. */
       vm_signal_error(thread, VM_ERROR_STRING_ID);
+      return NULL;
     }
+    string->str = (char *)resolved;
+    string->length = strlen(resolved);
+    VM_SET_FLAG(string->flags,
+                VM_STRING_FLAG_RESOLVED | VM_STRING_FLAG_IMMUTABLE);
   }
   return string->str;
 }
