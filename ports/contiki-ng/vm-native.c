@@ -1279,17 +1279,21 @@ vm_native_write_buffer(vm_port_t *port, const char *buf, size_t len)
   }
 #endif
 
-  if(port->thread != NULL) {
-    if(ret < 0) {
-      vm_signal_error(port->thread, VM_ERROR_IO);
-      vm_set_error_string(port->thread, "port write failed");
-    } else if(port != NULL && VM_IS_SET(port->flags, VM_PORT_FLAG_SOCKET)) {
-      sock = port->opaque_desc;
-      attribute_bandwidth(port->thread, len);
-      vm_policy_check_bandwidth(port->thread);
-      attribute_communication(port->thread, sock->proto,
-                              VM_MIN(uip_ntohs(sock->lport), uip_ntohs(sock->rport)));
-    }
+  if(ret < 0) {
+    /* Errors must reach the caller even when port->thread is NULL
+       (default stdio singletons). Bandwidth attribution below stays
+       gated on port->thread because socket "owner" is the right
+       attribution target there. */
+    vm_thread_t *t = port->thread != NULL ? port->thread : vm_current_thread();
+    vm_signal_error(t, VM_ERROR_IO);
+    vm_set_error_string(t, "port write failed");
+  } else if(port->thread != NULL && port != NULL &&
+            VM_IS_SET(port->flags, VM_PORT_FLAG_SOCKET)) {
+    sock = port->opaque_desc;
+    attribute_bandwidth(port->thread, len);
+    vm_policy_check_bandwidth(port->thread);
+    attribute_communication(port->thread, sock->proto,
+                            VM_MIN(uip_ntohs(sock->lport), uip_ntohs(sock->rport)));
   }
 
   return ret;

@@ -1032,8 +1032,12 @@ vm_native_write(vm_port_t *port, const char *format, ...)
 #endif
 
   if(ret < 0) {
-    vm_signal_error(port->thread, VM_ERROR_IO);
-    vm_set_error_string(port->thread, strerror(errno));
+    /* port->thread is NULL on the static stdin/stdout singletons, so
+       fall back to the calling thread to keep stdio write errors
+       from silently dropping. */
+    vm_thread_t *t = port->thread != NULL ? port->thread : vm_current_thread();
+    vm_signal_error(t, VM_ERROR_IO);
+    vm_set_error_string(t, strerror(errno));
   }
 
   return ret;
@@ -1070,9 +1074,10 @@ vm_native_write_buffer(vm_port_t *port, const char *buf, size_t len)
 #endif
 
   if(ret < (int)len) {
-    vm_signal_error(port->thread, VM_ERROR_IO);
+    vm_thread_t *t = port->thread != NULL ? port->thread : vm_current_thread();
+    vm_signal_error(t, VM_ERROR_IO);
     if(ret < 0) {
-      vm_set_error_string(port->thread, strerror(errno));
+      vm_set_error_string(t, strerror(errno));
     }
   }
 
