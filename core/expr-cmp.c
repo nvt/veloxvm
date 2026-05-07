@@ -106,12 +106,49 @@ VM_FUNCTION(different)
   VM_PUSH_BOOLEAN(1);
 }
 
+/* Extract a numeric arg into a rational. Returns 0 on success, 1 if
+   the arg type is not INTEGER or RATIONAL. The caller should have
+   already filtered non-numeric types via valid_types at dispatch
+   time, but argument counts include the operator slot's neighbours
+   in some paths, so we re-check here. */
+static int
+extract_rational(vm_obj_t *obj, vm_rational_t *r)
+{
+  if(obj->type == VM_TYPE_INTEGER) {
+    r->numerator = obj->value.integer;
+    r->denominator = 1;
+    return 0;
+  } else if(obj->type == VM_TYPE_RATIONAL) {
+    *r = *obj->value.rational;
+    return 0;
+  }
+  return 1;
+}
+
+/* Cross-multiply two rationals to compare without dividing.
+   r1 < r2 iff r1.num * r2.den < r2.num * r1.den when both
+   denominators are positive (which they are, post-normalize).
+   Returns -1, 0, or 1. */
+static int
+rational_compare(vm_rational_t *a, vm_rational_t *b)
+{
+  vm_integer_t lhs = a->numerator * b->denominator;
+  vm_integer_t rhs = b->numerator * a->denominator;
+  return (lhs < rhs) ? -1 : (lhs > rhs ? 1 : 0);
+}
+
 VM_FUNCTION(less_than)
 {
   vm_integer_t i;
+  vm_rational_t r1, r2;
 
   for(i = 1; i < argc; i++) {
-    if(argv[i - 1].value.integer >= argv[i].value.integer) {
+    if(extract_rational(&argv[i - 1], &r1) ||
+       extract_rational(&argv[i], &r2)) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+      return;
+    }
+    if(rational_compare(&r1, &r2) >= 0) {
       VM_PUSH_BOOLEAN(0);
       return;
     }
@@ -123,9 +160,15 @@ VM_FUNCTION(less_than)
 VM_FUNCTION(less_than_equal)
 {
   vm_integer_t i;
+  vm_rational_t r1, r2;
 
   for(i = 1; i < argc; i++) {
-    if(argv[i - 1].value.integer > argv[i].value.integer) {
+    if(extract_rational(&argv[i - 1], &r1) ||
+       extract_rational(&argv[i], &r2)) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+      return;
+    }
+    if(rational_compare(&r1, &r2) > 0) {
       VM_PUSH_BOOLEAN(0);
       return;
     }
@@ -137,9 +180,15 @@ VM_FUNCTION(less_than_equal)
 VM_FUNCTION(greater_than)
 {
   vm_integer_t i;
+  vm_rational_t r1, r2;
 
   for(i = 1; i < argc; i++) {
-    if(argv[i - 1].value.integer <= argv[i].value.integer) {
+    if(extract_rational(&argv[i - 1], &r1) ||
+       extract_rational(&argv[i], &r2)) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+      return;
+    }
+    if(rational_compare(&r1, &r2) <= 0) {
       VM_PUSH_BOOLEAN(0);
       return;
     }
@@ -151,9 +200,15 @@ VM_FUNCTION(greater_than)
 VM_FUNCTION(greater_than_equal)
 {
   vm_integer_t i;
+  vm_rational_t r1, r2;
 
   for(i = 1; i < argc; i++) {
-    if(argv[i - 1].value.integer < argv[i].value.integer) {
+    if(extract_rational(&argv[i - 1], &r1) ||
+       extract_rational(&argv[i], &r2)) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+      return;
+    }
+    if(rational_compare(&r1, &r2) < 0) {
       VM_PUSH_BOOLEAN(0);
       return;
     }
@@ -164,13 +219,22 @@ VM_FUNCTION(greater_than_equal)
 
 VM_FUNCTION(zerop)
 {
-  vm_integer_t value;
-
-  if(argv[0].type == VM_TYPE_RATIONAL) {
-    value = argv[0].value.rational->numerator;
-  } else {
-    value = argv[0].value.integer;
+  switch(argv[0].type) {
+  case VM_TYPE_INTEGER:
+    VM_PUSH_BOOLEAN(argv[0].value.integer == 0);
+    return;
+  case VM_TYPE_RATIONAL:
+    VM_PUSH_BOOLEAN(argv[0].value.rational->numerator == 0);
+    return;
+#if VM_ENABLE_REALS
+  case VM_TYPE_REAL:
+    VM_PUSH_BOOLEAN(argv[0].value.real == 0.0);
+    return;
+#endif
+  default:
+    /* Dispatch already filters to NUMBER; anything else here means
+       a numeric type the predicate does not implement (e.g. complex). */
+    vm_signal_error(thread, VM_ERROR_UNIMPLEMENTED);
+    return;
   }
-
-  VM_PUSH_BOOLEAN(value == 0);
 }

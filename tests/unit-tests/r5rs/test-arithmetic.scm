@@ -127,4 +127,25 @@
 (assert-equal 2147395600 (* 46340 46340) "46340^2 = 2147395600 < MAX")
 (assert-equal -2147483647 (- min-int neg-one) "MIN - (-1) = MIN+1 fits")
 
+;; Comparison operators with rationals. Regression: < > <= >= used to
+;; read argv[i].value.integer regardless of arg type, so a rational
+;; arg's pointer was misread as an integer and gave wrong answers.
+(assert-true  (< 1/2 2/3) "1/2 < 2/3")
+(assert-false (< 5 5/2) "5 not < 5/2")
+(assert-true  (< 5/2 5) "5/2 < 5")
+(assert-true  (> 5 5/2) "5 > 5/2")
+(assert-false (> 5/2 5) "5/2 not > 5")
+(assert-true  (<= 1/2 1/2) "1/2 <= 1/2")
+(assert-true  (>= 5 5/2) "5 >= 5/2")
+(assert-true  (< 1/3 1/2 2/3) "1/3 < 1/2 < 2/3 chain")
+(assert-false (< 1/3 1/2 1/2) "1/3 < 1/2 < 1/2 not strict")
+
+;; Comparison with non-numeric arg now signals an error rather than
+;; reading a pointer as an integer and silently returning the wrong
+;; boolean.
+'TypeException
+(assert-error (< 'sym 5) "(< symbol number) raises an error")
+(assert-error (> 5 "str") "(> number string) raises an error")
+(assert-error (<= '(a b) 5) "(<= list number) raises an error")
+
 (test-summary)
