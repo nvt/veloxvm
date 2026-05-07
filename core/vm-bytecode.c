@@ -64,7 +64,7 @@ get_integer(vm_thread_t *thread)
 {
   unsigned nbytes;
   unsigned is_negative;
-  vm_integer_t integer;
+  uint32_t magnitude;
 
   nbytes = VM_GET_INTEGER_SIZE(thread);
 
@@ -80,14 +80,14 @@ get_integer(vm_thread_t *thread)
     return 0;
   }
 
-  integer = *thread->expr->ip++;
+  magnitude = *thread->expr->ip++;
 
   /*
    * Special error case: Do not allow the sign bit to be set if
    * (1) the integer in the bytecode is of the largest allowed size and
    * (2) the integer is marked as positive in the bytecode.
    */
-  if(nbytes == sizeof(integer) && (integer >> 7) && !is_negative) {
+  if(nbytes == sizeof(vm_integer_t) && (magnitude >> 7) && !is_negative) {
     vm_signal_error(thread, VM_ERROR_BYTECODE);
     vm_set_error_string(thread,
                         "too large value for integer (> 2,147,483,647)");
@@ -95,11 +95,26 @@ get_integer(vm_thread_t *thread)
   }
 
   while(--nbytes > 0) {
-    integer <<= 8;
-    integer |= *thread->expr->ip++;
+    magnitude = (magnitude << 8) | *thread->expr->ip++;
   }
 
-  return is_negative ? -integer : integer;
+  if(is_negative) {
+    /* Magnitudes outside [0, 2^31] cannot be represented as a signed
+       int32_t. Magnitude == 2^31 is INT32_MIN, the only value where
+       the naive -(int32_t)magnitude would invoke signed overflow; for
+       it we just return the literal. */
+    if(magnitude > (uint32_t)INT32_MAX + 1u) {
+      vm_signal_error(thread, VM_ERROR_BYTECODE);
+      vm_set_error_string(thread,
+                          "too small value for integer (< -2,147,483,648)");
+      return 0;
+    }
+    if(magnitude == (uint32_t)INT32_MAX + 1u) {
+      return INT32_MIN;
+    }
+    return -(vm_integer_t)magnitude;
+  }
+  return (vm_integer_t)magnitude;
 }
 
 static vm_expr_id_t
