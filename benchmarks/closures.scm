@@ -40,8 +40,13 @@
 
 ;; Sanity check: every counter should now read its own n-increments.
 (define (read-counter ctr) (ctr))
+(define final-value (read-counter (car counters)))
+(define expected (+ n-increments 1))
 (print "  first counter final value: ")
-(print (read-counter (car counters)))
+(print final-value)
 (print " (expected ")
-(print (+ n-increments 1))
-(print ")\n=== Done ===\n")
+(print expected)
+(print ")\n")
+(if (= final-value expected)
+    (print "Status: PASS\n")
+    (print "Status: FAIL\n"))

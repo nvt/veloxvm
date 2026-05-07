@@ -70,15 +70,20 @@ These benchmarks are designed to measure VM performance characteristics and vali
 
 ## Running Benchmarks
 
-Compile and run benchmarks like any VeloxVM program. Artefacts land
-in `benchmarks/bin/<name>.vm`, not a flat `benchmarks/<name>.vm`.
+Run all benchmarks at once with the bundled runner:
 
 ```bash
-# Compile a single benchmark (auto-routes to the right frontend
-# and writes to benchmarks/bin/)
-./compile.sh benchmarks/closures.scm
+./benchmarks/run-benchmarks.sh
+```
 
-# Run it
+It compiles any out-of-date sources, executes each `.vm`, and prints
+PASS/FAIL plus elapsed time per benchmark with a final summary.
+
+To compile and run a single benchmark manually (artefacts land in
+`benchmarks/bin/<name>.vm`):
+
+```bash
+./compile.sh benchmarks/closures.scm
 bin/vm benchmarks/bin/closures.vm
 
 # Or measure end-to-end wall clock
