@@ -492,10 +492,13 @@ vm_unload_program(vm_program_t *program)
       destroy_program_threads(tmp);
 
 #if VM_INSTRUCTION_PROFILING
-      VM_PRINTF("%s instruction profiling result (# <form> <executions<)\n",
-                tmp->name);
-      for(i = 0; i < VM_TABLE_SIZE(tmp->exprv); i++) {
-        VM_PRINTF("# %u %lu\n", i, tmp->exec_count[i]);
+      {
+        unsigned i;
+        VM_PRINTF("%s instruction profiling result (# <form> <executions<)\n",
+                  tmp->name);
+        for(i = 0; i < VM_TABLE_SIZE(tmp->exprv); i++) {
+          VM_PRINTF("# %u %lu\n", i, tmp->exec_count[i]);
+        }
       }
 #endif
       VM_DEBUG(VM_DEBUG_LOW, "Unloaded the program \"%s\"", tmp->name);
