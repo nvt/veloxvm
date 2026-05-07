@@ -50,9 +50,18 @@
 (define final-sum (cycle repeats 0))
 (define t-end (time))
 
+(define elapsed (- t-end t-start))
+(define total-allocations (* repeats cells-per-tree))
+
 (print "  final leaf sum: ") (print final-sum) (print "\n")
 (print "  expected:       ") (print expected-sum) (print "\n")
-(print "  elapsed:        ") (print (- t-end t-start)) (print " ms\n")
+(print "  elapsed:        ") (print elapsed) (print " ms\n")
+(if (> elapsed 0)
+    (begin
+      (print "  rate:           ")
+      (print (quotient (* total-allocations 1000) elapsed))
+      (print " allocs/sec\n"))
+    'skip)
 
 (if (= final-sum expected-sum)
     (print "Status: PASS\n")

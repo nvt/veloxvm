@@ -38,10 +38,19 @@
 (define result (loop repeats 0))
 (define t-end (time))
 
+(define elapsed (- t-end t-start))
+(define total-calls (* repeats calls-per-fib))
+
 (print "  result:   ") (print result) (print "\n")
 (print "  expected: ") (print expected) (print "\n")
-(print "  total calls: ~") (print (* repeats calls-per-fib)) (print "\n")
-(print "  elapsed:  ") (print (- t-end t-start)) (print " ms\n")
+(print "  total calls: ~") (print total-calls) (print "\n")
+(print "  elapsed:  ") (print elapsed) (print " ms\n")
+(if (> elapsed 0)
+    (begin
+      (print "  rate:     ~")
+      (print (quotient (* total-calls 1000) elapsed))
+      (print " calls/sec\n"))
+    'skip)
 
 (if (= result expected)
     (print "Status: PASS\n")

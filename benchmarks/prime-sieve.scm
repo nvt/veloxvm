@@ -46,9 +46,17 @@
 (define count (count-primes 0 0))
 (define t-end (time))
 
+(define elapsed (- t-end t-start))
+
 (print "  primes found: ") (print count) (print "\n")
 (print "  expected:     ") (print expected-count) (print "\n")
-(print "  elapsed:      ") (print (- t-end t-start)) (print " ms\n")
+(print "  elapsed:      ") (print elapsed) (print " ms\n")
+(if (> elapsed 0)
+    (begin
+      (print "  rate:         ")
+      (print (quotient (* n 1000) elapsed))
+      (print " cells-scanned/sec\n"))
+    'skip)
 
 (if (= count expected-count)
     (print "Status: PASS\n")

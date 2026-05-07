@@ -42,9 +42,21 @@
 (define final-sum (reduce + data))
 (define t-end (time))
 
+(define elapsed (- t-end t-start))
+;; map allocates list-size cons cells, filter allocates ~half that
+;; (half of 1..200 is even). ~300 cells per iteration.
+(define cells-per-iter (+ list-size (quotient list-size 2)))
+(define total-allocations (* iters cells-per-iter))
+
 (print "  data sum after churn: ") (print final-sum) (print "\n")
 (print "  expected:             ") (print expected-sum) (print "\n")
-(print "  elapsed:              ") (print (- t-end t-start)) (print " ms\n")
+(print "  elapsed:              ") (print elapsed) (print " ms\n")
+(if (> elapsed 0)
+    (begin
+      (print "  rate:                 ~")
+      (print (quotient (* total-allocations 1000) elapsed))
+      (print " allocs/sec\n"))
+    'skip)
 
 (if (= final-sum expected-sum)
     (print "Status: PASS\n")
