@@ -338,6 +338,11 @@ read_program(const char *name)
                    (unsigned)expr_id);
           goto error;
         }
+        if(program->captures[expr_id] != NULL) {
+          VM_DEBUG(VM_DEBUG_LOW, "Captures expr_id %u defined twice",
+                   (unsigned)expr_id);
+          goto error;
+        }
 
         cap = vm_alloc(sizeof(vm_captures_t));
         if(cap == NULL) {
