@@ -64,7 +64,8 @@ static const char *error_messages[] = {
   "Named object does not exist",
   "Unhandled exception",
   "Unable to load a library",
-  "System call error"
+  "System call error",
+  "Integer overflow"
 };
 
 static const char *

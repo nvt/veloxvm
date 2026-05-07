@@ -13,10 +13,10 @@
        (guard (exc (else (set! error-raised #t)))
          expr)
        (if error-raised
-           (record-pass description)
-           (record-fail description
-                        (list "Expected: error to be raised"
-                              "Actual: no error raised")))))))
+           (record-result (list 'pass description))
+           (record-result (list 'fail description
+                                (list "Expected: error to be raised"
+                                      "Actual: no error raised"))))))))
 
 ;; Load shared core framework
 (include "unit-test-framework-core.scm")

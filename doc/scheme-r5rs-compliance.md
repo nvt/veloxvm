@@ -209,6 +209,33 @@ in R5RS) return the additive and multiplicative inverse respectively;
 `(gcd)` returns 0; `(lcm)` returns 1; and `modulo` returns a result with
 the sign of the divisor.
 
+### Implementation restriction: integer range (R5RS §6.2.3)
+
+Exact integers in VeloxVM are represented as signed 32-bit values. The
+permitted range is therefore:
+
+| Bound | Value |
+|-------|-------|
+| `most-positive-fixnum` | `2147483647` (2³¹ − 1) |
+| `most-negative-fixnum` | `-2147483648` (−2³¹) |
+
+R5RS §6.2.3 explicitly permits implementations to bound exact-integer
+range, on the condition that arithmetic which exceeds the range either
+**signal an error** or **coerce to inexact**. VeloxVM signals
+`OverflowException` (catchable via `guard`); see
+`tests/unit-tests/r5rs/test-arithmetic.scm` for the cases that fire.
+This applies to `+`, `-`, `*`, `/` (when the result of integer
+arithmetic exceeds 32 bits), `lcm`, and unary negation of
+`most-negative-fixnum`.
+
+Programs that need a larger exact range can switch to rationals (which
+keep numerator and denominator as separate 32-bit integers, so they
+hold ratios outside the integer range) or to reals (when range matters
+more than precision). The width is fixed at 32 bits to keep `vm_obj_t`
+small on 32-bit IoT targets where the runtime cell would otherwise
+double in size; widening is a deliberate non-goal until a concrete
+workload demands it.
+
 ### Transcendental functions
 
 All require `VM_ENABLE_REALS`:

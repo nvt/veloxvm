@@ -99,4 +99,32 @@
 ;; Complex arithmetic expressions
 (assert-equal 210 (+ (+ 1 (+ (+ 2 3 4 5) 6 7 8) 9 10 11 12 13) 14 15 16 (+ 17 (+ 18 19)) 20) "Complex nested addition")
 
+;; Integer overflow signaling. R5RS 6.2.3 says exact arithmetic that
+;; cannot represent the result must signal an error or coerce to
+;; inexact; VeloxVM signals. Variables prevent compile-time constant
+;; folding so the runtime path is exercised.
+;;
+;; The literal 'OverflowException pre-interns the symbol so the
+;; exception machinery can find it; vm_symbol_get_ref only looks up,
+;; it does not intern.
+'OverflowException
+(define max-int 2147483647)
+(define min-int -2147483648)
+(define one 1)
+(define neg-one -1)
+(define big 3000000)
+(define thousand 1000)
+
+(assert-error (+ max-int one) "Addition overflow above MAX")
+(assert-error (- min-int one) "Subtraction overflow below MIN")
+(assert-error (* big thousand) "Multiplication overflow")
+(assert-error (* min-int neg-one) "Multiplication of MIN by -1")
+(assert-error (- min-int) "Unary negate of MIN")
+(assert-error (+ max-int max-int) "Doubling MAX overflows")
+
+;; Operations at the boundary that do NOT overflow
+(assert-equal 2147483647 (+ max-int 0) "MAX + 0 fits")
+(assert-equal 2147395600 (* 46340 46340) "46340^2 = 2147395600 < MAX")
+(assert-equal -2147483647 (- min-int neg-one) "MIN - (-1) = MIN+1 fits")
+
 (test-summary)

@@ -80,7 +80,11 @@ typedef enum vm_boolean {
   VM_TRUE = 1
 } vm_boolean_t;
 
-/* VM_TYPE_INTEGER representation. */
+/* VM_TYPE_INTEGER representation. Width is fixed at 32 bits. R5RS §6.2.3
+   permits a bounded integer range provided overflow is signaled or
+   coerced to inexact; VeloxVM signals VM_ERROR_OVERFLOW. See
+   doc/scheme-r5rs-compliance.md, "Implementation restriction: integer
+   range". */
 typedef int32_t vm_integer_t;
 #define VM_INTEGER_MAX INT32_MAX
 #define VM_INTEGER_MIN INT32_MIN
