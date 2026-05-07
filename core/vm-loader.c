@@ -269,7 +269,7 @@ read_program(const char *name)
     goto error;
   }
 
-  if(buf[0] != VM_FILE_ID1 && buf[1] != VM_FILE_ID2) {
+  if(buf[0] != VM_FILE_ID1 || buf[1] != VM_FILE_ID2) {
     VM_DEBUG(VM_DEBUG_LOW, "%s: invalid program header", name);
     goto error;
   }
