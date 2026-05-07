@@ -54,13 +54,16 @@ for src in $SOURCES; do
 
     output=$(./bin/vm "$vm_file" 2>&1)
     status=$(echo "$output" | grep -E "^Status:" | tail -1 | awk '{print $2}')
-    elapsed=$(echo "$output" | grep -E "elapsed:" | tail -1 | awk '{print $2}')
+    elapsed=$(echo "$output" | grep -E "^[[:space:]]+elapsed:" | tail -1 | awk '{print $2}')
+    rate=$(echo "$output" | grep -E "^[[:space:]]+rate:" | tail -1 | sed -E 's/^[[:space:]]+rate:[[:space:]]+~?//')
 
     TOTAL=$((TOTAL + 1))
     printf "${BLUE}%-22s${NC} " "$name"
     if [ "$status" = "PASS" ]; then
         PASSED=$((PASSED + 1))
-        if [ -n "$elapsed" ]; then
+        if [ -n "$elapsed" ] && [ -n "$rate" ]; then
+            printf "${GREEN}PASS${NC}  (%s ms, %s)\n" "$elapsed" "$rate"
+        elif [ -n "$elapsed" ]; then
             printf "${GREEN}PASS${NC}  (%s ms)\n" "$elapsed"
         else
             printf "${GREEN}PASS${NC}\n"
