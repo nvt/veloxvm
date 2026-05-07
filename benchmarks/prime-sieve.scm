@@ -11,8 +11,8 @@
 
 (print "=== Sieve of Eratosthenes ===\n")
 
-(define n 10000)
-(define expected-count 1229)
+(define n 100000)
+(define expected-count 9592)
 
 (define sieve (make-vector (+ n 1) #t))
 (vector-set! sieve 0 #f)
@@ -54,7 +54,7 @@
 (if (> elapsed 0)
     (begin
       (print "  rate:         ")
-      (print (quotient (* n 1000) elapsed))
+      (print (* (quotient n elapsed) 1000))
       (print " cells-scanned/sec\n"))
     'skip)
 

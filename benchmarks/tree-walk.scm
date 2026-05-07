@@ -23,7 +23,7 @@
 (print "=== Tree build + walk (repeated) ===\n")
 
 (define depth 9)
-(define repeats 50)
+(define repeats 500)
 (define expected-sum 512)  ; 2^9 leaves, each leaf = 1
 (define cells-per-tree 1022)  ; 2 * (2^9 - 1)
 
@@ -59,7 +59,7 @@
 (if (> elapsed 0)
     (begin
       (print "  rate:           ")
-      (print (quotient (* total-allocations 1000) elapsed))
+      (print (* (quotient total-allocations elapsed) 1000))
       (print " allocs/sec\n"))
     'skip)
 

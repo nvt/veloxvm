@@ -24,7 +24,7 @@
       (+ (fib (- n 1)) (fib (- n 2)))))
 
 (define n 12)
-(define repeats 1000)
+(define repeats 10000)
 (define expected 144)  ; fib(12)
 (define calls-per-fib 465)  ; 2*fib(13)-1
 
@@ -45,10 +45,12 @@
 (print "  expected: ") (print expected) (print "\n")
 (print "  total calls: ~") (print total-calls) (print "\n")
 (print "  elapsed:  ") (print elapsed) (print " ms\n")
+;; Divide first to avoid 32-bit integer overflow on large workloads:
+;; (* total 1000) overflows above ~2.1M ops.
 (if (> elapsed 0)
     (begin
       (print "  rate:     ~")
-      (print (quotient (* total-calls 1000) elapsed))
+      (print (* (quotient total-calls elapsed) 1000))
       (print " calls/sec\n"))
     'skip)
 

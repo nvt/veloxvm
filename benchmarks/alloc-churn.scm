@@ -16,7 +16,7 @@
 (print "=== Allocation churn ===\n")
 
 (define list-size 200)
-(define iters 1000)
+(define iters 10000)
 (define expected-sum 20100)  ; sum 1..200
 
 (define (build n acc)
@@ -54,7 +54,7 @@
 (if (> elapsed 0)
     (begin
       (print "  rate:                 ~")
-      (print (quotient (* total-allocations 1000) elapsed))
+      (print (* (quotient total-allocations elapsed) 1000))
       (print " allocs/sec\n"))
     'skip)
 
