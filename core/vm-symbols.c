@@ -171,7 +171,21 @@ static vm_symbol_t symbol_map[] = {
   SYM("string->symbol"),
 
   /* R7RS §6.13.2 EOF object constructor. */
-  SYM("eof-object")
+  SYM("eof-object"),
+
+  /* Unified close (R7RS); newline (R5RS); flush-output-port (R7RS). */
+  SYM("close-port"), SYM("newline"), SYM("flush-output-port"),
+
+  /* R7RS §6.13.1 port-open predicates. */
+  SYM("input-port-open?"), SYM("output-port-open?"),
+
+  /* R7RS string ports (§6.13.1, §6.13.3). */
+  SYM("open-input-string"), SYM("open-output-string"),
+  SYM("get-output-string"),
+
+  /* R7RS bytevector ports. */
+  SYM("open-input-bytevector"), SYM("open-output-bytevector"),
+  SYM("get-output-bytevector")
 };
 
 #define CORE_SYMBOL_COUNT VM_ARRAY_SIZE(symbol_map)

@@ -143,6 +143,18 @@ VM_PRIMITIVES = [
     # R7RS eof-object constructor (disjoint EOF type returned by
     # read-char / read / peek-char at end of stream).
     'eof_object',
+
+    # Unified close (R7RS); newline (R5RS); flush-output-port (R7RS).
+    'close_port', 'newline', 'flush_output_port',
+
+    # R7RS port-open predicates.
+    'input_port_openp', 'output_port_openp',
+
+    # R7RS string ports.
+    'open_input_string', 'open_output_string', 'get_output_string',
+
+    # R7RS bytevector ports.
+    'open_input_bytevector', 'open_output_bytevector', 'get_output_bytevector',
 ]
 
 # Create reverse lookup dictionary (name -> ID)
@@ -288,6 +300,16 @@ SCHEME_ALIASES = {
     'symbol->string': 'symbol_to_string',
     'string->symbol': 'string_to_symbol',
     'eof-object': 'eof_object',
+    'close-port': 'close_port',
+    'flush-output-port': 'flush_output_port',
+    'input-port-open?': 'input_port_openp',
+    'output-port-open?': 'output_port_openp',
+    'open-input-string': 'open_input_string',
+    'open-output-string': 'open_output_string',
+    'get-output-string': 'get_output_string',
+    'open-input-bytevector': 'open_input_bytevector',
+    'open-output-bytevector': 'open_output_bytevector',
+    'get-output-bytevector': 'get_output_bytevector',
 }
 
 
@@ -337,4 +359,4 @@ def get_primitive_name(symbol_id: int) -> str:
 
 
 # The primitive count must match core/vm-procedures.c exactly.
-assert len(VM_PRIMITIVES) == 209, f"Expected 209 primitives, got {len(VM_PRIMITIVES)}"
+assert len(VM_PRIMITIVES) == 220, f"Expected 220 primitives, got {len(VM_PRIMITIVES)}"

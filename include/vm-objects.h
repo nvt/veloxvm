@@ -121,11 +121,11 @@ typedef struct vm_string {
     char *str;
     vm_string_id_t string_id;
   };
-  int8_t length;
+  int16_t length;
   uint8_t flags;
 } vm_string_t;
 
-#define VM_STRING_MAX_LENGTH INT8_MAX
+#define VM_STRING_MAX_LENGTH INT16_MAX
 
 /* VM_TYPE_PORT representation. */
 #define VM_PORT_FLAG_INPUT 0x1

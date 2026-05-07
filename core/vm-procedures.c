@@ -429,6 +429,36 @@ static const vm_procedure_t operators[] = {
      value is what read-char / read / peek-char return at end of
      input; this constructor lets user code synthesise one. */
   VM_OPERATOR(eof_object, VM_TYPE_NONE, VM_PROCEDURE_EVAL_ARGS, 0, 0),
+
+  /* R7RS unified close-port; R5RS newline; R7RS flush-output-port. */
+  VM_OPERATOR(close_port, VM_TYPE_FLAG(VM_TYPE_PORT),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(newline, VM_TYPE_FLAG(VM_TYPE_PORT),
+              VM_PROCEDURE_EVAL_ARGS, 0, 1),
+  VM_OPERATOR(flush_output_port, VM_TYPE_FLAG(VM_TYPE_PORT),
+              VM_PROCEDURE_EVAL_ARGS, 0, 1),
+
+  /* R7RS §6.13.1 port-open predicates. */
+  VM_OPERATOR(input_port_openp, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(output_port_openp, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+
+  /* R7RS string ports. */
+  VM_OPERATOR(open_input_string, VM_TYPE_FLAG(VM_TYPE_STRING),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(open_output_string, VM_TYPE_NONE,
+              VM_PROCEDURE_EVAL_ARGS, 0, 0),
+  VM_OPERATOR(get_output_string, VM_TYPE_FLAG(VM_TYPE_PORT),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+
+  /* R7RS bytevector ports. */
+  VM_OPERATOR(open_input_bytevector, VM_TYPE_FLAG(VM_TYPE_VECTOR),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(open_output_bytevector, VM_TYPE_NONE,
+              VM_PROCEDURE_EVAL_ARGS, 0, 0),
+  VM_OPERATOR(get_output_bytevector, VM_TYPE_FLAG(VM_TYPE_PORT),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
 };
 
 #define MAX_COMMON_SYMBOL_ID 127

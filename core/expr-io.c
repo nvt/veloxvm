@@ -79,6 +79,20 @@ VM_FUNCTION(output_portp)
                   VM_IS_SET(argv[0].value.port->flags, VM_PORT_FLAG_OUTPUT));
 }
 
+VM_FUNCTION(input_port_openp)
+{
+  uint8_t need = VM_PORT_FLAG_INPUT | VM_PORT_FLAG_OPEN;
+  VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_PORT &&
+                  (argv[0].value.port->flags & need) == need);
+}
+
+VM_FUNCTION(output_port_openp)
+{
+  uint8_t need = VM_PORT_FLAG_OUTPUT | VM_PORT_FLAG_OPEN;
+  VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_PORT &&
+                  (argv[0].value.port->flags & need) == need);
+}
+
 VM_FUNCTION(eof_objectp)
 {
   VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_EOF);
@@ -87,6 +101,62 @@ VM_FUNCTION(eof_objectp)
 VM_FUNCTION(eof_object)
 {
   VM_PUSH_EOF();
+}
+
+VM_FUNCTION(open_input_string)
+{
+  vm_string_t *string;
+  vm_port_t *port;
+
+  string = argv[0].value.string;
+  port = vm_string_port_open_input(thread, string->str,
+                                   (size_t)string->length);
+  if(port != NULL) {
+    VM_PUSH_PORT(port);
+  }
+}
+
+VM_FUNCTION(open_output_string)
+{
+  vm_port_t *port = vm_string_port_open_output(thread);
+  if(port != NULL) {
+    VM_PUSH_PORT(port);
+  }
+}
+
+VM_FUNCTION(get_output_string)
+{
+  vm_string_port_get_output(thread, argv[0].value.port, &thread->result);
+}
+
+VM_FUNCTION(open_input_bytevector)
+{
+  vm_vector_t *vec;
+  vm_port_t *port;
+
+  vec = argv[0].value.vector;
+  if(VM_IS_CLEAR(vec->flags, VM_VECTOR_FLAG_BUFFER)) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+  port = vm_bytevector_port_open_input(thread, vec->bytes,
+                                       (size_t)vec->length);
+  if(port != NULL) {
+    VM_PUSH_PORT(port);
+  }
+}
+
+VM_FUNCTION(open_output_bytevector)
+{
+  vm_port_t *port = vm_bytevector_port_open_output(thread);
+  if(port != NULL) {
+    VM_PUSH_PORT(port);
+  }
+}
+
+VM_FUNCTION(get_output_bytevector)
+{
+  vm_bytevector_port_get_output(thread, argv[0].value.port, &thread->result);
 }
 
 VM_FUNCTION(current_input_port)
@@ -151,11 +221,19 @@ VM_FUNCTION(open_output_file)
 
 VM_FUNCTION(close_input_port)
 {
+  if(VM_IS_CLEAR(argv[0].value.port->flags, VM_PORT_FLAG_INPUT)) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
   vm_native_close_port(argv[0].value.port);
 }
 
 VM_FUNCTION(close_output_port)
 {
+  if(VM_IS_CLEAR(argv[0].value.port->flags, VM_PORT_FLAG_OUTPUT)) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
   vm_native_close_port(argv[0].value.port);
 }
 
@@ -323,6 +401,36 @@ VM_FUNCTION(display)
   }
 
   vm_write_object(port, &argv[0]);
+}
+
+VM_FUNCTION(close_port)
+{
+  vm_native_close_port(argv[0].value.port);
+}
+
+VM_FUNCTION(newline)
+{
+  vm_port_t *port;
+
+  port = get_port(thread, argc, argv, VM_PORT_FLAG_OUTPUT);
+  if(port == NULL) {
+    return;
+  }
+
+  if(vm_native_write(port, "\n") == 0) {
+    vm_signal_error(thread, VM_ERROR_IO);
+  }
+}
+
+VM_FUNCTION(flush_output_port)
+{
+  vm_port_t *port;
+
+  port = get_port(thread, argc, argv, VM_PORT_FLAG_OUTPUT);
+  if(port == NULL) {
+    return;
+  }
+  vm_native_flush_port(port);
 }
 
 VM_FUNCTION(with_input_from_file)

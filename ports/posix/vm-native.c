@@ -813,6 +813,25 @@ vm_native_read(vm_thread_t *thread, vm_port_t *port, vm_obj_t *obj)
     return VM_NATIVE_READ_ERROR;
   }
 
+  /* In-memory ports skip the fd poll dance; data is always available. */
+  if(port->fd < 0) {
+    len = port->io->read(port, buf, sizeof(buf));
+    if(len < 0) {
+      vm_signal_error(thread, VM_ERROR_IO);
+      return VM_NATIVE_READ_ERROR;
+    } else if(len == 0) {
+      VM_SET_FLAG(port->flags, VM_PORT_FLAG_EOF);
+      return VM_NATIVE_READ_EOF;
+    }
+    vector = vm_vector_create(obj, len, VM_VECTOR_FLAG_BUFFER);
+    if(vector == NULL) {
+      vm_signal_error(thread, VM_ERROR_HEAP);
+      return VM_NATIVE_READ_ERROR;
+    }
+    memcpy(vector->bytes, buf, len);
+    return VM_NATIVE_READ_OK;
+  }
+
   if(port_is_ready(port->fd, 0)) {
     VM_CLEAR_FLAG(ready_port_set[port->fd], ~POLLIN);
 
@@ -867,6 +886,22 @@ vm_native_read_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
     return VM_NATIVE_READ_ERROR;
   }
 
+  /* In-memory ports (e.g. string ports) carry no fd; their data is
+     always immediately available. Skip the fd poll/ready dance and
+     dispatch straight to the io callback. */
+  if(port->fd < 0) {
+    r = port->io->read(port, buf, 1);
+    if(r < 0) {
+      vm_signal_error(thread, VM_ERROR_IO);
+      return VM_NATIVE_READ_ERROR;
+    } else if(r == 0) {
+      VM_SET_FLAG(port->flags, VM_PORT_FLAG_EOF);
+      return VM_NATIVE_READ_EOF;
+    }
+    *c = buf[0];
+    return VM_NATIVE_READ_OK;
+  }
+
   if(port_is_ready(port->fd, 0)) {
     VM_CLEAR_FLAG(ready_port_set[port->fd], ~POLLIN);
     r = port->io->read(port, buf, 1);
@@ -912,7 +947,25 @@ vm_native_peek_char(vm_thread_t *thread, vm_port_t *port, vm_character_t *c)
 vm_boolean_t
 vm_native_char_readyp(vm_port_t *port)
 {
+  /* R7RS §6.13.2: "If the port is at end of file then char-ready?
+     returns #t" so the next read-char doesn't hang. */
+  if(port->has_peek || VM_IS_SET(port->flags, VM_PORT_FLAG_EOF)) {
+    return VM_TRUE;
+  }
   return poll_port_instantly(port->fd, 0);
+}
+
+int
+vm_native_flush_port(vm_port_t *port)
+{
+  if(port == NULL) {
+    return 0;
+  }
+  if(port->io != NULL && port->io->flush != NULL) {
+    return port->io->flush(port);
+  }
+  /* No buffer to flush. */
+  return 0;
 }
 
 #ifdef VM_REPL_ENABLE
@@ -937,6 +990,22 @@ vm_native_write(vm_port_t *port, const char *format, ...)
 
   va_start(args, format);
 
+  /* In-memory ports (string ports etc.) have no fd. Format into a
+     stack buffer and dispatch to the io->write callback. */
+  if(port != NULL && port->fd < 0 &&
+     port->io != NULL && port->io->write != NULL) {
+    char buf[BUFSIZ];
+    int n = vsnprintf(buf, sizeof(buf), format, args);
+    va_end(args);
+    if(n < 0) {
+      ret = -1;
+    } else {
+      if((size_t)n > sizeof(buf)) {
+        n = sizeof(buf);
+      }
+      ret = port->io->write(port, buf, (size_t)n);
+    }
+  } else
 #ifdef VM_REPL_ENABLE
   if(vm_native_console_writer != NULL && original_port != NULL && port != NULL &&
      VM_IS_SET(port->flags, VM_PORT_FLAG_CONSOLE | VM_PORT_FLAG_OUTPUT)) {
@@ -956,8 +1025,10 @@ vm_native_write(vm_port_t *port, const char *format, ...)
     va_end(args);
   }
 #else
-  ret = vdprintf(port == NULL ? STDOUT_FILENO : port->fd, format, args);
-  va_end(args);
+  {
+    ret = vdprintf(port == NULL ? STDOUT_FILENO : port->fd, format, args);
+    va_end(args);
+  }
 #endif
 
   if(ret < 0) {
@@ -980,6 +1051,11 @@ vm_native_write_buffer(vm_port_t *port, const char *buf, size_t len)
     port = vm_native_default_port(NULL, VM_PORT_FLAG_OUTPUT);
   }
 
+  /* In-memory ports dispatch via io->write rather than write(2). */
+  if(port != NULL && port->fd < 0 &&
+     port->io != NULL && port->io->write != NULL) {
+    ret = port->io->write(port, buf, len);
+  } else
 #ifdef VM_REPL_ENABLE
   if(vm_native_console_writer != NULL && original_port != NULL && port != NULL &&
      VM_IS_SET(port->flags, VM_PORT_FLAG_CONSOLE | VM_PORT_FLAG_OUTPUT)) {
@@ -988,7 +1064,9 @@ vm_native_write_buffer(vm_port_t *port, const char *buf, size_t len)
     ret = write(port->fd, buf, len);
   }
 #else
-  ret = write(port->fd, buf, len);
+  {
+    ret = write(port->fd, buf, len);
+  }
 #endif
 
   if(ret < (int)len) {

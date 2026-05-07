@@ -225,3 +225,14 @@ code writes.
 | 206 | `bind_function_rest` | `bind_function_rest` |
 | 207 | `string_to_symbol` | `string->symbol` |
 | 208 | `eof_object` | `eof-object` |
+| 209 | `close_port` | `close-port` |
+| 210 | `newline` | `newline` |
+| 211 | `flush_output_port` | `flush-output-port` |
+| 212 | `input_port_openp` | `input-port-open?` |
+| 213 | `output_port_openp` | `output-port-open?` |
+| 214 | `open_input_string` | `open-input-string` |
+| 215 | `open_output_string` | `open-output-string` |
+| 216 | `get_output_string` | `get-output-string` |
+| 217 | `open_input_bytevector` | `open-input-bytevector` |
+| 218 | `open_output_bytevector` | `open-output-bytevector` |
+| 219 | `get_output_bytevector` | `get-output-bytevector` |
