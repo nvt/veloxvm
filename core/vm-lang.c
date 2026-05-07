@@ -67,7 +67,8 @@ raise_exception(vm_thread_t *thread, vm_error_type_t error_type)
       "NameException",    /* VM_ERROR_NAME */
       NULL,               /* VM_ERROR_UNHANDLED_EXCEPTION */
       "LibraryException", /* VM_ERROR_LIBRARY */
-      "SyscallException"  /* VM_ERRROR_SYSCALL */
+      "SyscallException", /* VM_ERROR_SYSCALL */
+      "OverflowException" /* VM_ERROR_OVERFLOW */
     };
 
   obj.type = VM_TYPE_SYMBOL;
@@ -491,8 +492,13 @@ vm_objects_equal(vm_thread_t *thread, vm_obj_t *obj1, vm_obj_t *obj2)
     return obj1->value.vector->length == obj2->value.vector->length &&
       obj1->value.vector->elements == obj2->value.vector->elements;
   case VM_TYPE_PORT:
-    return memcmp(&obj1->value.port, &obj2->value.port,
-                  sizeof(vm_port_t)) == 0;
+    /* Two ports are eq?/eqv?/equal? iff they refer to the same
+       underlying port object. The previous form memcmp'd
+       sizeof(vm_port_t) bytes starting at the address of the
+       8-byte pointer slot inside the union, reading well past the
+       union into adjacent obj fields and beyond -- a buffer
+       over-read that produced non-deterministic answers. */
+    return obj1->value.port == obj2->value.port;
   case VM_TYPE_PROCEDURE:
     return obj1->value.procedure == obj2->value.procedure;
   case VM_TYPE_EXTERNAL:

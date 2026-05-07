@@ -200,8 +200,14 @@ vm_get_object(vm_thread_t *thread, vm_obj_t *obj)
     if(!VM_STEP(thread)) {
       return;
     }
+    /* Disable GC across the alloc: obj->type is already RATIONAL but
+       obj->value.rational still holds a stale pointer from the slot's
+       previous use. A GC fired by this alloc would walk obj with a
+       new type and a dangling value, crashing in mark_object. */
+    vm_gc_disable();
     obj->value.rational = vm_alloc_at(sizeof(vm_rational_t),
                                       VM_ALLOC_SITE_RATIONAL);
+    vm_gc_enable();
     if(obj->value.rational == NULL) {
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
@@ -222,8 +228,11 @@ vm_get_object(vm_thread_t *thread, vm_obj_t *obj)
         return;
       }
 
+      /* See the RATIONAL case above for the GC-disable rationale. */
+      vm_gc_disable();
       obj->value.string = vm_alloc_at(sizeof(vm_string_t),
                                       VM_ALLOC_SITE_STRING_HEADER);
+      vm_gc_enable();
       if(obj->value.string == NULL) {
         vm_signal_error(thread, VM_ERROR_HEAP);
         return;

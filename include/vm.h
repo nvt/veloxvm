@@ -156,7 +156,8 @@ typedef enum {
   VM_ERROR_NAME                = 21,
   VM_ERROR_UNHANDLED_EXCEPTION = 22,
   VM_ERROR_LIBRARY             = 23,
-  VM_ERROR_SYSCALL             = 24
+  VM_ERROR_SYSCALL             = 24,
+  VM_ERROR_OVERFLOW            = 25
 } vm_error_type_t;
 
 typedef struct vm_error {

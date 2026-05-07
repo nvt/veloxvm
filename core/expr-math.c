@@ -88,71 +88,116 @@ i_gcd(vm_integer_t a, vm_integer_t b)
   return a << shift_result;
 }
 
-static vm_integer_t
-i_lcm(vm_integer_t a, vm_integer_t b)
+/* R5RS 6.2.3 says exact arithmetic that overflows the implementation
+   range must signal an error or coerce to inexact. We signal. The
+   safe_* helpers below detect overflow by widening to int64_t for
+   the operation and checking the result fits in vm_integer_t.
+   Each helper returns 0 on success, 1 on overflow. */
+
+static int
+safe_add(vm_integer_t a, vm_integer_t b, vm_integer_t *result)
+{
+  int64_t r = (int64_t)a + (int64_t)b;
+  if(r > VM_INTEGER_MAX || r < VM_INTEGER_MIN) {
+    return 1;
+  }
+  *result = (vm_integer_t)r;
+  return 0;
+}
+
+static int
+safe_mul(vm_integer_t a, vm_integer_t b, vm_integer_t *result)
+{
+  int64_t r = (int64_t)a * (int64_t)b;
+  if(r > VM_INTEGER_MAX || r < VM_INTEGER_MIN) {
+    return 1;
+  }
+  *result = (vm_integer_t)r;
+  return 0;
+}
+
+static int
+safe_neg(vm_integer_t a, vm_integer_t *result)
+{
+  /* -VM_INTEGER_MIN overflows because INT32_MAX < |VM_INTEGER_MIN|. */
+  if(a == VM_INTEGER_MIN) {
+    return 1;
+  }
+  *result = -a;
+  return 0;
+}
+
+static int
+i_lcm(vm_integer_t a, vm_integer_t b, vm_integer_t *result)
 {
   vm_integer_t gcd;
 
   gcd = i_gcd(a, b);
   if(gcd == 0) {
+    *result = 0;
     return 0;
   }
 
   /* Avoid overflow at the cost of an extra call to abs(). */
-  return (i_abs(a) / gcd) * i_abs(b);
+  return safe_mul(i_abs(a) / gcd, i_abs(b), result);
 }
 
-static vm_rational_t
-r_add(vm_rational_t a, vm_rational_t b)
+static int
+r_add(vm_rational_t a, vm_rational_t b, vm_rational_t *result)
 {
-  vm_rational_t result;
-
   if(a.denominator == 0 || b.denominator == 0) {
-    result.numerator = 0;
-    result.denominator = 0;
+    result->numerator = 0;
+    result->denominator = 0;
     VM_DEBUG(VM_DEBUG_MEDIUM,
              "Attempt to add rational with a denominator of 0");
+    return 0;
   } else if(a.denominator == b.denominator) {
     /* Avoid costly operations for integer arithmetic. */
-    result.denominator = a.denominator;
-    result.numerator = a.numerator + b.numerator;
+    result->denominator = a.denominator;
+    return safe_add(a.numerator, b.numerator, &result->numerator);
   } else {
-    result.denominator = i_lcm(a.denominator, b.denominator);
-    result.numerator = a.numerator * (result.denominator / a.denominator) +
-                     b.numerator * (result.denominator / b.denominator);
+    vm_integer_t a_scale, b_scale, a_term, b_term;
+    if(i_lcm(a.denominator, b.denominator, &result->denominator)) {
+      return 1;
+    }
+    a_scale = result->denominator / a.denominator;
+    b_scale = result->denominator / b.denominator;
+    if(safe_mul(a.numerator, a_scale, &a_term) ||
+       safe_mul(b.numerator, b_scale, &b_term) ||
+       safe_add(a_term, b_term, &result->numerator)) {
+      return 1;
+    }
+    return 0;
   }
-
-  return result;
 }
 
-static vm_rational_t
-r_subtract(vm_rational_t a, vm_rational_t b)
+static int
+r_subtract(vm_rational_t a, vm_rational_t b, vm_rational_t *result)
 {
-  b.numerator = -b.numerator;
-
-  return r_add(a, b);
+  if(safe_neg(b.numerator, &b.numerator)) {
+    return 1;
+  }
+  return r_add(a, b, result);
 }
 
-static vm_rational_t
-r_multiply(vm_rational_t a, vm_rational_t b)
+static int
+r_multiply(vm_rational_t a, vm_rational_t b, vm_rational_t *result)
 {
-  vm_rational_t result;
-
-  result.numerator = a.numerator * b.numerator;
-  result.denominator = a.denominator * b.denominator;
-
-  return result;
+  if(safe_mul(a.numerator, b.numerator, &result->numerator) ||
+     safe_mul(a.denominator, b.denominator, &result->denominator)) {
+    return 1;
+  }
+  return 0;
 }
 
-static vm_rational_t
-r_div(vm_rational_t a, vm_rational_t b)
+static int
+r_div(vm_rational_t a, vm_rational_t b, vm_rational_t *result)
 {
-  vm_rational_t result;
-
-  result.numerator = a.numerator * b.denominator;
-  result.denominator = a.denominator * b.numerator;
-
-  return result;
+  if(safe_mul(a.numerator, b.denominator, &result->numerator) ||
+     safe_mul(a.denominator, b.numerator, &result->denominator)) {
+    return 1;
+  }
+  return 0;
 }
 
 static void
@@ -213,7 +258,10 @@ VM_FUNCTION(add)
     } else {
       r = *argv[argc].value.rational;
     }
-    sum = r_add(sum, r);
+    if(r_add(sum, r, &sum)) {
+      vm_signal_error(thread, VM_ERROR_OVERFLOW);
+      return;
+    }
   }
 
   generate_result(thread, sum);
@@ -230,7 +278,10 @@ VM_FUNCTION(subtract)
   }
 
   if(argc == 1) {
-    diff.numerator = -diff.numerator;
+    if(safe_neg(diff.numerator, &diff.numerator)) {
+      vm_signal_error(thread, VM_ERROR_OVERFLOW);
+      return;
+    }
   } else {
     while(argc-- > 1) {
       if(argv[argc].type == VM_TYPE_INTEGER) {
@@ -238,7 +289,10 @@ VM_FUNCTION(subtract)
       } else {
 	r = *argv[argc].value.rational;
       }
-      diff = r_subtract(diff, r);
+      if(r_subtract(diff, r, &diff)) {
+        vm_signal_error(thread, VM_ERROR_OVERFLOW);
+        return;
+      }
     }
   }
 
@@ -269,7 +323,10 @@ VM_FUNCTION(multiply)
       break;
     }
 
-    product = r_multiply(product, r);
+    if(r_multiply(product, r, &product)) {
+      vm_signal_error(thread, VM_ERROR_OVERFLOW);
+      return;
+    }
     r_normalize(&product);
   }
 
@@ -317,7 +374,10 @@ VM_FUNCTION(divide)
       return;
     }
 
-    quotient = r_div(quotient, r);
+    if(r_div(quotient, r, &quotient)) {
+      vm_signal_error(thread, VM_ERROR_OVERFLOW);
+      return;
+    }
     r_normalize(&quotient);
   }
 
@@ -355,7 +415,10 @@ VM_FUNCTION(lcm)
 
   result = argv[0].value.integer;
   for(i = 1; i < argc && result != 0; i++) {
-    result = i_lcm(result, argv[i].value.integer);
+    if(i_lcm(result, argv[i].value.integer, &result)) {
+      vm_signal_error(thread, VM_ERROR_OVERFLOW);
+      return;
+    }
   }
   VM_PUSH_INTEGER(result);
 }
