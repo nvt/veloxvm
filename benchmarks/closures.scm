@@ -18,7 +18,7 @@
       (set! c (+ c 1))
       c)))
 
-(define n-counters 100)
+(define n-counters 1000)
 (define n-increments 1000)
 
 (define (build-counters n acc)
@@ -36,12 +36,29 @@
 
 (print "create + call: ") (print n-counters) (print " counters x ")
 (print n-increments) (print " calls each\n")
+
+(define t-start (time))
 (increment-each counters n-increments)
+(define t-end (time))
+(define elapsed (- t-end t-start))
+(define total-calls (* n-counters n-increments))
 
 ;; Sanity check: every counter should now read its own n-increments.
 (define (read-counter ctr) (ctr))
+(define final-value (read-counter (car counters)))
+(define expected (+ n-increments 1))
 (print "  first counter final value: ")
-(print (read-counter (car counters)))
+(print final-value)
 (print " (expected ")
-(print (+ n-increments 1))
-(print ")\n=== Done ===\n")
+(print expected)
+(print ")\n")
+(print "  elapsed:  ") (print elapsed) (print " ms\n")
+(if (> elapsed 0)
+    (begin
+      (print "  rate:     ")
+      (print (* (quotient total-calls elapsed) 1000))
+      (print " calls/sec\n"))
+    'skip)
+(if (= final-value expected)
+    (print "Status: PASS\n")
+    (print "Status: FAIL\n"))

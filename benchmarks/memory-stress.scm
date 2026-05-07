@@ -1,54 +1,22 @@
-;; Memory Stress Test
-;; Creates many objects to trigger automatic garbage collection
-;; Validates that the iterative GC implementation handles memory pressure correctly
+;; Multi-root GC mark test.
+;;
+;; Builds 10 separate lists of 200 cells each, all kept live as
+;; top-level bindings simultaneously (2000 cells across 10 distinct
+;; roots), then runs sustained allocation pressure to force many GC
+;; cycles. Each GC cycle must mark all 10 roots.
+;;
+;; Distinct from tree-walk.scm (one live tree) and alloc-churn.scm
+;; (one live data list) -- the value here is exercising the GC's
+;; root-set traversal across multiple top-level bindings under load.
 
-(print "========================================\n")
-(print "Memory Stress Test\n")
-(print "========================================\n\n")
+(print "=== Multi-root GC mark ===\n")
 
-;; Build list using tail-recursive helper with accumulator
 (define (build-list-iter n)
-  (define (build-iter i acc)
-    (if (> i n)
-        acc
-        (build-iter (+ i 1) (cons i acc))))
-  (build-iter 1 '()))
+  (define (iter i acc)
+    (if (> i n) acc (iter (+ i 1) (cons i acc))))
+  (iter 1 '()))
 
-(print "========================================\n")
-(print "Test 1: Shallow Structure (100 objects)\n")
-(print "========================================\n")
-
-(define list100 (build-list-iter 100))
-(print "Created list of 100 elements\n")
-(print "First element: ")
-(print (car list100))
-(print "\n\n")
-
-(print "========================================\n")
-(print "Test 2: Medium Structure (500 objects)\n")
-(print "========================================\n")
-
-(define list500 (build-list-iter 500))
-(print "Created list of 500 elements\n")
-(print "First element: ")
-(print (car list500))
-(print "\n\n")
-
-(print "========================================\n")
-(print "Test 3: Large Structure (1000 objects)\n")
-(print "========================================\n")
-
-(define list1000 (build-list-iter 1000))
-(print "Created list of 1000 elements\n")
-(print "First element: ")
-(print (car list1000))
-(print "\n\n")
-
-(print "========================================\n")
-(print "Test 4: Multiple Large Structures\n")
-(print "========================================\n")
-
-(print "Creating 10 lists of 200 objects each (2000 total)...\n")
+(print "Building 10 lists of 200 elements each (2000 cells total)...\n")
 (define list-a (build-list-iter 200))
 (define list-b (build-list-iter 200))
 (define list-c (build-list-iter 200))
@@ -60,41 +28,39 @@
 (define list-i (build-list-iter 200))
 (define list-j (build-list-iter 200))
 
-(print "All lists created successfully\n")
-(print "Verifying list-a first element: ")
-(print (car list-a))
-(print "\n")
-(print "Verifying list-j first element: ")
-(print (car list-j))
-(print "\n\n")
+(define gc-cycles 5000)
+(define throwaway-size 500)
 
-(print "========================================\n")
-(print "Test 5: Memory Churn (10 cycles)\n")
-(print "========================================\n")
-
-(print "Creating and discarding lists to trigger GC...\n")
-
-(define cycle-count 0)
-(define (stress-loop)
-  (if (< cycle-count 10)
+(define (pressure k)
+  (if (= k 0) 'done
       (begin
-        ;; Allocate and immediately discard
-        (build-list-iter 100)
-        (print "  Cycle ")
-        (print (+ cycle-count 1))
-        (print " complete\n")
-        (set! cycle-count (+ cycle-count 1))
-        (stress-loop))
-      #t))
+        (build-list-iter throwaway-size)
+        (pressure (- k 1)))))
 
-(stress-loop)
+(print "Forcing GC pressure with ") (print gc-cycles)
+(print " throwaway lists of ") (print throwaway-size) (print " cells...\n")
+(define t-start (time))
+(pressure gc-cycles)
+(define t-end (time))
+(define elapsed (- t-end t-start))
+(define total-allocations (* gc-cycles throwaway-size))
 
-(print "\n========================================\n")
-(print "Memory Stress Test Results\n")
-(print "========================================\n\n")
+(define ok
+  (and (= (car list-a) 200) (= (car list-b) 200)
+       (= (car list-c) 200) (= (car list-d) 200)
+       (= (car list-e) 200) (= (car list-f) 200)
+       (= (car list-g) 200) (= (car list-h) 200)
+       (= (car list-i) 200) (= (car list-j) 200)))
 
-(print "All allocations completed successfully\n")
-(print "Automatic GC handled memory pressure correctly\n")
-(print "Iterative marking algorithm prevented stack overflow\n\n")
+(print "  all 10 root lists intact: ") (print (if ok "yes" "NO")) (print "\n")
+(print "  elapsed:                  ") (print elapsed) (print " ms\n")
+(if (> elapsed 0)
+    (begin
+      (print "  rate:                     ")
+      (print (* (quotient total-allocations elapsed) 1000))
+      (print " allocs/sec\n"))
+    'skip)
 
-(print "Status: MEMORY STRESS TEST COMPLETE\n")
+(if ok
+    (print "Status: PASS\n")
+    (print "Status: FAIL\n"))
