@@ -26,6 +26,13 @@
 (assert-equal '(1 2) (car '((1 2) 3 4)) "Car of nested list")
 (assert-equal '(3 4) (cdr '((1 2) 3 4)) "Cdr of nested list")
 
+;; Cdr on improper / dotted-pair lists. Regression for a bug where
+;; (cdr (cons 1 (cons 2 3))) errored with "Internal error".
+(assert-equal 2 (cdr (cons 1 2)) "Cdr of 2-element pair returns the cdr value")
+(assert-equal (cons 2 3) (cdr (cons 1 (cons 2 3))) "Cdr of 3-element improper list")
+(assert-equal 3 (cdr (cons (cons 1 2) 3)) "Cdr of pair with pair-car")
+(assert-equal (cons 1 1) (cdr (cons (cons 1 1) (cons 1 1))) "Cdr of pair with pair-cdr")
+
 ;; List-ref
 (assert-equal 1 (list-ref '(1 2 3 4 5) 0) "First element")
 (assert-equal 3 (list-ref '(1 2 3 4 5) 2) "Middle element")

@@ -224,12 +224,12 @@ VM_FUNCTION(cdr)
   vm_list_t *list;
 
   list = argv->value.list;
-  if(VM_IS_SET(list->flags, VM_LIST_FLAG_PAIR)) {
-    if(list->length != 2) {
-      vm_signal_error(thread, VM_ERROR_INTERNAL);
-    } else {
-      VM_PUSH(&list->head->next->obj);
-    }
+  /* Dotted pair (a . b): cdr is the second element directly, regardless
+     of its type. Only fires for a 2-element PAIR-flagged list -- a
+     longer improper list like (1 2 . 3) has length 3 and the cdr is
+     itself a list (2 . 3), which the vm_list_cdr path produces. */
+  if(VM_IS_SET(list->flags, VM_LIST_FLAG_PAIR) && list->length == 2) {
+    VM_PUSH(&list->head->next->obj);
     return;
   }
 
