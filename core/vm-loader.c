@@ -110,8 +110,9 @@ static int
 extract_program_name(char **name, const char *filename)
 {
   const char *start;
-  const char *end;
   size_t length;
+  static const char suffix[] = ".vm";
+  const size_t suffix_len = sizeof(suffix) - 1;
 
   start = strrchr(filename, '/');
   if(start == NULL) {
@@ -120,11 +121,11 @@ extract_program_name(char **name, const char *filename)
     start++;
   }
 
-  end = strstr(start, ".vm");
-  if(end == NULL) {
-    end = start + strlen(start);
+  length = strlen(start);
+  if(length >= suffix_len &&
+     memcmp(start + length - suffix_len, suffix, suffix_len) == 0) {
+    length -= suffix_len;
   }
-  length = (size_t)(end - start);
 
   *name = VM_MALLOC(length + 1);
   if(*name == NULL) {
