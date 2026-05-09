@@ -269,7 +269,7 @@ read_program(const char *name)
     goto error;
   }
 
-  if(buf[0] != VM_FILE_ID1 && buf[1] != VM_FILE_ID2) {
+  if(buf[0] != VM_FILE_ID1 || buf[1] != VM_FILE_ID2) {
     VM_DEBUG(VM_DEBUG_LOW, "%s: invalid program header", name);
     goto error;
   }
@@ -335,6 +335,11 @@ read_program(const char *name)
         READ_CHECK(handle, &expr_id, sizeof(expr_id));
         if(expr_id >= program->captures_size) {
           VM_DEBUG(VM_DEBUG_LOW, "Captures expr_id %u out of range",
+                   (unsigned)expr_id);
+          goto error;
+        }
+        if(program->captures[expr_id] != NULL) {
+          VM_DEBUG(VM_DEBUG_LOW, "Captures expr_id %u defined twice",
                    (unsigned)expr_id);
           goto error;
         }
@@ -487,10 +492,13 @@ vm_unload_program(vm_program_t *program)
       destroy_program_threads(tmp);
 
 #if VM_INSTRUCTION_PROFILING
-      VM_PRINTF("%s instruction profiling result (# <form> <executions<)\n",
-                tmp->name);
-      for(i = 0; i < VM_TABLE_SIZE(tmp->exprv); i++) {
-        VM_PRINTF("# %u %lu\n", i, tmp->exec_count[i]);
+      {
+        unsigned i;
+        VM_PRINTF("%s instruction profiling result (# <form> <executions<)\n",
+                  tmp->name);
+        for(i = 0; i < VM_TABLE_SIZE(tmp->exprv); i++) {
+          VM_PRINTF("# %u %lu\n", i, tmp->exec_count[i]);
+        }
       }
 #endif
       VM_DEBUG(VM_DEBUG_LOW, "Unloaded the program \"%s\"", tmp->name);
