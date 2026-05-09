@@ -36,10 +36,16 @@
 static vm_ext_type_id_t type_id_counter;
 
 static const char *
-string_lookup(vm_program_t *program, vm_string_id_t string_id)
+string_lookup(vm_program_t *program, vm_string_id_t string_id,
+              uint16_t *length_out)
 {
-  return string_id >= VM_TABLE_SIZE(program->strings) ?
-         NULL : (const char *)VM_TABLE_GET(program->strings, string_id);
+  if(string_id >= VM_TABLE_SIZE(program->strings)) {
+    return NULL;
+  }
+  if(length_out != NULL) {
+    *length_out = VM_TABLE_LENGTH(program->strings, string_id);
+  }
+  return (const char *)VM_TABLE_GET(program->strings, string_id);
 }
 
 void
@@ -102,12 +108,14 @@ vm_string_resolve(vm_thread_t *thread, vm_string_t *string)
   if(VM_IS_SET(string->flags, VM_STRING_FLAG_ID) &&
      VM_IS_CLEAR(string->flags, VM_STRING_FLAG_RESOLVED)) {
     const char *resolved = NULL;
+    uint16_t resolved_length = 0;
 
     if(thread == NULL) {
       thread = vm_current_thread();
     }
     if(thread != NULL) {
-      resolved = string_lookup(thread->program, string->string_id);
+      resolved = string_lookup(thread->program, string->string_id,
+                               &resolved_length);
     }
     if(resolved == NULL) {
       /* Leave RESOLVED clear so a stray future call signals the error
@@ -116,8 +124,10 @@ vm_string_resolve(vm_thread_t *thread, vm_string_t *string)
       vm_signal_error(thread, VM_ERROR_STRING_ID);
       return NULL;
     }
+    /* Use the encoded item length rather than strlen so strings with
+       embedded NUL bytes keep their full byte content. */
     string->str = (char *)resolved;
-    string->length = strlen(resolved);
+    string->length = resolved_length;
     VM_SET_FLAG(string->flags,
                 VM_STRING_FLAG_RESOLVED | VM_STRING_FLAG_IMMUTABLE);
   }
