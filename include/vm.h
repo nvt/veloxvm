@@ -176,6 +176,19 @@ typedef struct vm_error {
 #endif
 } vm_error_t;
 
+/*
+ * Number of symbol IDs covered by the per-thread shadow_count fast
+ * path. Symbol IDs >= this value always take the slow walk in
+ * vm_symbol_resolve. The default 256 covers MAX_LOCAL_SYMBOL_ID and
+ * the typical app-scope symbol-table size (well under 256 for normal
+ * programs). uint8_t per slot is sufficient because the maximum
+ * shadowing depth is bounded by VM_CONTEXT_STACK_SIZE (64 by
+ * default, always <= 255).
+ */
+#ifndef VM_SHADOW_TABLE_SIZE
+#define VM_SHADOW_TABLE_SIZE 256
+#endif
+
 typedef struct vm_thread {
   vm_expr_t *exprv[VM_CONTEXT_STACK_SIZE];
   vm_obj_t result;
@@ -193,6 +206,18 @@ typedef struct vm_thread {
      program's REPL main thread. */
   uint8_t repl_main;
 #endif
+  /*
+   * Per-app-symbol count of stacked bindings on this thread's call
+   * stack. vm_symbol_resolve uses this as a fast-path test: when the
+   * count is zero, the symbol cannot be lexically shadowed and the
+   * walk through exprv[] is skipped, returning the program-level
+   * binding directly. Maintained by vm_symbol_bind (increment) and
+   * by frame teardown (decrement). Initialised to zero in
+   * vm_thread_create / vm_thread_create_parked, and rebuilt after
+   * vm_thread_stack_copy because that path duplicates frames via
+   * memcpy without going through vm_symbol_bind.
+   */
+  uint8_t shadow_count[VM_SHADOW_TABLE_SIZE];
 } vm_thread_t;
 
 typedef struct vm_port_io {
@@ -360,7 +385,7 @@ void vm_thread_stack_destroy(void);
 vm_expr_t *vm_thread_stack_push(vm_thread_t *);
 void vm_thread_stack_pop(vm_thread_t *);
 vm_expr_t *vm_thread_stack_alloc(vm_thread_t *);
-void vm_thread_stack_free(vm_expr_t *);
+void vm_thread_stack_free(vm_thread_t *, vm_expr_t *);
 void vm_thread_stack_print_frame(vm_thread_t *, vm_expr_t *);
 int vm_thread_stack_copy(vm_thread_t *, vm_thread_t *);
 const vm_mempool_t *vm_frame_pool(void);

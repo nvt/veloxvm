@@ -174,7 +174,7 @@ vm_raise_exception(vm_thread_t *thread, vm_obj_t *obj)
 
       /* Deallocate the stack above that of the guard expression. */
       for(j = thread->exprc - 1; j > i; j--) {
-        vm_thread_stack_free(thread->exprv[j]);
+        vm_thread_stack_free(thread, thread->exprv[j]);
       }
 
       /* Mark this guard as now executing its handler (not its body).
@@ -234,7 +234,7 @@ vm_return_from_function(vm_thread_t *thread, vm_obj_t *obj)
         /* Deallocate the stack from the old top down to and including the bind frame.
            This properly cleans up all frames that were unwound by the return. */
         for(j = old_exprc - 1; j >= i; j--) {
-          vm_thread_stack_free(thread->exprv[j]);
+          vm_thread_stack_free(thread, thread->exprv[j]);
         }
 
         return;

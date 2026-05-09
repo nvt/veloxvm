@@ -195,25 +195,39 @@ vm_symbol_resolve(vm_thread_t *thread, vm_symbol_ref_t *symbol_ref)
 {
   int i, j;
   static vm_obj_t self_obj;
+  vm_symbol_id_t id;
 
   if(symbol_ref->scope == VM_SYMBOL_SCOPE_APP) {
+    id = symbol_ref->symbol_id;
+
     /* Check whether the symbol ID is valid. */
-    if(symbol_ref->symbol_id >= VM_TABLE_SIZE(thread->program->symbols)) {
+    if(id >= VM_TABLE_SIZE(thread->program->symbols)) {
       vm_signal_error(thread, VM_ERROR_SYMBOL_ID);
       return NULL;
     }
 
-    /* First check whether the symbol binding has been shadowed by a binding on the stack. */
+    /* Fast path: if no live frame on this thread holds a binding for
+       this symbol_id, the lexical-shadowing walk below cannot find a
+       match, so return the program-level binding directly. This is
+       the dominant win on recursive code where most resolves hit
+       top-level functions (`fib`, `loop`, ...) rather than formal
+       parameters. */
+    if(id < VM_SHADOW_TABLE_SIZE && thread->shadow_count[id] == 0) {
+      return &thread->program->symbol_bindings[id];
+    }
+
+    /* Slow path: walk the stack, innermost frame first, looking for
+       a shadowing binding. */
     for(i = thread->exprc - 1; i >= 0; i--) {
       for(j = thread->exprv[i]->bindc - 1; j >= 0; j--) {
-        if(thread->exprv[i]->bindv[j].symbol_id == symbol_ref->symbol_id) {
+        if(thread->exprv[i]->bindv[j].symbol_id == id) {
           return &thread->exprv[i]->bindv[j].obj;
         }
       }
     }
-    /* If no stack binding was found, we return the top-level definition of a symbol, or NULL if it
-       doesn't exist. */
-    return &thread->program->symbol_bindings[symbol_ref->symbol_id];
+    /* No stack binding found; fall through to the top-level
+       definition (or VM_TYPE_NONE if undefined). */
+    return &thread->program->symbol_bindings[id];
   } else if(symbol_ref->scope == VM_SYMBOL_SCOPE_CORE &&
      symbol_ref->symbol_id < CORE_SYMBOL_COUNT) {
     /* Return a self-reference if the symbol refers to an operator. */
@@ -230,11 +244,17 @@ void
 vm_symbol_bind(vm_thread_t *thread, vm_symbol_ref_t *symbol_ref, vm_obj_t *obj)
 {
   vm_symbol_bind_t *sym_bind;
+  vm_symbol_id_t id = symbol_ref->symbol_id;
 
   sym_bind = &thread->expr->bindv[thread->expr->bindc];
-  sym_bind->symbol_id = symbol_ref->symbol_id;
+  sym_bind->symbol_id = id;
   memcpy(&sym_bind->obj, obj, sizeof(vm_obj_t));
   thread->expr->bindc++;
+
+  /* Track the binding for vm_symbol_resolve's fast path. */
+  if(id < VM_SHADOW_TABLE_SIZE && thread->shadow_count[id] < 0xff) {
+    thread->shadow_count[id]++;
+  }
 }
 
 const char *

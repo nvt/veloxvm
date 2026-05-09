@@ -406,7 +406,7 @@ vm_thread_destroy(vm_thread_t *thread)
   thread->program->nthreads--;
   threads[index] = NULL;
   for(i = 0; i < thread->exprc; i++) {
-    vm_thread_stack_free(thread->exprv[i]);
+    vm_thread_stack_free(thread, thread->exprv[i]);
   }
   VM_FREE(thread);
 

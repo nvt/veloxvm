@@ -135,7 +135,7 @@ cut_tail_call_frames(vm_thread_t *thread)
 
       /* Reduce the stack by thread->exprc - 1 - i frames. */
       for(j = thread->exprc - 2; j >= i; j--) {
-        vm_thread_stack_free(thread->exprv[j]);
+        vm_thread_stack_free(thread, thread->exprv[j]);
       }
       thread->exprv[i] = thread->exprv[thread->exprc - 1];
       thread->exprc = i + 1;

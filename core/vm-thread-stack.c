@@ -45,6 +45,29 @@ initialize_frame(vm_expr_t *expr)
   expr->bindv = NULL;
 }
 
+/*
+ * Decrement the per-thread shadow_count for every binding held by
+ * this frame. Called just before the frame's bindings stop being
+ * reachable from vm_symbol_resolve's walk -- either at frame teardown
+ * (vm_thread_stack_pop without VM_EXPR_SAVE_FRAME, vm_thread_stack_free)
+ * or when a saved frame is finally released.
+ */
+static void
+release_shadow_counts(vm_thread_t *thread, vm_expr_t *frame)
+{
+  uint8_t i;
+  vm_symbol_id_t id;
+  if(thread == NULL || frame == NULL) {
+    return;
+  }
+  for(i = 0; i < frame->bindc; i++) {
+    id = frame->bindv[i].symbol_id;
+    if(id < VM_SHADOW_TABLE_SIZE && thread->shadow_count[id] > 0) {
+      thread->shadow_count[id]--;
+    }
+  }
+}
+
 int
 vm_thread_stack_create(void)
 {
@@ -94,6 +117,7 @@ vm_thread_stack_pop(vm_thread_t *thread)
     vm_signal_error(thread, VM_ERROR_INTERNAL);
   } else {
     if(VM_IS_CLEAR(thread->expr->flags, VM_EXPR_SAVE_FRAME)) {
+      release_shadow_counts(thread, thread->expr);
       if(thread->expr->bindv != NULL) {
         VM_FREE(thread->expr->bindv);
       }
@@ -119,11 +143,12 @@ vm_thread_stack_alloc(vm_thread_t *thread)
 }
 
 void
-vm_thread_stack_free(vm_expr_t *frame)
+vm_thread_stack_free(vm_thread_t *thread, vm_expr_t *frame)
 {
   if(frame == NULL) {
     return;
   }
+  release_shadow_counts(thread, frame);
   if(frame->bindv != NULL) {
     VM_FREE(frame->bindv);
   }
@@ -134,6 +159,8 @@ int
 vm_thread_stack_copy(vm_thread_t *dst, vm_thread_t *src)
 {
   int i;
+  uint8_t j;
+  vm_symbol_id_t id;
 
   for(i = 0; i < src->exprc; i++) {
     dst->exprv[i] = vm_mempool_alloc(&frame_pool);
@@ -148,6 +175,19 @@ vm_thread_stack_copy(vm_thread_t *dst, vm_thread_t *src)
   }
 
   dst->expr = dst->exprv[0];
+
+  /* memcpy bypassed vm_symbol_bind, so dst->shadow_count is whatever
+     the caller left it as (typically zero from create_thread). Walk
+     the copied frames and re-establish the counts. */
+  memset(dst->shadow_count, 0, sizeof(dst->shadow_count));
+  for(i = 0; i < src->exprc; i++) {
+    for(j = 0; j < dst->exprv[i]->bindc; j++) {
+      id = dst->exprv[i]->bindv[j].symbol_id;
+      if(id < VM_SHADOW_TABLE_SIZE && dst->shadow_count[id] < 0xff) {
+        dst->shadow_count[id]++;
+      }
+    }
+  }
 
   return 1;
 }

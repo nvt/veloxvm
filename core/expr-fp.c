@@ -139,7 +139,7 @@ VM_FUNCTION(map)
     result_list = vm_list_create();
     if(result_list == NULL) {
       vm_gc_enable();
-      vm_thread_stack_free(map_expr);
+      vm_thread_stack_free(thread, map_expr);
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
@@ -155,7 +155,7 @@ VM_FUNCTION(map)
     }
 
     if(argv[argc - 2].type != VM_TYPE_LIST) {
-      vm_thread_stack_free(map_expr);
+      vm_thread_stack_free(thread, map_expr);
       vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
       return;
     }
@@ -164,7 +164,7 @@ VM_FUNCTION(map)
     if(vm_list_insert_tail(argv[argc - 2].value.list,
 			   &argv[argc - 1]) == VM_FALSE) {
       vm_list_destroy(argv[argc - 2].value.list);
-      vm_thread_stack_free(map_expr);
+      vm_thread_stack_free(thread, map_expr);
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
@@ -177,7 +177,7 @@ VM_FUNCTION(map)
     /* The list has been processed. Stop the evaluation. */
     VM_PUSH(&current_expr->argv[current_expr->argc - 2]);
     VM_EVAL_STOP(thread);
-    vm_thread_stack_free(map_expr);
+    vm_thread_stack_free(thread, map_expr);
     return;
   }
 
@@ -234,7 +234,7 @@ VM_FUNCTION(filter)
     result_list = vm_list_create();
     if(result_list == NULL) {
       vm_gc_enable();
-      vm_thread_stack_free(filter_expr);
+      vm_thread_stack_free(thread, filter_expr);
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
@@ -254,7 +254,7 @@ VM_FUNCTION(filter)
        vm_list_insert_tail(argv[argc - 2].value.list,
 			   &filter_expr->argv[1]) == VM_FALSE) {
       vm_list_destroy(argv[argc - 2].value.list);
-      vm_thread_stack_free(filter_expr);
+      vm_thread_stack_free(thread, filter_expr);
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
@@ -272,7 +272,7 @@ VM_FUNCTION(filter)
      * caller's argc parameter is still the pre-init value. */
     VM_PUSH(&current_expr->argv[current_expr->argc - 2]);
     VM_EVAL_STOP(thread);
-    vm_thread_stack_free(filter_expr);
+    vm_thread_stack_free(thread, filter_expr);
     return;
   }
 
@@ -340,7 +340,7 @@ VM_FUNCTION(for_each)
     /* The list has been processed. Stop the evaluation and
        deallocate the synthetic expression. */
     VM_EVAL_STOP(thread);
-    vm_thread_stack_free(foreach_expr);
+    vm_thread_stack_free(thread, foreach_expr);
     return;
   }
   memcpy(&foreach_expr->argv[1], obj, sizeof(vm_obj_t));
@@ -348,7 +348,7 @@ VM_FUNCTION(for_each)
   /* Remove the processed object from the list. */
   argv[1].value.list = vm_list_cdr(list, 1);
   if(argv[1].value.list == NULL) {
-    vm_thread_stack_free(foreach_expr);
+    vm_thread_stack_free(thread, foreach_expr);
     vm_signal_error(thread, VM_ERROR_HEAP);
     return;
   }
@@ -459,7 +459,7 @@ VM_FUNCTION(reduce)
      * accumulator slot has already been appended at argc==3, so the
      * stale value points one slot too low. */
     VM_PUSH(&current_expr->argv[current_expr->argc - 1]);
-    vm_thread_stack_free(reduce_expr);
+    vm_thread_stack_free(thread, reduce_expr);
     return;
   }
 
@@ -468,7 +468,7 @@ VM_FUNCTION(reduce)
   if(skip_first_element) {
     list = argv[1].value.list = vm_list_cdr(list, 1);
     if(list == NULL) {
-      vm_thread_stack_free(reduce_expr);
+      vm_thread_stack_free(thread, reduce_expr);
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
@@ -481,7 +481,7 @@ VM_FUNCTION(reduce)
     /* We have processed all objects in the list. */
     VM_EVAL_STOP(thread);
     VM_PUSH(&current_expr->argv[current_expr->argc - 1]);
-    vm_thread_stack_free(reduce_expr);
+    vm_thread_stack_free(thread, reduce_expr);
     return;
   }
 
@@ -550,7 +550,7 @@ VM_FUNCTION(count)
     /* The list has been processed. Stop the evaluation. */
     VM_PUSH(&argv[argc - 2]);
     VM_EVAL_STOP(thread);
-    vm_thread_stack_free(count_expr);
+    vm_thread_stack_free(thread, count_expr);
     return;
   }
 
@@ -639,7 +639,7 @@ VM_FUNCTION(vector_for_each)
   if(index >= vector->length) {
     /* Done. for-each has no return value. */
     VM_EVAL_STOP(thread);
-    vm_thread_stack_free(foreach_expr);
+    vm_thread_stack_free(thread, foreach_expr);
     return;
   }
 
@@ -709,7 +709,7 @@ VM_FUNCTION(vector_count)
   if(index >= vector->length) {
     VM_PUSH(&current_expr->argv[current_expr->argc - 2]);
     VM_EVAL_STOP(thread);
-    vm_thread_stack_free(count_expr);
+    vm_thread_stack_free(thread, count_expr);
     return;
   }
 
@@ -782,7 +782,7 @@ VM_FUNCTION(vector_fold)
   if(index >= vector->length) {
     VM_PUSH(&current_expr->argv[current_expr->argc - 1]);
     VM_EVAL_STOP(thread);
-    vm_thread_stack_free(fold_expr);
+    vm_thread_stack_free(thread, fold_expr);
     return;
   }
 
@@ -840,7 +840,7 @@ VM_FUNCTION(vector_map)
       vector->length, VM_VECTOR_FLAG_REGULAR);
     if(result_vector == NULL) {
       vm_gc_enable();
-      vm_thread_stack_free(map_expr);
+      vm_thread_stack_free(thread, map_expr);
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
@@ -858,7 +858,7 @@ VM_FUNCTION(vector_map)
     map_expr = thread->exprv[thread->exprc];
 
     if(current_expr->argv[current_expr->argc - 2].type != VM_TYPE_VECTOR) {
-      vm_thread_stack_free(map_expr);
+      vm_thread_stack_free(thread, map_expr);
       vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
       return;
     }
@@ -881,7 +881,7 @@ VM_FUNCTION(vector_map)
   if(index >= vector->length) {
     VM_PUSH(&current_expr->argv[current_expr->argc - 2]);
     VM_EVAL_STOP(thread);
-    vm_thread_stack_free(map_expr);
+    vm_thread_stack_free(thread, map_expr);
     return;
   }
 
