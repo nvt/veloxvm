@@ -264,7 +264,7 @@ vm_sched_thread(vm_thread_t *thread)
       /* We read an expression consisting of an atom. */
       expr->argc = 0;
       vm_eval_object(thread, &next_expr);
-      memmove(&expr->argv[0], &next_expr, sizeof(vm_obj_t));
+      memcpy(&expr->argv[0], &next_expr, sizeof(vm_obj_t));
     }
 
     VM_SET_FLAG(expr->flags, VM_EXPR_HAVE_OBJECTS);
@@ -418,7 +418,7 @@ restart:
        expr->argv[0].value.form.type == VM_FORM_REF);
 
     VM_EVAL_SET_COMPLETED(thread, expr->eval_arg);
-    memmove(&expr->argv[expr->eval_arg], &thread->result, sizeof(vm_obj_t));
+    memcpy(&expr->argv[expr->eval_arg], &thread->result, sizeof(vm_obj_t));
 
     /* When evaluating a sub-expression in operator position produced a
        lambda or closure (e.g. ((box-ref f) 0) or ((make-fn) x)), set up
