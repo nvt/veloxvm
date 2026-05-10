@@ -504,8 +504,12 @@ VM_FUNCTION(append)
     return;
   }
 
-  /* Continue the APPEND operation. */
-  list = vm_list_cdr(list, 0);
+  /* Continue the APPEND operation. The cdr must be non-destructive
+     (copy = 1) -- a destructive cdr here would shrink and free items
+     out of argv[1], which is the user's second-argument list. R5RS
+     specifies that append allocates a new list and shares structure
+     only with its last argument. */
+  list = vm_list_cdr(list, 1);
   if(list == NULL) {
     vm_signal_error(thread, VM_ERROR_HEAP);
   } else {
@@ -517,8 +521,8 @@ VM_FUNCTION(append)
 
 VM_FUNCTION(remove)
 {
-  vm_list_t *list;
-  vm_list_item_t *prev_item;
+  vm_list_t *src_list;
+  vm_list_t *new_list;
   vm_list_item_t *item;
 
   if(argv[1].type != VM_TYPE_LIST) {
@@ -526,35 +530,34 @@ VM_FUNCTION(remove)
     return;
   }
 
-  list = argv[1].value.list;
+  src_list = argv[1].value.list;
 
-  prev_item = NULL;
-  item = list->head;
-  while(item != NULL) {
-    if(vm_objects_deep_equal(thread, &item->obj, &argv[0])) {
-      list->length--;
+  /* Build a fresh list of elements that don't match argv[0]. R5RS /
+     SRFI-1 specify remove as non-destructive; the previous in-place
+     mutation corrupted any other reference to the same list (notably
+     quoted-list constants, which the compiler reuses across uses). */
+  vm_gc_disable();
 
-      if(item != list->head && item != list->tail) {
-        prev_item->next = item->next;
-      } else {
-        if(item == list->tail) {
-          list->tail = prev_item;
-          if(prev_item != NULL) {
-            prev_item->next = NULL;
-          }
-        }
-        if(item == list->head) {
-          list->head = item->next;
-        }
-      }
-    }
-
-    prev_item = item;
-    item = item->next;
+  new_list = vm_list_create();
+  if(new_list == NULL) {
+    vm_gc_enable();
+    vm_signal_error(thread, VM_ERROR_HEAP);
+    return;
   }
 
-  /* Return the modified list */
-  VM_PUSH_LIST(list);
+  for(item = src_list->head; item != NULL; item = item->next) {
+    if(!vm_objects_deep_equal(thread, &item->obj, &argv[0])) {
+      if(!vm_list_insert_tail(new_list, &item->obj)) {
+        vm_gc_enable();
+        vm_signal_error(thread, VM_ERROR_HEAP);
+        return;
+      }
+    }
+  }
+
+  vm_gc_enable();
+
+  VM_PUSH_LIST(new_list);
 }
 
 VM_FUNCTION(reverse)
