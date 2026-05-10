@@ -75,13 +75,31 @@ vm_list_t *
 vm_list_copy(vm_list_t *list)
 {
   vm_list_t *copy;
+  vm_list_item_t *src;
 
-  /* Disable GC during allocation to prevent premature collection */
+  /* Disable GC so the partially-built copy and its in-flight items
+     aren't reclaimed before the result is stored. */
   vm_gc_disable();
 
   copy = vm_list_create();
   if(copy != NULL) {
-    memcpy(copy, list, sizeof(vm_list_t));
+    /* Walk the source and allocate fresh item cells for the copy. A
+       shallow memcpy of the vm_list_t header (the previous behaviour)
+       leaves copy->head and copy->tail pointing at the source's
+       items, so any subsequent vm_list_insert_tail / vm_list_cdr that
+       mutates "the copy" silently mutates the source list too. */
+    for(src = list->head; src != NULL; src = src->next) {
+      if(!vm_list_insert_tail(copy, &src->obj)) {
+        vm_gc_enable();
+        return NULL;
+      }
+    }
+    /* Inherit the PAIR flag (improper-list marker) from the source so
+       the copy reports the same shape under list?/pair?. ORIGINAL is
+       set by vm_list_create. */
+    if(VM_IS_SET(list->flags, VM_LIST_FLAG_PAIR)) {
+      VM_SET_FLAG(copy->flags, VM_LIST_FLAG_PAIR);
+    }
   }
 
   vm_gc_enable();
