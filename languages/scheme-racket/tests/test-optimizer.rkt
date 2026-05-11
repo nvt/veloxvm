@@ -490,7 +490,41 @@
   ;; (test is a bare variable, so pure; the begin disappears too.)
   (check-equal? (optimize-expr '(if test (+ 1 2) 3))
                 3
-                "arithmetic fold exposes identical branches"))
+                "arithmetic fold exposes identical branches")
+
+  ;; ============================================================================
+  ;; Identity-op holes (item #15)
+  ;; ============================================================================
+
+  ;; Division by 1 is identity.
+  (check-equal? (optimize-expr '(/ x 1)) 'x "(/ x 1) -> x")
+  (check-equal? (optimize-expr '(/ (foo) 1)) '(foo) "(/ (foo) 1) -> (foo)")
+
+  ;; Single-arg + and * with non-literal args.
+  (check-equal? (optimize-expr '(+ x)) 'x "(+ x) -> x")
+  (check-equal? (optimize-expr '(* x)) 'x "(* x) -> x")
+  (check-equal? (optimize-expr '(+ (foo))) '(foo) "(+ (foo)) -> (foo)")
+
+  ;; not-not on a boolean-returning call collapses (because the inner
+  ;; result is already boolean, the outer coercion is observably a no-op).
+  (check-equal? (optimize-expr '(not (not (= x y))))
+                '(= x y)
+                "(not (not (= x y))) -> (= x y)")
+  (check-equal? (optimize-expr '(not (not (null? x))))
+                '(null? x)
+                "(not (not (null? x))) -> (null? x)")
+  (check-equal? (optimize-expr '(not (not (eq? a b))))
+                '(eq? a b)
+                "(not (not (eq? a b))) -> (eq? a b)")
+
+  ;; not-not on a non-boolean expression: do NOT fold, the coercion
+  ;; is observable.
+  (check-equal? (optimize-expr '(not (not x)))
+                '(not (not x))
+                "(not (not VARIABLE)) NOT folded: coerces to boolean")
+  (check-equal? (optimize-expr '(not (not 5)))
+                #t
+                "(not (not 5)): outer (not #f) -> #t via existing rules"))
 
 ;; ============================================================================
 ;; Aggressive (level 2) strength reduction binds the argument to a temp

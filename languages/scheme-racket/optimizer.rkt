@@ -118,6 +118,15 @@
     ;; rule below subsumes the (not #t) / (not #f) cases.
     [`(not ,v) #:when (literal-truthy-known? v) (not v)]
     [`(not (quote ,d)) (not d)]
+    ;; (not (not x)) -> x, but only when x is provably boolean. For a
+    ;; non-boolean x the original form coerces to a boolean while x
+    ;; itself doesn't: (not (not 5)) is #t, 5 is 5. We don't have a
+    ;; full type analyzer, so the conservative test is "x is a
+    ;; boolean literal or a call to a primitive whose return type is
+    ;; boolean."
+    [`(not (not ,x))
+     #:when (returns-boolean? x)
+     x]
 
     ;; Identity optimizations
     [`(+ ,e 0) e]
@@ -127,6 +136,14 @@
     [`(* 1 ,e) e]
     [`(* ,e 0) 0]
     [`(* 0 ,e) 0]
+    ;; Single-argument arithmetic with identity element: (+ x) and
+    ;; (* x) just return x. The variadic-all-literal rules above
+    ;; handle (+) and (+ 5), but (+ x) with a non-literal needs its
+    ;; own clause.
+    [`(+ ,e) e]
+    [`(* ,e) e]
+    ;; Division by 1 (the multiplicative identity).
+    [`(/ ,e 1) e]
 
     ;; If optimizations
     [`(if #t ,conseq ,_) conseq]
@@ -294,6 +311,31 @@
 ;; not interned-identity-comparable, so they're only safe for equal?.
 (define (self-evaluating-literal? x)
   (or (number? x) (boolean? x) (char? x) (string? x)))
+
+;; VM primitives whose return type is always boolean. Used by the
+;; (not (not x)) -> x identity to confirm x is itself boolean and the
+;; coercion is observably a no-op.
+(define boolean-return-set
+  (let ([h (make-hash)])
+    (for ([p (in-list
+              '(not eq? eqv? equal?
+                = /= < <= > >= zero?
+                null? pair? list? boolean? number? integer?
+                rational? real? complex? exact? inexact?
+                procedure? symbol? string? char? port?
+                input-port? output-port? char-ready? eof-object?))])
+      (hash-set! h p #t))
+    h))
+
+(define (returns-boolean? expr)
+  (cond
+    [(boolean? expr) #t]
+    [(not (pair? expr)) #f]
+    [(eq? (car expr) 'quote) #f]
+    [(and (symbol? (car expr))
+          (hash-ref boolean-return-set (car expr) #f))
+     #t]
+    [else #f]))
 
 ;; ============================================================================
 ;; Beta-reduction of let bindings
