@@ -6,6 +6,8 @@
 ;; Implements rewrite rules similar to scheme-lib.lisp
 ;; Transforms R5RS convenience forms into VM primitives
 
+(require "optimizer.rkt")  ; opt-note-fire! for letrec-to-let trace
+
 (provide rewrite-expr
          define-rewriter
          rewriters
@@ -94,21 +96,33 @@
 (define-rewriter (even? expr)
   `(= (remainder ,(cadr expr) 2) 0))
 
-;; Absolute value
+;; Absolute value. Bind the argument to a temp first -- otherwise the
+;; argument expression is duplicated three times in the template,
+;; which silently re-runs side effects and wastes work even for pure
+;; values.
 (define-rewriter (abs expr)
-  (let ([x (cadr expr)])
-    `(if (< ,x 0) (- ,x) ,x)))
+  (let ([x (cadr expr)]
+        [t (gensym '$abs)])
+    `(let ((,t ,x))
+       (if (< ,t 0) (- ,t) ,t))))
 
-;; Max/min (binary for now)
+;; Max/min (binary for now). Same fix as abs: each argument is used
+;; twice in the if-template, so we bind first.
 (define-rewriter (max expr)
   (let ([a (cadr expr)]
-        [b (caddr expr)])
-    `(if (> ,a ,b) ,a ,b)))
+        [b (caddr expr)]
+        [ta (gensym '$max-a)]
+        [tb (gensym '$max-b)])
+    `(let ((,ta ,a) (,tb ,b))
+       (if (> ,ta ,tb) ,ta ,tb))))
 
 (define-rewriter (min expr)
   (let ([a (cadr expr)]
-        [b (caddr expr)])
-    `(if (< ,a ,b) ,a ,b)))
+        [b (caddr expr)]
+        [ta (gensym '$min-a)]
+        [tb (gensym '$min-b)])
+    `(let ((,ta ,a) (,tb ,b))
+       (if (< ,ta ,tb) ,ta ,tb))))
 
 ;; I/O
 (define-rewriter (newline expr)
@@ -350,25 +364,68 @@
               ;; More bindings
               `(let (,first-binding) (let* ,rest-bindings ,@body)))))))
 
-;; letrec: Bind mutually recursive functions
-;; R5RS semantics: variables bound first (to undefined), then initialized
-;; (letrec ((var val)...) body...)
-;; => (let ((var #f)...) (set! var val)... body...)
+;; letrec: Bind mutually recursive functions.
+;;
+;; R5RS semantics: variables bound first (to undefined), then initialized.
+;; The general expansion is the dummy-#f + set! dance:
+;;
+;;   (letrec ((var val)...) body...)
+;;     ===>
+;;   (let ((var #f)...) (set! var val)... body...)
+;;
+;; That set! pattern is needed only when at least one val expression
+;; refers to one of the let-bound names (i.e. real recursion or
+;; mutual recursion). When no val references any sibling, plain let
+;; is semantically equivalent and avoids the box rewrite that the
+;; set! pattern triggers for any var that ends up captured by an
+;; inner lambda.
 (define-rewriter (letrec expr)
   (let ([bindings (cadr expr)]
         [body (cddr expr)])
-    (if (null? bindings)
-        ;; (letrec () body...) => (begin body...)
-        (if (= (length body) 1)
-            (car body)
-            `(begin ,@body))
-        ;; (letrec ((var val)...) body...)
-        ;; => (let ((var #f)...) (set! var val)... body...)
-        (let ([vars (map car bindings)]
+    (cond
+      ;; (letrec () body...) => (begin body...)
+      [(null? bindings)
+       (if (= (length body) 1)
+           (car body)
+           `(begin ,@body))]
+      [else
+       (let* ([vars (map car bindings)]
               [vals (map cadr bindings)])
-          `(let ,(map (lambda (v) `(,v #f)) vars)
-             ,@(map (lambda (v val) `(set! ,v ,val)) vars vals)
-             ,@body)))))
+         (cond
+           [(ormap (lambda (v) (letrec-refs-any? v vars)) vals)
+            ;; Real recursion -- need the dummy-#f + set! dance.
+            `(let ,(map (lambda (v) `(,v #f)) vars)
+               ,@(map (lambda (v val) `(set! ,v ,val)) vars vals)
+               ,@body)]
+           [else
+            ;; No cross-references -- plain let is equivalent.
+            (let ([collapsed `(let ,bindings ,@body)])
+              (opt-note-fire! 'letrec-to-let expr collapsed)
+              collapsed)]))])))
+
+;; True iff `expr` has a free reference to any name in `targets`,
+;; respecting lambda formal shadowing and quote opacity.
+(define (letrec-refs-any? expr targets)
+  (cond
+    [(symbol? expr) (and (member expr targets) #t)]
+    [(not (pair? expr)) #f]
+    [(eq? (car expr) 'quote) #f]
+    [(and (eq? (car expr) 'lambda) (>= (length expr) 3))
+     (let* ([formals (cadr expr)]
+            [bound (letrec-formals->list formals)]
+            [active (filter (lambda (t) (not (member t bound))) targets)])
+       (and (not (null? active))
+            (ormap (lambda (e) (letrec-refs-any? e active)) (cddr expr))))]
+    [else
+     (ormap (lambda (e) (letrec-refs-any? e targets)) expr)]))
+
+(define (letrec-formals->list formals)
+  (cond
+    [(null? formals) '()]
+    [(symbol? formals) (list formals)]
+    [(pair? formals)
+     (cons (car formals) (letrec-formals->list (cdr formals)))]
+    [else '()]))
 
 ;; do: Transform into named let with recursion
 (define-rewriter (do expr)
@@ -835,7 +892,17 @@
          ;; Depth 0: splice the list
          (if (null? (cdr expr))
              (cadar expr)  ; Just the spliced list (no tail)
-             (list 'append (cadar expr) (expand-quasiquote (cdr expr) depth)))
+             ;; Fold (append '(a b) '(c d)) -> '(a b c d) when both
+             ;; the spliced value and the expanded tail are quoted
+             ;; proper-list literals. Otherwise emit the runtime
+             ;; append. Item #18: keeps fully-static quasi-quotes
+             ;; from generating a runtime append call.
+             (let ([splice (cadar expr)]
+                   [tail-exp (expand-quasiquote (cdr expr) depth)])
+               (if (and (quoted-list-literal? splice)
+                        (quoted-list-literal? tail-exp))
+                   (list 'quote (append (cadr splice) (cadr tail-exp)))
+                   (list 'append splice tail-exp))))
          ;; Depth > 0: keep the unquote-splicing, but recurse with decreased depth
          (let ([head-expanded (list 'list
                                    (list 'quote 'unquote-splicing)
@@ -867,3 +934,13 @@
          ;; Default: cons
          [else
           (list 'cons head tail)]))]))
+
+;; True iff `expr` is a (quote DATUM) form where DATUM is a proper
+;; list (possibly empty). Used by the quasiquote append-fold above
+;; to decide when (append SPLICE TAIL) can be replaced with a single
+;; (quote ...) literal.
+(define (quoted-list-literal? expr)
+  (and (pair? expr)
+       (eq? (car expr) 'quote)
+       (= (length expr) 2)
+       (list? (cadr expr))))

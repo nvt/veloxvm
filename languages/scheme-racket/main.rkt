@@ -7,6 +7,7 @@
          "expander.rkt"  ; Macro expansion
          "rewriter.rkt"
          "optimizer.rkt"  ; Optimizations
+         "dead-define.rkt"    ; Strip unreferenced top-level defines
          "errors.rkt"     ; Error handling
          "compiler.rkt"
          "bytecode.rkt")
@@ -31,6 +32,7 @@
 ;; Uses CL-style pre-allocation: expression 0 is pre-allocated as entry point
 ;; source-file: optional path for resolving include directives
 (define (compile-string source-code [source-file #f])
+  (opt-stats-reset!)
   (let* ([exprs (read-all-exprs source-code source-file)]
          ;; Expand macros first (handles define-syntax)
          ;; Filter out *FILTERED* sentinel values (from define-syntax)
@@ -42,11 +44,13 @@
          [finalized (map finalize-guard rewritten)]
          ;; Optimize expressions (constant folding, etc.)
          [optimized (map optimize-expr finalized)]
+         ;; Strip top-level defines whose names are never referenced.
+         [pruned (eliminate-dead-defines optimized)]
          ;; Collect top-level user (define name ...) names that also
          ;; happen to be VM primitives. encode-symbol will route call
          ;; sites of these names to the user binding rather than the
          ;; primitive ID.
-         [shadowed (collect-shadowed-primitives optimized)]
+         [shadowed (collect-shadowed-primitives pruned)]
          ;; Create main bytecode with pre-allocated expression 0
          [bc (make-bytecode)]
          ;; Pre-allocate expression 0 as empty placeholder (will be replaced)
@@ -58,7 +62,7 @@
     (parameterize ([current-shadowed-primitives shadowed])
     (let* ([accumulated-bytes
             (apply append
-              (for/list ([expr optimized])
+              (for/list ([expr pruned])
                 (let ([enc (compile-expr expr bc)])  ; Compile into bc, not temp-bc!
                   (expr-encoding-data enc))))])
 
@@ -68,7 +72,7 @@
 
       ;; DEBUG
       (when (debug-mode)
-        (printf "DEBUG: Compiled ~a top-level expressions\n" (length optimized))
+        (printf "DEBUG: Compiled ~a top-level expressions\n" (length pruned))
         (printf "DEBUG: Accumulated ~a bytes total\n" (length accumulated-bytes))
         (printf "DEBUG: bc has ~a expressions\n" (bytecode-expression-count bc))
         (for ([i (in-naturals)]
@@ -76,6 +80,10 @@
           (printf "DEBUG: Expression ~a: ~a bytes\n" i (length (expr-encoding-data expr))))))
 
     ) ; close parameterize
+
+    ;; Optimisation stats summary, after all rules have fired.
+    (when (opt-stats?)
+      (opt-stats-print))
 
     ;; Return the bytecode - no reversal, no form reference fixing!
     bc))
@@ -107,6 +115,8 @@
    [("--debug") "Debug mode" (debug-mode #t)]
    [("--opt-level") level "Optimization level (0-2, default 1)" (optimization-level (string->number level))]
    [("--no-optimize") "Disable all optimizations" (enable-optimizations #f)]
+   [("--opt-stats") "Print per-bucket optimization fire counts to stderr" (opt-stats? #t)]
+   [("--trace-opts") "Trace each optimization rewrite to stderr" (opt-trace? #t)]
    #:args (source-file)
    (compile-file source-file)))
 
