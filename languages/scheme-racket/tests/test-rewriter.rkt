@@ -64,16 +64,30 @@
               '(write-char #\newline)
               "Rewrite newline")
 
+;; display is intentionally not rewritten -- it must reach the VM's
+;; display operator so output flows through the port machinery (see
+;; the comment above the println rewriter).
 (check-equal? (rewrite-expr '(display "hello"))
-              '(print "hello")
-              "Rewrite display")
+              '(display "hello")
+              "display passes through unchanged")
 
-;; println expands through print + newline; newline is itself a rewriter
-;; that expands to (write-char #\newline), and rewrite-expr applies
-;; rewriters recursively, so the final form flattens to write-char.
+;; println chains one display per argument because the VM's display
+;; operator only accepts 1 or 2 args (the second being a port). newline
+;; is itself a rewriter that expands to (write-char #\newline), and
+;; rewrite-expr applies rewriters recursively, so the trailing newline
+;; flattens to write-char.
 (check-equal? (rewrite-expr '(println "hello" "world"))
-              '(begin (print "hello" "world") (write-char #\newline))
+              '(begin (display "hello") (display "world")
+                      (write-char #\newline))
               "Rewrite println")
+
+(check-equal? (rewrite-expr '(println))
+              '(begin (write-char #\newline))
+              "Rewrite (println) with no args")
+
+(check-equal? (rewrite-expr '(println "only"))
+              '(begin (display "only") (write-char #\newline))
+              "Rewrite single-arg println")
 
 ;; Test composite car/cdr
 (check-equal? (rewrite-expr '(caar x))
