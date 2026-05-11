@@ -8,8 +8,6 @@
 ;;; sites to the user binding so the optional third-argument form
 ;;; works.
 ;;;
-;;; The `include` directive currently has issues in nested scopes; copy
-;;; these definitions directly into your program.
 ;;; ============================================================================
 
 ;; list-copy: shallow copy of a list (R7RS §6.4).

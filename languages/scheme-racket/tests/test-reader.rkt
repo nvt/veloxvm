@@ -77,4 +77,67 @@
               #f
               "Read false")
 
+;; --- Include directive tests --------------------------------------------
+
+(define test-dir (make-temporary-file "veloxvm-include-~a" 'directory))
+
+(define (write-file rel-path contents)
+  (with-output-to-file (build-path test-dir rel-path) #:exists 'replace
+    (lambda () (display contents))))
+
+(define (read-file rel-path)
+  (let ([path (build-path test-dir rel-path)])
+    (read-all-exprs (file->string path) (path->string path))))
+
+(write-file "helper.scm" "(define helper-x 42) (define (helper-fn n) (* n 2))")
+
+(write-file "top.scm" "(include \"helper.scm\") helper-x")
+(check-equal? (read-file "top.scm")
+              '((define helper-x 42)
+                (define (helper-fn n) (* n 2))
+                helper-x)
+              "Top-level include splices file contents")
+
+(write-file "nested.scm"
+  "(define (outer) (include \"helper.scm\") (helper-fn helper-x))")
+(check-equal? (read-file "nested.scm")
+              '((define (outer)
+                  (define helper-x 42)
+                  (define (helper-fn n) (* n 2))
+                  (helper-fn helper-x)))
+              "Include inside define body splices into the body")
+
+(write-file "let-nested.scm"
+  "(let ((y 1)) (include \"helper.scm\") (+ y helper-x))")
+(check-equal? (read-file "let-nested.scm")
+              '((let ((y 1))
+                  (define helper-x 42)
+                  (define (helper-fn n) (* n 2))
+                  (+ y helper-x)))
+              "Include inside let body splices into the body")
+
+(write-file "quote-protected.scm" "'(include \"helper.scm\")")
+(check-equal? (read-file "quote-protected.scm")
+              '((quote (include "helper.scm")))
+              "Include inside quote is preserved as data, not expanded")
+
+(write-file "syntax-protected.scm"
+  "(define-syntax my-inc (syntax-rules () ((my-inc) (include \"helper.scm\"))))")
+(check-equal? (read-file "syntax-protected.scm")
+              '((define-syntax my-inc
+                  (syntax-rules ()
+                    ((my-inc) (include "helper.scm")))))
+              "Include inside syntax-rules template is preserved")
+
+(write-file "improper-formals.scm"
+  "(define (variadic . rest) (include \"helper.scm\") (length rest))")
+(check-equal? (read-file "improper-formals.scm")
+              '((define (variadic . rest)
+                  (define helper-x 42)
+                  (define (helper-fn n) (* n 2))
+                  (length rest)))
+              "Include inside a define with dotted-rest formals")
+
+(delete-directory/files test-dir)
+
 (displayln "All reader tests passed!")

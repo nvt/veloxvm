@@ -9,9 +9,6 @@
 ;;; The list below names features actually present in this Scheme
 ;;; today; expand it as new features ship. Keep entries lowercase and
 ;;; hyphenated to match R7RS conventions.
-;;;
-;;; The `include` directive currently has issues in nested scopes; copy
-;;; this definition directly into your program.
 ;;; ============================================================================
 
 (define (features)

@@ -6,8 +6,6 @@
 ;;; (R7RS also accepts multiple strings; that's an extension a future
 ;;; revision can add).
 ;;;
-;;; The `include` directive currently has issues in nested scopes; copy
-;;; these definitions directly into your program.
 ;;; ============================================================================
 
 ;; string-map: apply proc to each character of str, collect results into

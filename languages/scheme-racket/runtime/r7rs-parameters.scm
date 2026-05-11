@@ -10,9 +10,6 @@
 ;;;
 ;;; The optional converter argument from the full R7RS spec is not
 ;;; supported.
-;;;
-;;; The `include` directive currently has issues in nested scopes;
-;;; copy this definition directly into your program.
 ;;; ============================================================================
 
 (define (make-parameter init)

@@ -14,7 +14,11 @@
 (define (read-all-exprs input [source-file #f])
   (read-all-exprs-internal input source-file '()))
 
-;; Internal helper with circular include detection
+;; Internal helper with circular include detection. Reverse before
+;; splicing includes -- if we did it after, the splice's content would
+;; come out in the order it was read, but the surrounding forms would
+;; have just been reversed, so the included definitions would end up
+;; before earlier source lines.
 (define (read-all-exprs-internal input source-file included-files)
   (define in (if (string? input)
                  (open-input-string input)
@@ -22,10 +26,53 @@
   (let loop ([exprs '()])
     (define expr (read in))
     (if (eof-object? expr)
-        (reverse (process-includes exprs source-file included-files))
+        (process-includes (reverse exprs) source-file included-files)
         (loop (cons expr exprs)))))
 
-;; Process include directives recursively
+;; Heads whose sub-forms are data, not expressions, and so must not be
+;; descended into when scanning for nested (include …) forms. quote and
+;; quasiquote protect literal data; the syntax-binding forms hold
+;; pattern/template lists that look like expressions but are matched, not
+;; evaluated. (Quasiquote with embedded unquote-include is a corner case
+;; we don't attempt to support.)
+(define (skip-include-walk? head)
+  (and (symbol? head)
+       (memq head '(quote quasiquote
+                          define-syntax let-syntax letrec-syntax
+                          syntax-rules))))
+
+;; Walk the children of a form via cons-based traversal so the walker
+;; copes with improper lists (e.g. the (FUNC . REST) formals in
+;; (define (FUNC . REST) BODY ...)). Splices any include directly under
+;; this form and recurses into nested pairs.
+(define (process-form-children children source-file included-files)
+  (cond
+    [(null? children) '()]
+    [(pair? children)
+     (let ([head (car children)]
+           [tail (cdr children)])
+       (cond
+         [(include-form? head)
+          (append (expand-include head source-file included-files)
+                  (process-form-children tail source-file included-files))]
+         [(pair? head)
+          (cons (walk-form-includes head source-file included-files)
+                (process-form-children tail source-file included-files))]
+         [else
+          (cons head (process-form-children tail source-file included-files))]))]
+    [else children]))  ; improper tail: leave as-is
+
+;; Walk a single form. Atoms pass through; quoted / syntax-binding heads
+;; protect their data; everything else recurses via process-form-children.
+(define (walk-form-includes form source-file included-files)
+  (cond
+    [(not (pair? form)) form]
+    [(skip-include-walk? (car form)) form]
+    [else
+     (process-form-children form source-file included-files)]))
+
+;; Process include directives at any depth. Top-level includes splice
+;; into the program; nested includes splice into their containing form.
 ;; exprs: list of s-expressions
 ;; source-file: current source file path
 ;; included-files: list of already included files (prevents circular includes)
@@ -33,9 +80,12 @@
 (define (process-includes exprs source-file included-files)
   (apply append
     (for/list ([expr exprs])
-      (if (include-form? expr)
-          (expand-include expr source-file included-files)
-          (list expr)))))
+      (cond
+        [(include-form? expr)
+         (expand-include expr source-file included-files)]
+        [(pair? expr)
+         (list (walk-form-includes expr source-file included-files))]
+        [else (list expr)]))))
 
 ;; Check if expression is an R7RS include form: (include "filename")
 (define (include-form? expr)
@@ -66,13 +116,16 @@
                                                     new-included)])
       included-exprs)))
 
-;; Resolve include path relative to source file directory
-;; If no source file is provided, use current directory
+;; Resolve include path. Absolute paths are used verbatim; relative
+;; paths resolve against the including file's directory, falling back
+;; to the current directory if the including source has no known path.
 (define (resolve-include-path include-path source-file)
-  (if source-file
-      (let* ([source-dir (or (path-only source-file) (current-directory))])
-        (build-path source-dir include-path))
-      include-path))
+  (cond
+    [(absolute-path? include-path) include-path]
+    [source-file
+     (let* ([source-dir (or (path-only source-file) (current-directory))])
+       (build-path source-dir include-path))]
+    [else include-path]))
 
 ;; Read single expression from string or port
 ;; Returns: s-expr or eof-object
