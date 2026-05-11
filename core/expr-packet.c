@@ -241,17 +241,25 @@ VM_FUNCTION(deconstruct_packet)
     if(field_length > 8) {
       /* Multi-byte field; construct_packet writes these big-endian at a
          byte-aligned position. */
+      if(position & 0x7) {
+        vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+        vm_set_error_string(thread, "multi-byte read starting inside byte");
+        return;
+      }
+      if(field_length & 0x7) {
+        vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+        vm_set_error_string(thread,
+          "field bits must be a multiple of 8 when exceeding 8");
+        return;
+      }
       while(field_length > 8) {
         values->elements[i].value.integer |= packet->bytes[position / 8];
         values->elements[i].value.integer <<= 8;
         field_length -= 8;
         position += 8;
       }
-      if(field_length > 0) {
-        values->elements[i].value.integer |=
-          packet->bytes[position / 8] & ((1 << field_length) - 1);
-        position += field_length;
-      }
+      values->elements[i].value.integer |= packet->bytes[position / 8];
+      position += 8;
     } else {
       /* Sub-byte field; mirror the little-endian-within-byte layout used
          by construct_packet, including straddles across a byte boundary. */
