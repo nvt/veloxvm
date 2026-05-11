@@ -135,6 +135,22 @@
     ;; Begin optimizations
     [`(begin) #f]
     [`(begin ,e) e]
+    ;; Flatten nested begins. (begin a (begin b c) d) -> (begin a b c d).
+    ;; Each nested begin would otherwise cost one expression-table slot
+    ;; and one form-ref indirection at runtime; collapsing to a single
+    ;; inline form saves both.
+    [(list 'begin es ...)
+     #:when (ormap (lambda (e) (and (pair? e) (eq? (car e) 'begin))) es)
+     (let ([flat (apply append
+                        (map (lambda (e)
+                               (if (and (pair? e) (eq? (car e) 'begin))
+                                   (cdr e)
+                                   (list e)))
+                             es))])
+       (cond
+         [(null? flat) #f]
+         [(= (length flat) 1) (car flat)]
+         [else (cons 'begin flat)]))]
     ;; Drop pure non-final expressions: their values are discarded
     ;; and they can't be observed. The final expression's value is
     ;; the begin's value and must be kept even when pure.

@@ -422,7 +422,46 @@
 
   ;; Single-arg apply (just function, no list): not the shape we touch.
   (check-equal? (optimize-expr '(apply f)) '(apply f)
-                "no list arg at all: unchanged"))
+                "no list arg at all: unchanged")
+
+  ;; ============================================================================
+  ;; Begin flattening (item #12)
+  ;; ============================================================================
+
+  ;; Simple inner-first nested begin.
+  (check-equal? (optimize-expr '(begin (begin (display "a") (display "b")) (display "c")))
+                '(begin (display "a") (display "b") (display "c"))
+                "(begin (begin a b) c) -> (begin a b c)")
+
+  ;; Inner-middle nested begin: order preserved.
+  (check-equal? (optimize-expr '(begin (display "a") (begin (display "b") (display "c")) (display "d")))
+                '(begin (display "a") (display "b") (display "c") (display "d"))
+                "(begin a (begin b c) d) -> (begin a b c d)")
+
+  ;; Two adjacent nested begins.
+  (check-equal? (optimize-expr '(begin (begin (display "a") (display "b"))
+                                       (begin (display "c") (display "d"))))
+                '(begin (display "a") (display "b") (display "c") (display "d"))
+                "two adjacent nested begins both flatten")
+
+  ;; Deeply nested.
+  (check-equal? (optimize-expr '(begin (begin (begin (display "x")))))
+                '(display "x")
+                "triple-nested begin collapses to its single contents")
+
+  ;; Empty inner begin (folds to #f, then pure-drop removes the #f).
+  (check-equal? (optimize-expr '(begin (begin) (display "x")))
+                '(display "x")
+                "empty inner begin collapses to #f, then pure-drop removes it")
+
+  ;; Flatten + pure-drop cascade.
+  (check-equal? (optimize-expr '(begin (begin (+ 1 2) (display "x")) (+ 3 4)))
+                '(begin (display "x") 7)
+                "nested begin flattens, then pure-drop and arithmetic fold cascade")
+
+  ;; Non-begin children left in place.
+  (check-equal? (optimize-expr '(begin (foo) (bar))) '(begin (foo) (bar))
+                "no nested begin: rule doesn't fire"))
 
 ;; ============================================================================
 ;; Aggressive (level 2) strength reduction binds the argument to a temp
