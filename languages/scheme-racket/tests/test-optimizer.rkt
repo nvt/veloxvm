@@ -461,7 +461,36 @@
 
   ;; Non-begin children left in place.
   (check-equal? (optimize-expr '(begin (foo) (bar))) '(begin (foo) (bar))
-                "no nested begin: rule doesn't fire"))
+                "no nested begin: rule doesn't fire")
+
+  ;; ============================================================================
+  ;; Identical-branch if (item #14)
+  ;; ============================================================================
+
+  ;; Pure test (variable reference is pure): drop the test entirely.
+  (check-equal? (optimize-expr '(if x 5 5)) 5
+                "pure test + identical branches: collapse to the branch")
+
+  ;; Impure test (unknown user procedure): keep it via begin, drop the if.
+  (check-equal? (optimize-expr '(if (foo) 5 5))
+                '(begin (foo) 5)
+                "impure test + identical branches: (begin test branch)")
+
+  ;; Pure compound test (an arithmetic call) + identical branches:
+  ;; collapse to just the branch.
+  (check-equal? (optimize-expr '(if (+ 1 2) (h) (h)))
+                '(h)
+                "pure test (arithmetic) + identical branches: just the branch")
+
+  ;; Different branches: rule does not fire.
+  (check-equal? (optimize-expr '(if x 1 2)) '(if x 1 2)
+                "different branches: unchanged")
+
+  ;; Cascade: arithmetic folds first, then identical-branch fires.
+  ;; (test is a bare variable, so pure; the begin disappears too.)
+  (check-equal? (optimize-expr '(if test (+ 1 2) 3))
+                3
+                "arithmetic fold exposes identical branches"))
 
 ;; ============================================================================
 ;; Aggressive (level 2) strength reduction binds the argument to a temp

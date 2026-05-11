@@ -131,6 +131,13 @@
     ;; If optimizations
     [`(if #t ,conseq ,_) conseq]
     [`(if #f ,_ ,alt) alt]
+    ;; Identical branches: collapse to just the branch when the test
+    ;; is pure, or to (begin test branch) when it isn't (to preserve
+    ;; the test's side effects). Constant folding routinely produces
+    ;; this shape via cascades like (if t (+ 1 2) 3) -> (if t 3 3).
+    [`(if ,test ,c ,a)
+     #:when (equal? c a)
+     (if (pure? test) c (list 'begin test c))]
 
     ;; Begin optimizations
     [`(begin) #f]
