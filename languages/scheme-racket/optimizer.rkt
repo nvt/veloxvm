@@ -92,19 +92,27 @@
 ;; surviving sub-expression directly without re-running optimize-basic.
 (define (apply-basic-rules expr)
   (match expr
-    ;; Constant folding for arithmetic
-    [`(+ ,n1 ,n2) #:when (and (number? n1) (number? n2)) (+ n1 n2)]
-    [`(- ,n1 ,n2) #:when (and (number? n1) (number? n2)) (- n1 n2)]
-    [`(* ,n1 ,n2) #:when (and (number? n1) (number? n2)) (* n1 n2)]
-    [`(/ ,n1 ,n2) #:when (and (number? n1) (number? n2) (not (zero? n2)))
-     (/ n1 n2)]
+    ;; Variadic constant folding for arithmetic. Matches any arity
+    ;; where every argument is a literal number. Subsumes the prior
+    ;; binary-only rules.
+    [(list '+ (? number? ns) ...) (apply + ns)]
+    [(list '* (? number? ns) ...) (apply * ns)]
+    [(list '- (? number? ns) ...)
+     #:when (not (null? ns))
+     (apply - ns)]
+    [(list '/ (? number? ns) ...)
+     #:when (and (>= (length ns) 2) (not (member 0 (cdr ns))))
+     (apply / ns)]
 
-    ;; Constant folding for comparisons
-    [`(= ,n1 ,n2) #:when (and (number? n1) (number? n2)) (= n1 n2)]
-    [`(< ,n1 ,n2) #:when (and (number? n1) (number? n2)) (< n1 n2)]
-    [`(> ,n1 ,n2) #:when (and (number? n1) (number? n2)) (> n1 n2)]
-    [`(<= ,n1 ,n2) #:when (and (number? n1) (number? n2)) (<= n1 n2)]
-    [`(>= ,n1 ,n2) #:when (and (number? n1) (number? n2)) (>= n1 n2)]
+    ;; Variadic constant folding for comparisons. R5RS requires at
+    ;; least one argument; we fold the typical case of two or more
+    ;; (single-arg comparisons are vacuously true and aren't worth
+    ;; a rule).
+    [(list '= (? number? ns) ...)  #:when (>= (length ns) 2) (apply = ns)]
+    [(list '< (? number? ns) ...)  #:when (>= (length ns) 2) (apply < ns)]
+    [(list '> (? number? ns) ...)  #:when (>= (length ns) 2) (apply > ns)]
+    [(list '<= (? number? ns) ...) #:when (>= (length ns) 2) (apply <= ns)]
+    [(list '>= (? number? ns) ...) #:when (>= (length ns) 2) (apply >= ns)]
 
     ;; Constant folding for boolean operations. The general (not LIT)
     ;; rule below subsumes the (not #t) / (not #f) cases.
@@ -127,6 +135,17 @@
     ;; Begin optimizations
     [`(begin) #f]
     [`(begin ,e) e]
+    ;; Drop pure non-final expressions: their values are discarded
+    ;; and they can't be observed. The final expression's value is
+    ;; the begin's value and must be kept even when pure.
+    [(list 'begin es ...)
+     #:when (and (>= (length es) 2)
+                 (ormap pure? (drop-right es 1)))
+     (let ([kept (drop-pure-non-final es)])
+       (cond
+         [(null? kept) #f]
+         [(= (length kept) 1) (car kept)]
+         [else (cons 'begin kept)]))]
 
     ;; ---- Pure-builtin folding ----
     ;; All of these have well-defined value semantics that depend only
@@ -432,29 +451,74 @@
       [else basic])))
 
 ;; ============================================================================
-;; Dead Code Elimination
+;; Effect Analysis (used by the begin dead-code rule)
 ;; ============================================================================
 
-(define (has-side-effects? expr)
-  "Check if expression has side effects (must be evaluated)"
-  (match expr
-    ;; Forms with side effects
-    [`(define . ,_) #t]
-    [`(set! . ,_) #t]
-    [`(print . ,_) #t]
-    [`(display . ,_) #t]
-    [`(write . ,_) #t]
-    [`(write-char . ,_) #t]
+;; VM primitives whose execution is observable only through their
+;; return value. They never modify state, never perform I/O, and
+;; never spawn threads. Allocation (cons, list, vector) is treated
+;; as pure -- R5RS programs cannot observe GC, and dropping a pure
+;; allocation just saves work. Some of these can raise errors
+;; (e.g. car on '()); we accept that risk on the same footing as
+;; Racket's own dead-code elimination.
+(define pure-primitive-table
+  (let ([h (make-hash)])
+    (for ([sym (in-list
+                '(+ - * / gcd lcm modulo quotient remainder
+                  numerator denominator
+                  = /= < <= > >= zero?
+                  eq? eqv? equal? not
+                  car cdr cons list pair? null? list? length
+                  reverse append memq memv member assq assv assoc
+                  list-ref list-tail
+                  vector vector? vector-length vector-ref
+                  vector->list list->vector make-vector
+                  string? string-length string-ref substring
+                  string-append string-copy string-compare
+                  string->list list->string make-string
+                  string->symbol symbol->string
+                  string->number number->string
+                  char? char-compare char-class
+                  char->integer integer->char
+                  char-upcase char-downcase
+                  number? integer? rational? real? complex?
+                  exact? inexact? procedure? symbol? boolean? port?
+                  abs max min
+                  floor ceiling round truncate
+                  exp log sin cos tan asin acos atan
+                  sqrt expt exact->inexact inexact->exact
+                  bit-and bit-or bit-invert bit-not bit-xor bit-shift
+                  box box-ref))])
+      (hash-set! h sym #t))
+    h))
 
-    ;; Function calls might have side effects (conservative)
-    [(cons _ _) #t]
+(define (pure-primitive? sym)
+  (hash-ref pure-primitive-table sym #f))
 
-    ;; Pure values
-    [_ #f]))
+;; True iff `expr` can be evaluated without observable side effects:
+;; no I/O, no mutation, no thread interaction, no application of
+;; potentially-impure user procedures. Lambda forms are pure (they
+;; don't evaluate the body). Variable references and atoms are pure.
+;; Pure-primitive calls are pure iff all argument expressions are pure.
+(define (pure? expr)
+  (cond
+    [(not (pair? expr)) #t]
+    [(eq? (car expr) 'quote) #t]
+    [(and (eq? (car expr) 'lambda) (>= (length expr) 3)) #t]
+    [(eq? (car expr) 'if) (andmap pure? (cdr expr))]
+    [(eq? (car expr) 'and) (andmap pure? (cdr expr))]
+    [(eq? (car expr) 'or) (andmap pure? (cdr expr))]
+    [(eq? (car expr) 'begin) (andmap pure? (cdr expr))]
+    [(and (symbol? (car expr)) (pure-primitive? (car expr)))
+     (andmap pure? (cdr expr))]
+    [else #f]))
 
-(define (eliminate-dead-code exprs)
-  "Remove expressions without side effects from a sequence"
-  (filter has-side-effects? exprs))
+;; Used by the (begin) optimization rule below. Filters out pure
+;; expressions in non-final position; the final expression's value
+;; is the begin's value and must be kept regardless of purity.
+(define (drop-pure-non-final exprs)
+  (let-values ([(non-final final) (split-at-right exprs 1)])
+    (append (filter (lambda (e) (not (pure? e))) non-final) final)))
 
 ;; ============================================================================
 ;; Optimization Statistics

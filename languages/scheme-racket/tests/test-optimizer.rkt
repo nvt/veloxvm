@@ -287,7 +287,81 @@
                 "string-length folds, then arithmetic folds")
   (check-equal? (optimize-expr '(char->integer (integer->char 65)))
                 65
-                "round-trip integer->char->integer folds end-to-end"))
+                "round-trip integer->char->integer folds end-to-end")
+
+  ;; ============================================================================
+  ;; N-ary arithmetic folding (item #8)
+  ;; ============================================================================
+
+  (check-equal? (optimize-expr '(+ 1 2 3))    6 "ternary + folds")
+  (check-equal? (optimize-expr '(+ 1 2 3 4))  10 "4-ary + folds")
+  (check-equal? (optimize-expr '(+))          0 "(+) folds to 0")
+  (check-equal? (optimize-expr '(+ 7))        7 "single-arg + folds to the arg")
+  (check-equal? (optimize-expr '(* 2 3 4))    24 "ternary * folds")
+  (check-equal? (optimize-expr '(*))          1 "(*) folds to 1")
+  (check-equal? (optimize-expr '(- 10 3 2))   5 "ternary - (left-assoc) folds")
+  (check-equal? (optimize-expr '(- 5))        -5 "single-arg - negates")
+  (check-equal? (optimize-expr '(/ 100 5 2))  10 "ternary / (left-assoc) folds")
+
+  ;; Mixed literal/variable: not folded
+  (check-equal? (optimize-expr '(+ 1 x 2))    '(+ 1 x 2) "non-literal in middle: don't fold")
+  (check-equal? (optimize-expr '(* x 2 3))    '(* x 2 3) "non-literal head: don't fold")
+
+  ;; Don't fold division by zero
+  (check-equal? (optimize-expr '(/ 100 0))    '(/ 100 0) "binary div-by-zero: don't fold")
+  (check-equal? (optimize-expr '(/ 100 5 0))  '(/ 100 5 0) "trailing zero divisor: don't fold")
+  ;; A leading zero numerator is fine (0 divided by anything non-zero is 0).
+  (check-equal? (optimize-expr '(/ 0 5 2))    0 "zero numerator with non-zero divisors: folds to 0")
+
+  ;; N-ary comparisons
+  (check-equal? (optimize-expr '(< 1 2 3))    #t "ascending < chain: #t")
+  (check-equal? (optimize-expr '(< 1 3 2))    #f "non-monotone <: #f")
+  (check-equal? (optimize-expr '(= 5 5 5))    #t "all-equal =: #t")
+  (check-equal? (optimize-expr '(>= 9 5 5))   #t ">= chain: #t")
+
+  ;; ============================================================================
+  ;; Through-let folding (cascade via beta + arithmetic)
+  ;; ============================================================================
+
+  (check-equal? (optimize-expr '((lambda (x) (+ x 1)) 5)) 6
+                "(let ((x 5)) (+ x 1)) folds to 6 via beta + fold")
+
+  (check-equal? (optimize-expr '((lambda (x y) (+ x y 1)) 2 3)) 6
+                "(let ((x 2) (y 3)) (+ x y 1)) cascades")
+
+  ;; ============================================================================
+  ;; Begin: drop pure non-final expressions
+  ;; ============================================================================
+
+  ;; Pure atoms in non-final position are dropped.
+  (check-equal? (optimize-expr '(begin 1 2 3)) 3
+                "(begin 1 2 3) -> 3 (all-pure -> just the last expr)")
+
+  ;; Pure-by-primitives expressions are dropped. The (+ 1 2) and
+  ;; (+ 3 4) also fold via the arithmetic rule, so the final form
+  ;; preserves only the impure display and the folded final value.
+  (check-equal? (optimize-expr '(begin (+ 1 2) (display "x") (+ 3 4)))
+                '(begin (display "x") 7)
+                "pure (+ 1 2) dropped; display kept; final (+ 3 4) folds to 7")
+
+  ;; Several pure non-finals all collapse out.
+  (check-equal? (optimize-expr '(begin (* 2 3) (length (quote (a b))) (foo)))
+                '(foo)
+                "all non-final exprs pure -> reduced to the impure final")
+
+  ;; All-impure: nothing dropped.
+  (check-equal? (optimize-expr '(begin (display "a") (display "b") (display "c")))
+                '(begin (display "a") (display "b") (display "c"))
+                "all-impure begin: unchanged")
+
+  ;; Final expression's purity doesn't matter; it stays as the result.
+  (check-equal? (optimize-expr '(begin (display "x") 42)) '(begin (display "x") 42)
+                "pure final value is preserved")
+
+  ;; Cascade: arithmetic folds first, then dead-code drops pure intermediates.
+  (check-equal? (optimize-expr '(begin (+ 1 2) (* 3 4) (foo)))
+                '(foo)
+                "compose folding and dead-code elimination"))
 
 ;; ============================================================================
 ;; Aggressive (level 2) strength reduction binds the argument to a temp
