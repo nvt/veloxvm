@@ -84,20 +84,23 @@
 (define (schema-validate schema)
   (when (or (not (list? schema)) (null? schema))
     (pkt-error "schema must be a non-empty list of field specs"))
-  (let loop ((rest schema) (pos 0))
+  (let loop ((rest schema) (pos 0) (seen '()))
     (if (null? rest)
         (if (zero? (modulo pos 8))
             #t
             (pkt-error "total schema width is not a multiple of 8" 'bits pos))
         (let ((spec (car rest)))
           (pkt-validate-spec spec)
-          (let ((bits (pkt-field-bits spec))
-                (type (cadr spec)))
+          (let ((name (car spec))
+                (type (cadr spec))
+                (bits (pkt-field-bits spec)))
+            (when (memq name seen)
+              (pkt-error "duplicate field name in schema" 'name name))
             (when (and (pkt-byte-aligned-type? type)
                        (not (zero? (modulo pos 8))))
               (pkt-error "byte-aligned field does not start at a byte boundary"
-                         'field (car spec) 'at-bit pos))
-            (loop (cdr rest) (+ pos bits)))))))
+                         'field name 'at-bit pos))
+            (loop (cdr rest) (+ pos bits) (cons name seen)))))))
 
 ;; --- Value validation ----------------------------------------------------
 
@@ -213,6 +216,35 @@
      (if (vector? raw) raw (pkt-int->bytes raw (caddr spec))))
     (else (pkt-error "unknown field type" type))))
 
+;; --- Bindings validation ------------------------------------------------
+
+(define (pkt-schema-has-name? schema name)
+  (let loop ((rest schema))
+    (cond
+      ((null? rest) #f)
+      ((eq? (car (car rest)) name) #t)
+      (else (loop (cdr rest))))))
+
+(define (pkt-validate-bindings schema bindings)
+  (unless (list? bindings)
+    (pkt-error "bindings must be a list of (name . value) pairs"
+               'got bindings))
+  (let loop ((rest bindings) (seen '()))
+    (cond
+      ((null? rest) #t)
+      ((not (pair? (car rest)))
+       (pkt-error "binding must be a (name . value) pair"
+                  'got (car rest)))
+      (else
+       (let ((name (caar rest)))
+         (unless (symbol? name)
+           (pkt-error "binding name must be a symbol" 'got name))
+         (when (memq name seen)
+           (pkt-error "duplicate binding" 'name name))
+         (unless (pkt-schema-has-name? schema name)
+           (pkt-error "binding name not in schema" 'name name))
+         (loop (cdr rest) (cons name seen)))))))
+
 ;; --- Public API ----------------------------------------------------------
 
 (define (schema-bit-width schema)
@@ -225,6 +257,7 @@
 
 (define (schema-construct schema bindings)
   (schema-validate schema)
+  (pkt-validate-bindings schema bindings)
   (let ((widths (pkt-schema-widths schema))
         (values
          (list->vector
@@ -242,6 +275,12 @@
 
 (define (schema-deconstruct schema buffer)
   (schema-validate schema)
+  (unless (buffer? buffer)
+    (pkt-error "expected a byte buffer" 'got buffer))
+  (let ((expected (quotient (schema-bit-width schema) 8)))
+    (unless (= (vector-length buffer) expected)
+      (pkt-error "buffer length mismatch"
+                 'expected expected 'got (vector-length buffer))))
   (let* ((widths (pkt-schema-widths schema))
          (raw    (deconstruct-packet widths buffer)))
     (let loop ((i 0) (rest schema) (acc '()))

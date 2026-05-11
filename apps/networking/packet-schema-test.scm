@@ -72,6 +72,40 @@
 (expect-ok "small valid schema"
   (lambda () (schema-validate '((a u8) (b u16) (c bit) (d bits 7)))))
 
+(expect-fail "duplicate field name"
+  (lambda () (schema-validate '((a u8) (a u8)))))
+
+;; --- Binding-shape errors -----------------------------------------------
+
+(expect-fail "bindings not a list"
+  (lambda () (schema-construct '((a u8)) 42)))
+
+(expect-fail "binding not a pair"
+  (lambda () (schema-construct '((a u8)) (list 'oops))))
+
+(expect-fail "duplicate binding"
+  (lambda () (schema-construct '((a u8) (b u8))
+                               (list (cons 'a 1) (cons 'a 2) (cons 'b 3)))))
+
+(expect-fail "extra binding not in schema"
+  (lambda () (schema-construct '((a u8))
+                               (list (cons 'a 1) (cons 'extra 2)))))
+
+;; --- Deconstruct buffer-shape errors -----------------------------------
+
+(expect-fail "deconstruct non-buffer"
+  (lambda () (schema-deconstruct '((a u8)) 42)))
+
+(expect-fail "deconstruct regular vector (not a buffer)"
+  (lambda () (schema-deconstruct '((a u8)) (vector 0))))
+
+(expect-fail "deconstruct wrong-length buffer"
+  (lambda ()
+    ;; Build a 1-byte buffer from a schema, then try to read it back through
+    ;; a 2-byte schema.
+    (let ((buf (schema-construct '((a u8)) (b1 'a 1))))
+      (schema-deconstruct '((a u8) (b u8)) buf))))
+
 ;; --- Value validation: range errors -------------------------------------
 
 (define u8-schema '((x u8)))
