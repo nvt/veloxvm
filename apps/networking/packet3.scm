@@ -1,0 +1,81 @@
+(include "packet-schema.scm")
+
+;; RPL DIO base (RFC 6550 §6.3.1) as a schema.
+(define dio-schema
+  '((rpl-instance-id u8)
+    (version         u8)
+    (rank            u16)
+    (g               bit)
+    (zero            bit)
+    (mop             bits 3)
+    (prf             bits 3)
+    (dtsn            u8)
+    (flags           u8)
+    (reserved        u8)
+    (dodag-id        bytes 16)))
+
+(define (make-dodag-id)
+  (let ((v (make-vector 16 0)))
+    (vector-set! v 0 #xaa)
+    (vector-set! v 1 #xaa)
+    (vector-set! v 15 1)
+    v))
+
+(define dio-bindings
+  (list (cons 'rpl-instance-id 0)
+        (cons 'version         0)
+        (cons 'rank            256)
+        (cons 'g               1)
+        (cons 'zero            0)
+        (cons 'mop             0)
+        (cons 'prf             0)
+        (cons 'dtsn            0)
+        (cons 'flags           0)
+        (cons 'reserved        0)
+        (cons 'dodag-id        (make-dodag-id))))
+
+(define buf (schema-construct dio-schema dio-bindings))
+(display "DIO bytes: ") (display buf) (newline)
+
+(define parsed (schema-deconstruct dio-schema buf))
+(display "Parsed rank:    ") (display (cdr (assq 'rank parsed))) (newline)
+(display "Parsed g flag:  ") (display (cdr (assq 'g parsed))) (newline)
+(display "Parsed dodag-id byte 0:  ")
+(display (vector-ref (cdr (assq 'dodag-id parsed)) 0)) (newline)
+(display "Parsed dodag-id byte 15: ")
+(display (vector-ref (cdr (assq 'dodag-id parsed)) 15)) (newline)
+
+;; Mixed-endian / signed / sub-byte exercise.
+(define mixed-schema
+  '((tag       u8)
+    (be-val    u16)
+    (le-val    u16/le)
+    (negative  s16)
+    (flags-a   bit)
+    (flags-b   bit)
+    (flags-c   bits 6)
+    (mac       bytes 6)))
+
+(define mixed-bindings
+  (list (cons 'tag       #x42)
+        (cons 'be-val    #x1234)
+        (cons 'le-val    #x1234)
+        (cons 'negative  -1)
+        (cons 'flags-a   1)
+        (cons 'flags-b   0)
+        (cons 'flags-c   #b101010)
+        (cons 'mac       (vector #x01 #x02 #x03 #x04 #x05 #x06))))
+
+(define mixed-buf (schema-construct mixed-schema mixed-bindings))
+(display "Mixed bytes:    ") (display mixed-buf) (newline)
+(display "  expected: 42 12 34 34 12 ff ff aa 01 02 03 04 05 06") (newline)
+
+(define mixed-parsed (schema-deconstruct mixed-schema mixed-buf))
+(display "be-val:    ") (display (cdr (assq 'be-val mixed-parsed))) (newline)
+(display "le-val:    ") (display (cdr (assq 'le-val mixed-parsed))) (newline)
+(display "negative:  ") (display (cdr (assq 'negative mixed-parsed))) (newline)
+(display "flags-a:   ") (display (cdr (assq 'flags-a mixed-parsed))) (newline)
+(display "flags-b:   ") (display (cdr (assq 'flags-b mixed-parsed))) (newline)
+(display "flags-c:   ") (display (cdr (assq 'flags-c mixed-parsed))) (newline)
+(display "mac byte 0: ") (display (vector-ref (cdr (assq 'mac mixed-parsed)) 0)) (newline)
+(display "mac byte 5: ") (display (vector-ref (cdr (assq 'mac mixed-parsed)) 5)) (newline)
