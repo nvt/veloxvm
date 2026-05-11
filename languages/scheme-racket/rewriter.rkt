@@ -362,25 +362,64 @@
               ;; More bindings
               `(let (,first-binding) (let* ,rest-bindings ,@body)))))))
 
-;; letrec: Bind mutually recursive functions
-;; R5RS semantics: variables bound first (to undefined), then initialized
-;; (letrec ((var val)...) body...)
-;; => (let ((var #f)...) (set! var val)... body...)
+;; letrec: Bind mutually recursive functions.
+;;
+;; R5RS semantics: variables bound first (to undefined), then initialized.
+;; The general expansion is the dummy-#f + set! dance:
+;;
+;;   (letrec ((var val)...) body...)
+;;     ===>
+;;   (let ((var #f)...) (set! var val)... body...)
+;;
+;; That set! pattern is needed only when at least one val expression
+;; refers to one of the let-bound names (i.e. real recursion or
+;; mutual recursion). When no val references any sibling, plain let
+;; is semantically equivalent and avoids the box rewrite that the
+;; set! pattern triggers for any var that ends up captured by an
+;; inner lambda.
 (define-rewriter (letrec expr)
   (let ([bindings (cadr expr)]
         [body (cddr expr)])
-    (if (null? bindings)
-        ;; (letrec () body...) => (begin body...)
-        (if (= (length body) 1)
-            (car body)
-            `(begin ,@body))
-        ;; (letrec ((var val)...) body...)
-        ;; => (let ((var #f)...) (set! var val)... body...)
-        (let ([vars (map car bindings)]
+    (cond
+      ;; (letrec () body...) => (begin body...)
+      [(null? bindings)
+       (if (= (length body) 1)
+           (car body)
+           `(begin ,@body))]
+      [else
+       (let* ([vars (map car bindings)]
               [vals (map cadr bindings)])
-          `(let ,(map (lambda (v) `(,v #f)) vars)
-             ,@(map (lambda (v val) `(set! ,v ,val)) vars vals)
-             ,@body)))))
+         (if (ormap (lambda (v) (letrec-refs-any? v vars)) vals)
+             ;; Real recursion -- need the dummy-#f + set! dance.
+             `(let ,(map (lambda (v) `(,v #f)) vars)
+                ,@(map (lambda (v val) `(set! ,v ,val)) vars vals)
+                ,@body)
+             ;; No cross-references -- plain let is equivalent.
+             `(let ,bindings ,@body)))])))
+
+;; True iff `expr` has a free reference to any name in `targets`,
+;; respecting lambda formal shadowing and quote opacity.
+(define (letrec-refs-any? expr targets)
+  (cond
+    [(symbol? expr) (and (member expr targets) #t)]
+    [(not (pair? expr)) #f]
+    [(eq? (car expr) 'quote) #f]
+    [(and (eq? (car expr) 'lambda) (>= (length expr) 3))
+     (let* ([formals (cadr expr)]
+            [bound (letrec-formals->list formals)]
+            [active (filter (lambda (t) (not (member t bound))) targets)])
+       (and (not (null? active))
+            (ormap (lambda (e) (letrec-refs-any? e active)) (cddr expr))))]
+    [else
+     (ormap (lambda (e) (letrec-refs-any? e targets)) expr)]))
+
+(define (letrec-formals->list formals)
+  (cond
+    [(null? formals) '()]
+    [(symbol? formals) (list formals)]
+    [(pair? formals)
+     (cons (car formals) (letrec-formals->list (cdr formals)))]
+    [else '()]))
 
 ;; do: Transform into named let with recursion
 (define-rewriter (do expr)

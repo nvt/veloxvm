@@ -124,4 +124,42 @@
               '(unknown-form a b)
               "Don't rewrite unknown forms")
 
+;; ============================================================================
+;; letrec: no cross-references collapses to plain let
+;; ============================================================================
+
+;; Non-recursive bindings -- letrec should become plain let, which then
+;; rewrites to a lambda application.
+(check-equal? (rewrite-expr '(letrec ((x 5) (y 10)) (+ x y)))
+              '((lambda (x y) (+ x y)) 5 10)
+              "letrec with no cross-refs becomes a plain lambda app")
+
+;; A binding whose value references its own name -- real self-recursion.
+;; Keep the dummy-#f + set! dance.
+(check-equal? (rewrite-expr '(letrec ((f (lambda (n) (f n)))) (f 0)))
+              '((lambda (f) (set! f (lambda (n) (f n))) (f 0)) #f)
+              "self-recursive letrec keeps the set! dance")
+
+;; Mutual recursion -- one binding's value references the other.
+(check-equal? (rewrite-expr '(letrec ((a (lambda () (b)))
+                                      (b (lambda () (a))))
+                               (a)))
+              '((lambda (a b)
+                  (set! a (lambda () (b)))
+                  (set! b (lambda () (a)))
+                  (a))
+                #f #f)
+              "mutual-recursive letrec keeps the set! dance")
+
+;; Free reference inside a quoted datum is NOT a real reference.
+(check-equal? (rewrite-expr '(letrec ((x 5)) (list 'x x)))
+              '((lambda (x) (list 'x x)) 5)
+              "quoted occurrence of the name doesn't count as a reference")
+
+;; Free reference inside a lambda whose formals shadow the name doesn't
+;; count either.
+(check-equal? (rewrite-expr '(letrec ((x (lambda (x) (* x 2)))) (x 5)))
+              '((lambda (x) (x 5)) (lambda (x) (* x 2)))
+              "shadowed inner lambda doesn't count as a self-reference")
+
 (displayln "All rewriter tests passed!")
