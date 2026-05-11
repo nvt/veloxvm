@@ -134,10 +134,15 @@
 ;; output flows through the port machinery, which is how the REPL
 ;; routes application output into IO_OUT frames.
 
+;; (println a b c ...) -> (begin (display a) (display b) (display c) ... (newline)).
+;; The VM's display operator only accepts 1 or 2 arguments (the second being
+;; an output port), so we cannot splice multi-arg println into a single
+;; display call -- we chain one display per argument.
 (define-rewriter (println expr)
-  `(begin
-     (display ,@(cdr expr))
-     (newline)))
+  (let ([args (cdr expr)])
+    `(begin
+       ,@(map (lambda (a) `(display ,a)) args)
+       (newline))))
 
 ;; Composite car/cdr (all 28 combinations: c[ad]{2,4}r)
 
