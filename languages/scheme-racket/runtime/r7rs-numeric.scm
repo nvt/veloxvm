@@ -5,8 +5,6 @@
 ;;; R7RS-small numeric helpers that aren't VM primitives. Pure Scheme on
 ;;; top of quotient, remainder, modulo, integer?, exact?.
 ;;;
-;;; The `include` directive currently has issues in nested scopes; copy
-;;; these definitions directly into your program.
 ;;; ============================================================================
 
 ;; square: (square x) => (* x x). R7RS §6.2.6.

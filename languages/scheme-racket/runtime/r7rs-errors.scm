@@ -7,8 +7,6 @@
 ;;; constructs one and raises it; guard catches the raised value, and
 ;;; the predicate plus accessors lets the handler inspect it.
 ;;;
-;;; The `include` directive currently has issues in nested scopes; copy
-;;; these definitions directly into your program.
 ;;; ============================================================================
 
 ;; Tag used to discriminate error objects from other vectors. A symbol

@@ -11,8 +11,6 @@
 ;;; [fill]) use rest arguments and require the bind_function_rest
 ;;; primitive.
 ;;;
-;;; The `include` directive currently has issues in nested scopes; copy
-;;; these definitions directly into your program.
 ;;; ============================================================================
 
 ;; bytevector?: alias for the existing buffer? predicate.
