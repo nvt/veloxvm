@@ -302,19 +302,31 @@ VM_FUNCTION(buffer_append)
 
   index = argv[1].value.integer;
 
-  /* Check whether there is room for one more byte in the buffer. */
-  byte_count = 1;
-  if(index < 0 || index + byte_count > (unsigned)dst_vector->length) {
+  if(index < 0) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
     return;
   }
 
+  /* Each case computes its actual byte_count before bounds-checking.
+     Sources may legitimately be zero bytes wide (e.g. an empty buffer
+     or string), in which case the bound is index <= dst->length rather
+     than index < dst->length. */
   switch(argv[2].type) {
   case VM_TYPE_CHARACTER:
+    if((unsigned)index >= (unsigned)dst_vector->length) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+      return;
+    }
+    byte_count = 1;
     byte_value = (unsigned)argv[2].value.character & 0xff;
     dst_vector->bytes[index] = byte_value;
     break;
   case VM_TYPE_INTEGER:
+    if((unsigned)index >= (unsigned)dst_vector->length) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+      return;
+    }
+    byte_count = 1;
     byte_value = (unsigned)argv[2].value.integer & 0xff;
     dst_vector->bytes[index] = byte_value;
     break;
@@ -325,26 +337,19 @@ VM_FUNCTION(buffer_append)
       return;
     }
     byte_count = vector->length;
-
-    /* Check buffer boundary. */
-    if(index + byte_count > (unsigned)dst_vector->length) {
+    if((unsigned)index + byte_count > (unsigned)dst_vector->length) {
       vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
       return;
     }
-
     memcpy(&dst_vector->bytes[index], vector->bytes, byte_count);
-
     break;
   case VM_TYPE_STRING:
     string = argv[2].value.string;
     byte_count = string->length;
-
-    /* Check buffer boundary. */
-    if(index + byte_count > (unsigned)dst_vector->length) {
+    if((unsigned)index + byte_count > (unsigned)dst_vector->length) {
       vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
       return;
     }
-
     memcpy(&dst_vector->bytes[index], string->str, byte_count);
     break;
   default:
