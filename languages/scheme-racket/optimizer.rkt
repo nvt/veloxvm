@@ -10,7 +10,8 @@
 
 (provide optimize-expr
          enable-optimizations
-         optimization-level)
+         optimization-level
+         pure?)
 
 ;; Optimization parameters
 (define enable-optimizations (make-parameter #t))
