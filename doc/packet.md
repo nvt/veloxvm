@@ -269,9 +269,15 @@ with `guard`.
   block; anything richer (lists of TLVs, optional fields, repeated
   records) must be parsed by hand from a `rest` payload.
 
-## Reference example
+## Reference example and tests
 
 `apps/networking/packet3.scm` exercises the full type table on a real
-DIO header plus a mixed-type schema. The schema layer's test suite
-lives at `apps/networking/packet-schema-test.scm` (fixed-only types) and
-`apps/networking/packet-varlen-test.scm` (variable-length).
+DIO header plus a mixed-type schema. Schema-layer tests live with the
+rest of the VM unit tests:
+
+  - `tests/unit-tests/vm-specific/test-packet-schema.scm` — fixed-width
+    types, validation, range checks, structural binding errors.
+  - `tests/unit-tests/vm-specific/test-packet-varlen.scm` — `rest` and
+    `length-prefixed` round-trips and error paths.
+
+Both run under `tests/unit-tests/run-tests.sh`.
