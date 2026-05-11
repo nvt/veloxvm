@@ -3,35 +3,7 @@
 ;;;            bytevector-u8-set!, make-bytevector, bytevector.
 
 (include "../unit-test-framework.scm")
-
-;; Inline definitions from
-;; languages/scheme-racket/runtime/r7rs-bytevectors.scm
-(define bytevector? buffer?)
-(define bytevector-length vector-length)
-(define (bytevector-u8-ref bv i) (char->integer (vector-ref bv i)))
-(define (bytevector-u8-set! bv i byte) (vector-set! bv i byte))
-
-(define (make-bytevector k . rest)
-  (let ((bv (make-buffer k)))
-    (if (null? rest)
-        bv
-        (let ((fill (car rest)))
-          (let loop ((i 0))
-            (if (< i k)
-                (begin
-                  (vector-set! bv i fill)
-                  (loop (+ i 1)))
-                bv))))))
-
-(define (bytevector . bytes)
-  (let* ((n (length bytes))
-         (bv (make-buffer n)))
-    (let loop ((i 0) (rest bytes))
-      (if (null? rest)
-          bv
-          (begin
-            (vector-set! bv i (car rest))
-            (loop (+ i 1) (cdr rest)))))))
+(include "r7rs-bytevectors.scm")
 
 (test-suite "R7RS bytevectors")
 

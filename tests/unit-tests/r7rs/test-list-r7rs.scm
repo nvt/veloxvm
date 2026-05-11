@@ -2,18 +2,7 @@
 ;;; Tests for: list-copy, list-tabulate.
 
 (include "../unit-test-framework.scm")
-
-;; Inline definitions from languages/scheme-racket/runtime/r7rs-lists.scm
-(define (list-copy lst)
-  (if (null? lst)
-      '()
-      (cons (car lst) (list-copy (cdr lst)))))
-
-(define (list-tabulate n proc)
-  (let loop ((i 0) (acc '()))
-    (if (= i n)
-        (reverse acc)
-        (loop (+ i 1) (cons (proc i) acc)))))
+(include "r7rs-lists.scm")
 
 (test-suite "R7RS list helpers")
 

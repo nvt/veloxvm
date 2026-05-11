@@ -2,14 +2,7 @@
 ;;; Tests for: features (returns a list of supported feature symbols).
 
 (include "../unit-test-framework.scm")
-
-;; Inline definition from languages/scheme-racket/runtime/r7rs-features.scm
-(define (features)
-  '(veloxvm
-    r5rs
-    r7rs-subset
-    exact-closed
-    ratios))
+(include "r7rs-features.scm")
 
 (test-suite "R7RS features procedure")
 
