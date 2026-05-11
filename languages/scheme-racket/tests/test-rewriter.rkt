@@ -162,4 +162,29 @@
               '((lambda (x) (x 5)) (lambda (x) (* x 2)))
               "shadowed inner lambda doesn't count as a self-reference")
 
+;; ============================================================================
+;; Quasiquote append-fold (item #18)
+;; ============================================================================
+
+;; Splicing a quoted list followed by a literal tail: should fold to a
+;; single quote instead of emitting a runtime (append ...).
+(check-equal? (rewrite-expr `(quasiquote (,@'(a b) c)))
+              ''(a b c)
+              "(append '(a b) '(c)) folds to '(a b c)")
+
+;; Two adjacent splices, both of quoted lists.
+(check-equal? (rewrite-expr `(quasiquote (,@'(a b) ,@'(c d))))
+              ''(a b c d)
+              "two splices fold end-to-end")
+
+;; Splicing an empty list.
+(check-equal? (rewrite-expr `(quasiquote (,@'() x)))
+              ''(x)
+              "empty splice + literal tail folds")
+
+;; Splicing a runtime value: no fold (the append stays at runtime).
+(check-equal? (rewrite-expr `(quasiquote (,@xs c)))
+              '(append xs '(c))
+              "non-literal splice: append stays")
+
 (displayln "All rewriter tests passed!")

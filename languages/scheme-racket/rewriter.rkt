@@ -886,7 +886,17 @@
          ;; Depth 0: splice the list
          (if (null? (cdr expr))
              (cadar expr)  ; Just the spliced list (no tail)
-             (list 'append (cadar expr) (expand-quasiquote (cdr expr) depth)))
+             ;; Fold (append '(a b) '(c d)) -> '(a b c d) when both
+             ;; the spliced value and the expanded tail are quoted
+             ;; proper-list literals. Otherwise emit the runtime
+             ;; append. Item #18: keeps fully-static quasi-quotes
+             ;; from generating a runtime append call.
+             (let ([splice (cadar expr)]
+                   [tail-exp (expand-quasiquote (cdr expr) depth)])
+               (if (and (quoted-list-literal? splice)
+                        (quoted-list-literal? tail-exp))
+                   (list 'quote (append (cadr splice) (cadr tail-exp)))
+                   (list 'append splice tail-exp))))
          ;; Depth > 0: keep the unquote-splicing, but recurse with decreased depth
          (let ([head-expanded (list 'list
                                    (list 'quote 'unquote-splicing)
@@ -918,3 +928,13 @@
          ;; Default: cons
          [else
           (list 'cons head tail)]))]))
+
+;; True iff `expr` is a (quote DATUM) form where DATUM is a proper
+;; list (possibly empty). Used by the quasiquote append-fold above
+;; to decide when (append SPLICE TAIL) can be replaced with a single
+;; (quote ...) literal.
+(define (quoted-list-literal? expr)
+  (and (pair? expr)
+       (eq? (car expr) 'quote)
+       (= (length expr) 2)
+       (list? (cadr expr))))
