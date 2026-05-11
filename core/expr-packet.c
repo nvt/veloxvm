@@ -143,7 +143,7 @@ VM_FUNCTION(construct_packet)
           return;
         }
 
-        if(field_bits & (field_bits - 1)) {
+        if(field_bits & 0x7) {
           vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
           vm_set_error_string(thread,
             "field bits must be a multiple of 8 when exceeding 8");
@@ -159,17 +159,22 @@ VM_FUNCTION(construct_packet)
         continue;
       }
 
+      /* Bits are laid out MSB-first within each byte (network-order /
+         RFC bit-numbering convention). The first bit of the field lands
+         in the highest unused bit of the current byte. */
       while(field_bits > 0) {
         bits_in_current_byte = VM_MIN(8 - (position & 0x7), field_bits);
 
+        uint64_t chunk = (value >> (field_bits - bits_in_current_byte)) &
+                         ((1U << bits_in_current_byte) - 1);
+
         VM_DEBUG(VM_DEBUG_MEDIUM,
                   "Write value %u, %u bits at byte %u, bit %u\n",
-                  value & ((1 << bits_in_current_byte) - 1),
-                  bits_in_current_byte,
-                  position / 8, position & 0x7);
+                  (unsigned)chunk, bits_in_current_byte,
+                  (unsigned)(position / 8), (unsigned)(position & 0x7));
 
-        packet->bytes[position / 8] |= (value & ((1 << bits_in_current_byte) - 1)) <<
-                                (position & 0x7);
+        packet->bytes[position / 8] |=
+          chunk << (8 - (position & 0x7) - bits_in_current_byte);
         position += bits_in_current_byte;
         field_bits -= bits_in_current_byte;
       }
@@ -182,8 +187,10 @@ VM_FUNCTION(deconstruct_packet)
   vm_vector_t *fields;
   vm_vector_t *values;
   vm_vector_t *packet;
+  vm_vector_t *byte_vec;
   vm_integer_t packet_length;
   int i;
+  int j;
   size_t position;
   vm_integer_t field_length;
 
@@ -235,21 +242,65 @@ VM_FUNCTION(deconstruct_packet)
     field_length = fields->elements[i].value.integer;
 
     values->elements[i].type = VM_TYPE_INTEGER;
-
     values->elements[i].value.integer = 0;
-    while(field_length > 8) {
+
+    if(field_length > 8) {
+      /* Multi-byte field; construct_packet writes these big-endian at a
+         byte-aligned position. */
+      if(position & 0x7) {
+        vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+        vm_set_error_string(thread, "multi-byte read starting inside byte");
+        return;
+      }
+      if(field_length & 0x7) {
+        vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+        vm_set_error_string(thread,
+          "field bits must be a multiple of 8 when exceeding 8");
+        return;
+      }
+      if(field_length > (vm_integer_t)(8 * sizeof(vm_integer_t))) {
+        /* Wider than vm_integer_t; emit as a regular vector of byte
+           integers, mirroring the shape construct_packet accepts. */
+        byte_vec = vm_vector_create(&values->elements[i], field_length / 8,
+                                    VM_VECTOR_FLAG_REGULAR);
+        if(byte_vec == NULL) {
+          vm_signal_error(thread, VM_ERROR_HEAP);
+          return;
+        }
+        for(j = 0; j < byte_vec->length; j++) {
+          byte_vec->elements[j].type = VM_TYPE_INTEGER;
+          byte_vec->elements[j].value.integer = packet->bytes[position / 8];
+          position += 8;
+        }
+        continue;
+      }
+      while(field_length > 8) {
+        values->elements[i].value.integer |= packet->bytes[position / 8];
+        values->elements[i].value.integer <<= 8;
+        field_length -= 8;
+        position += 8;
+      }
       values->elements[i].value.integer |= packet->bytes[position / 8];
-      values->elements[i].value.integer <<= 8;
-      field_length -= 8;
       position += 8;
+    } else {
+      /* Sub-byte field laid out MSB-first within each byte by
+         construct_packet; accumulate by shifting left and OR-ing each
+         chunk, including across byte-boundary straddles. */
+      while(field_length > 0) {
+        uint8_t bit_offset = position & 0x7;
+        uint8_t bits_in_current_byte = VM_MIN(8 - bit_offset, field_length);
+        vm_integer_t chunk =
+          (packet->bytes[position / 8] >>
+           (8 - bit_offset - bits_in_current_byte)) &
+          ((1U << bits_in_current_byte) - 1);
+        values->elements[i].value.integer =
+          (values->elements[i].value.integer << bits_in_current_byte) | chunk;
+        position += bits_in_current_byte;
+        field_length -= bits_in_current_byte;
+      }
     }
 
-    if(field_length > 0) {
-      values->elements[i].value.integer |= packet->bytes[position / 8] & ((1 << field_length) - 1);
-      position += field_length;
-    }
-
-    VM_PRINTF("Integer %d. field length %d\n",
-              (int)values->elements[i].value.integer, (int)field_length);
+    VM_DEBUG(VM_DEBUG_MEDIUM, "Field %d value %d\n",
+             i, (int)values->elements[i].value.integer);
   }
 }
