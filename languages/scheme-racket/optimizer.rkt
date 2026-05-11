@@ -106,10 +106,10 @@
     [`(<= ,n1 ,n2) #:when (and (number? n1) (number? n2)) (<= n1 n2)]
     [`(>= ,n1 ,n2) #:when (and (number? n1) (number? n2)) (>= n1 n2)]
 
-    ;; Constant folding for boolean operations
-    [`(not #t) #f]
-    [`(not #f) #t]
-    [`(not ,b) #:when (boolean? b) (not b)]
+    ;; Constant folding for boolean operations. The general (not LIT)
+    ;; rule below subsumes the (not #t) / (not #f) cases.
+    [`(not ,v) #:when (literal-truthy-known? v) (not v)]
+    [`(not (quote ,d)) (not d)]
 
     ;; Identity optimizations
     [`(+ ,e 0) e]
@@ -128,8 +128,102 @@
     [`(begin) #f]
     [`(begin ,e) e]
 
+    ;; ---- Pure-builtin folding ----
+    ;; All of these have well-defined value semantics that depend only
+    ;; on their (literal) arguments; running them at compile time is
+    ;; observationally equivalent to running them at runtime.
+
+    ;; (length '(...)) -> integer (only for proper-list datums; the
+    ;; compile-quote path handles those)
+    [`(length (quote ,d)) #:when (list? d) (length d)]
+
+    ;; (string-length "...") -> integer
+    [`(string-length ,s) #:when (string? s) (string-length s)]
+
+    ;; (string-append "a" "b" ...) -> concatenated string. Variadic;
+    ;; (string-append) folds to "".
+    [(list 'string-append (? string? ss) ...) (apply string-append ss)]
+
+    ;; (char->integer #\X) -> codepoint
+    [`(char->integer ,c) #:when (char? c) (char->integer c)]
+
+    ;; (integer->char N) -> #\X. The VM stores characters as uint8_t,
+    ;; so refuse to fold codepoints outside [0, 255] -- the runtime
+    ;; would reject them and we don't want to bake a value the
+    ;; encoder can't emit.
+    [`(integer->char ,n)
+     #:when (and (exact-integer? n) (>= n 0) (<= n 255))
+     (integer->char n)]
+
+    ;; (string->symbol "name") -> 'name
+    [`(string->symbol ,s) #:when (string? s)
+     (list 'quote (string->symbol s))]
+
+    ;; eq? on literals with deterministic identity. There are two
+    ;; channels: (quote DATUM) where DATUM is an interned-atomic, and
+    ;; bare self-evaluating literals. A bare SYMBOL in source is a
+    ;; variable reference, never a literal -- so symbols are foldable
+    ;; only under quote, not as bare arguments.
+    [`(eq? (quote ,a) (quote ,b))
+     #:when (and (eq-foldable-quoted? a) (eq-foldable-quoted? b))
+     (eq? a b)]
+    [`(eq? ,a ,b)
+     #:when (and (eq-foldable-unquoted? a) (eq-foldable-unquoted? b))
+     (eq? a b)]
+
+    ;; eqv? extends eq? with numbers (well-defined across exact/inexact).
+    [`(eqv? (quote ,a) (quote ,b))
+     #:when (and (eqv-foldable-quoted? a) (eqv-foldable-quoted? b))
+     (eqv? a b)]
+    [`(eqv? ,a ,b)
+     #:when (and (eqv-foldable-unquoted? a) (eqv-foldable-unquoted? b))
+     (eqv? a b)]
+
+    ;; equal? is structural and safe to fold on any pair of literal
+    ;; data, including nested quoted lists/vectors.
+    [`(equal? (quote ,a) (quote ,b)) (equal? a b)]
+    [`(equal? ,a ,b)
+     #:when (and (self-evaluating-literal? a)
+                 (self-evaluating-literal? b))
+     (equal? a b)]
+
     ;; No rule matched.
     [else expr]))
+
+;; ============================================================================
+;; Predicates supporting pure-builtin folding
+;; ============================================================================
+
+;; The (not LIT) rule above fires when we can statically determine
+;; the literal's truthiness. Every value here has a known boolean
+;; coercion: #f is false, everything else is true (R5RS 6.3.1).
+(define (literal-truthy-known? v)
+  (or (number? v) (boolean? v) (char? v) (string? v)))
+
+;; Inside (quote DATUM), DATUM is a literal regardless of its shape;
+;; eq? has deterministic identity on symbols (interned), booleans
+;; (unique values), characters, and the empty list.
+(define (eq-foldable-quoted? x)
+  (or (symbol? x) (boolean? x) (char? x) (null? x)))
+
+;; eqv? extends eq? to numbers (well-defined across exact/inexact).
+(define (eqv-foldable-quoted? x)
+  (or (eq-foldable-quoted? x) (number? x)))
+
+;; When the argument is NOT wrapped in quote, only self-evaluating
+;; literals count -- symbols, () and similar reach this position only
+;; as variable references. Folding (eq? sym1 sym2) would treat the
+;; variable names as values.
+(define (eq-foldable-unquoted? x)
+  (or (boolean? x) (char? x)))
+
+(define (eqv-foldable-unquoted? x)
+  (or (eq-foldable-unquoted? x) (number? x)))
+
+;; A self-evaluating literal in source -- includes strings, which are
+;; not interned-identity-comparable, so they're only safe for equal?.
+(define (self-evaluating-literal? x)
+  (or (number? x) (boolean? x) (char? x) (string? x)))
 
 ;; ============================================================================
 ;; Beta-reduction of let bindings

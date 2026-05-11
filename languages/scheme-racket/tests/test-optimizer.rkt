@@ -174,12 +174,120 @@
   ;; ============================================================================
 
   (check-equal? (optimize-expr '((lambda (x) (eq? x 'a)) 'a))
-                '(eq? 'a 'a)
-                "Quoted symbol literal inlined")
+                #t
+                "Quoted symbol literal inlined and eq? folded all the way")
 
   (check-equal? (optimize-expr '((lambda (x) (null? x)) '()))
                 '(null? '())
-                "Quoted empty list literal inlined"))
+                "Quoted empty list literal inlined (null? not folded -- not a fold target)")
+
+  ;; ============================================================================
+  ;; Pure-builtin folding (item #7)
+  ;; ============================================================================
+
+  ;; length on a quoted list
+  (check-equal? (optimize-expr '(length (quote (1 2 3)))) 3
+                "(length '(1 2 3)) folds to 3")
+  (check-equal? (optimize-expr '(length (quote ()))) 0
+                "(length '()) folds to 0")
+  (check-equal? (optimize-expr '(length x)) '(length x)
+                "Variable arg: length isn't folded")
+
+  ;; string-length
+  (check-equal? (optimize-expr '(string-length "hello")) 5
+                "(string-length \"hello\") folds to 5")
+  (check-equal? (optimize-expr '(string-length "")) 0
+                "(string-length \"\") folds to 0")
+  (check-equal? (optimize-expr '(string-length x)) '(string-length x)
+                "Variable arg: string-length isn't folded")
+
+  ;; string-append (variadic)
+  (check-equal? (optimize-expr '(string-append "foo" "bar")) "foobar"
+                "binary string-append folds")
+  (check-equal? (optimize-expr '(string-append "a" "b" "c" "d")) "abcd"
+                "4-ary string-append folds")
+  (check-equal? (optimize-expr '(string-append)) ""
+                "zero-arg string-append folds to empty string")
+  (check-equal? (optimize-expr '(string-append "hi")) "hi"
+                "unary string-append is the identity")
+  (check-equal? (optimize-expr '(string-append "a" x "b"))
+                '(string-append "a" x "b")
+                "non-string in the middle: don't fold")
+
+  ;; char<->integer
+  (check-equal? (optimize-expr '(char->integer #\A)) 65
+                "(char->integer #\\A) folds to 65")
+  (check-equal? (optimize-expr '(integer->char 65)) #\A
+                "(integer->char 65) folds to #\\A")
+  (check-equal? (optimize-expr '(integer->char 300))
+                '(integer->char 300)
+                "out-of-VM-range codepoint: don't fold (VM stores chars as uint8_t)")
+  (check-equal? (optimize-expr '(integer->char -1))
+                '(integer->char -1)
+                "negative codepoint: don't fold")
+
+  ;; string->symbol
+  (check-equal? (optimize-expr '(string->symbol "foo")) ''foo
+                "(string->symbol \"foo\") folds to 'foo")
+
+  ;; eq? folding
+  (check-equal? (optimize-expr '(eq? (quote foo) (quote foo))) #t
+                "(eq? 'foo 'foo) folds to #t")
+  (check-equal? (optimize-expr '(eq? (quote foo) (quote bar))) #f
+                "(eq? 'foo 'bar) folds to #f")
+  (check-equal? (optimize-expr '(eq? #t #t)) #t
+                "(eq? #t #t) folds to #t")
+  (check-equal? (optimize-expr '(eq? #t #f)) #f
+                "(eq? #t #f) folds to #f")
+  (check-equal? (optimize-expr '(eq? #\a #\a)) #t
+                "(eq? #\\a #\\a) folds")
+  (check-equal? (optimize-expr '(eq? 1 1)) '(eq? 1 1)
+                "(eq? 1 1) NOT folded: eq? on numbers is implementation-defined")
+
+  ;; eqv? folding (extends eq? with numbers)
+  (check-equal? (optimize-expr '(eqv? 1 1)) #t
+                "(eqv? 1 1) folds to #t")
+  (check-equal? (optimize-expr '(eqv? 1 2)) #f
+                "(eqv? 1 2) folds to #f")
+  (check-equal? (optimize-expr '(eqv? #t #t)) #t
+                "(eqv? #t #t) folds")
+
+  ;; equal? folding
+  (check-equal? (optimize-expr '(equal? "x" "x")) #t
+                "(equal? \"x\" \"x\") folds to #t")
+  (check-equal? (optimize-expr '(equal? "x" "y")) #f
+                "(equal? \"x\" \"y\") folds to #f")
+  (check-equal? (optimize-expr '(equal? (quote (1 2)) (quote (1 2)))) #t
+                "(equal? '(1 2) '(1 2)) folds (structural)")
+  (check-equal? (optimize-expr '(equal? (quote (1 2)) (quote (1 3)))) #f
+                "(equal? '(1 2) '(1 3)) folds to #f")
+  (check-equal? (optimize-expr '(equal? 5 5)) #t
+                "(equal? 5 5) folds")
+
+  ;; not folding on non-boolean literals
+  (check-equal? (optimize-expr '(not 5)) #f
+                "(not 5) folds to #f (any number is truthy)")
+  (check-equal? (optimize-expr '(not "")) #f
+                "(not \"\") folds to #f (empty string is truthy)")
+  (check-equal? (optimize-expr '(not #\a)) #f
+                "(not #\\a) folds to #f")
+  (check-equal? (optimize-expr '(not (quote foo))) #f
+                "(not 'foo) folds to #f (any non-#f symbol is truthy)")
+  (check-equal? (optimize-expr '(not (quote ()))) #f
+                "(not '()) folds to #f (empty list is truthy in Scheme)")
+  (check-equal? (optimize-expr '(not (quote #f))) #t
+                "(not '#f) folds to #t")
+
+  ;; Cascade: folds compose via bottom-up rewrite (item #1)
+  (check-equal? (optimize-expr '(if (eq? (quote foo) (quote foo)) 'yes 'no))
+                ''yes
+                "eq? folds, then if folds, leaving just the consequent")
+  (check-equal? (optimize-expr '(+ (string-length "hello") 1))
+                6
+                "string-length folds, then arithmetic folds")
+  (check-equal? (optimize-expr '(char->integer (integer->char 65)))
+                65
+                "round-trip integer->char->integer folds end-to-end"))
 
 ;; ============================================================================
 ;; Aggressive (level 2) strength reduction binds the argument to a temp
