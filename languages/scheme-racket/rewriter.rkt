@@ -6,6 +6,8 @@
 ;; Implements rewrite rules similar to scheme-lib.lisp
 ;; Transforms R5RS convenience forms into VM primitives
 
+(require "optimizer.rkt")  ; opt-note-fire! for letrec-to-let trace
+
 (provide rewrite-expr
          define-rewriter
          rewriters
@@ -389,13 +391,17 @@
       [else
        (let* ([vars (map car bindings)]
               [vals (map cadr bindings)])
-         (if (ormap (lambda (v) (letrec-refs-any? v vars)) vals)
-             ;; Real recursion -- need the dummy-#f + set! dance.
-             `(let ,(map (lambda (v) `(,v #f)) vars)
-                ,@(map (lambda (v val) `(set! ,v ,val)) vars vals)
-                ,@body)
-             ;; No cross-references -- plain let is equivalent.
-             `(let ,bindings ,@body)))])))
+         (cond
+           [(ormap (lambda (v) (letrec-refs-any? v vars)) vals)
+            ;; Real recursion -- need the dummy-#f + set! dance.
+            `(let ,(map (lambda (v) `(,v #f)) vars)
+               ,@(map (lambda (v val) `(set! ,v ,val)) vars vals)
+               ,@body)]
+           [else
+            ;; No cross-references -- plain let is equivalent.
+            (let ([collapsed `(let ,bindings ,@body)])
+              (opt-note-fire! 'letrec-to-let expr collapsed)
+              collapsed)]))])))
 
 ;; True iff `expr` has a free reference to any name in `targets`,
 ;; respecting lambda formal shadowing and quote opacity.

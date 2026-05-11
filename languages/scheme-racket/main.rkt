@@ -32,6 +32,7 @@
 ;; Uses CL-style pre-allocation: expression 0 is pre-allocated as entry point
 ;; source-file: optional path for resolving include directives
 (define (compile-string source-code [source-file #f])
+  (opt-stats-reset!)
   (let* ([exprs (read-all-exprs source-code source-file)]
          ;; Expand macros first (handles define-syntax)
          ;; Filter out *FILTERED* sentinel values (from define-syntax)
@@ -80,6 +81,10 @@
 
     ) ; close parameterize
 
+    ;; Optimisation stats summary, after all rules have fired.
+    (when (opt-stats?)
+      (opt-stats-print))
+
     ;; Return the bytecode - no reversal, no form reference fixing!
     bc))
 
@@ -110,6 +115,8 @@
    [("--debug") "Debug mode" (debug-mode #t)]
    [("--opt-level") level "Optimization level (0-2, default 1)" (optimization-level (string->number level))]
    [("--no-optimize") "Disable all optimizations" (enable-optimizations #f)]
+   [("--opt-stats") "Print per-bucket optimization fire counts to stderr" (opt-stats? #t)]
+   [("--trace-opts") "Trace each optimization rewrite to stderr" (opt-trace? #t)]
    #:args (source-file)
    (compile-file source-file)))
 

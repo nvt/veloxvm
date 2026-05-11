@@ -143,7 +143,11 @@
                [(and n (hash-ref dead-set n #f))
                 (let ([val (define-value e)])
                   (cond
-                    [(or (not val) (pure? val)) '()]
-                    [else (list val)]))]
+                    [(or (not val) (pure? val))
+                     (opt-note-fire! 'dead-define e '())
+                     '()]
+                    [else
+                     (opt-note-fire! 'dead-define-keep-val e val)
+                     (list val)]))]
                [else (list e)])))
          exprs)))

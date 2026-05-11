@@ -11,7 +11,14 @@
 (provide optimize-expr
          enable-optimizations
          optimization-level
-         pure?)
+         pure?
+         ;; tracing/stats infrastructure shared with the rewriter and
+         ;; dead-define passes
+         opt-trace?
+         opt-stats?
+         opt-stats-reset!
+         opt-stats-print
+         opt-note-fire!)
 
 ;; Optimization parameters
 (define enable-optimizations (make-parameter #t))
@@ -81,9 +88,11 @@
 ;; When neither pass changes the expression, eq? succeeds.
 (define (apply-basic-rules-fixpoint expr)
   (let* ([beta (try-beta-reduce expr)]
-         [next (if (eq? beta expr)
-                   (apply-basic-rules expr)
-                   beta)])
+         [from-beta? (not (eq? beta expr))]
+         [next (if from-beta? beta (apply-basic-rules expr))]
+         [from-basic? (and (not from-beta?) (not (eq? next expr)))])
+    (when from-beta? (opt-note-fire! 'beta-reduce expr next))
+    (when from-basic? (opt-note-fire! (opt-bucket-for expr) expr next))
     (if (eq? next expr)
         expr
         (apply-basic-rules-fixpoint next))))
@@ -652,19 +661,71 @@
     (append (filter (lambda (e) (not (pure? e))) non-final) final)))
 
 ;; ============================================================================
-;; Optimization Statistics
+;; Optimization tracing and stats
 ;; ============================================================================
 
-(define optimization-stats (make-hash))
+;; --trace-opts prints every rewrite to stderr as it happens.
+;; --opt-stats prints a per-bucket fire-count summary at compile end.
+;; Both are driven by parameters so the surrounding pipeline can flip
+;; them on/off without re-threading arguments.
+(define opt-trace? (make-parameter #f))
+(define opt-stats? (make-parameter #f))
 
-(define (record-optimization type)
-  (hash-update! optimization-stats type add1 0))
+(define opt-stats-table (make-hash))
 
-(define (get-optimization-stats)
-  (hash-copy optimization-stats))
+(define (opt-stats-reset!)
+  (hash-clear! opt-stats-table))
 
-(define (reset-optimization-stats!)
-  (set! optimization-stats (make-hash)))
+(define (opt-note-fire! bucket before after)
+  (when (opt-stats?)
+    (hash-update! opt-stats-table bucket add1 0))
+  (when (opt-trace?)
+    (eprintf "~a: ~v -> ~v~n" bucket before after)))
+
+;; Bucket name for an optimizer-rule fire, derived from the input
+;; expression's head. Coarse but useful: all (+ ...) folds share one
+;; bucket; identity-op rules go to the same bucket as the arithmetic
+;; folds for their operator, which matches what someone debugging the
+;; optimizer typically wants to see.
+(define (opt-bucket-for expr)
+  (cond
+    [(not (pair? expr)) 'unknown]
+    [(eq? (car expr) '+) 'fold-+]
+    [(eq? (car expr) '-) 'fold--]
+    [(eq? (car expr) '*) 'fold-*]
+    [(eq? (car expr) '/) 'fold-/]
+    [(eq? (car expr) '=) 'fold-=]
+    [(memq (car expr) '(< <= > >=)) 'fold-cmp]
+    [(eq? (car expr) 'not) 'fold-not]
+    [(eq? (car expr) 'if) 'fold-if]
+    [(eq? (car expr) 'begin) 'fold-begin]
+    [(eq? (car expr) 'and) 'fold-and]
+    [(eq? (car expr) 'or) 'fold-or]
+    [(eq? (car expr) 'apply) 'fold-apply]
+    [(memq (car expr) '(length string-length string-append
+                        char->integer integer->char string->symbol
+                        eq? eqv? equal?))
+     'fold-pure-builtin]
+    [else (car expr)]))
+
+(define (opt-stats-print [port (current-error-port)])
+  (define entries
+    (sort (hash-map opt-stats-table cons)
+          (lambda (a b) (> (cdr a) (cdr b)))))
+  (cond
+    [(null? entries)
+     (fprintf port "optimizations fired: none~n")]
+    [else
+     (fprintf port "optimizations fired:~n")
+     (define namewidth
+       (apply max (map (lambda (e) (string-length (symbol->string (car e))))
+                       entries)))
+     (for ([entry (in-list entries)])
+       (fprintf port "  ~a~a  ~a~n"
+                (car entry)
+                (make-string (- namewidth (string-length (symbol->string (car entry))))
+                             #\space)
+                (cdr entry)))]))
 
 ;; ============================================================================
 ;; Utilities
