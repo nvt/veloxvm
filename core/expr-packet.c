@@ -164,12 +164,13 @@ VM_FUNCTION(construct_packet)
 
         VM_DEBUG(VM_DEBUG_MEDIUM,
                   "Write value %u, %u bits at byte %u, bit %u\n",
-                  value & ((1 << bits_in_current_byte) - 1),
+                  (unsigned)(value & ((1U << bits_in_current_byte) - 1)),
                   bits_in_current_byte,
-                  position / 8, position & 0x7);
+                  (unsigned)(position / 8), (unsigned)(position & 0x7));
 
-        packet->bytes[position / 8] |= (value & ((1 << bits_in_current_byte) - 1)) <<
+        packet->bytes[position / 8] |= (value & ((1U << bits_in_current_byte) - 1)) <<
                                 (position & 0x7);
+        value >>= bits_in_current_byte;
         position += bits_in_current_byte;
         field_bits -= bits_in_current_byte;
       }
