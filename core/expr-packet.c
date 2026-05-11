@@ -143,7 +143,7 @@ VM_FUNCTION(construct_packet)
           return;
         }
 
-        if(field_bits & (field_bits - 1)) {
+        if(field_bits & 0x7) {
           vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
           vm_set_error_string(thread,
             "field bits must be a multiple of 8 when exceeding 8");
