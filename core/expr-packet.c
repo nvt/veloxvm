@@ -159,18 +159,22 @@ VM_FUNCTION(construct_packet)
         continue;
       }
 
+      /* Bits are laid out MSB-first within each byte (network-order /
+         RFC bit-numbering convention). The first bit of the field lands
+         in the highest unused bit of the current byte. */
       while(field_bits > 0) {
         bits_in_current_byte = VM_MIN(8 - (position & 0x7), field_bits);
 
+        uint64_t chunk = (value >> (field_bits - bits_in_current_byte)) &
+                         ((1U << bits_in_current_byte) - 1);
+
         VM_DEBUG(VM_DEBUG_MEDIUM,
                   "Write value %u, %u bits at byte %u, bit %u\n",
-                  (unsigned)(value & ((1U << bits_in_current_byte) - 1)),
-                  bits_in_current_byte,
+                  (unsigned)chunk, bits_in_current_byte,
                   (unsigned)(position / 8), (unsigned)(position & 0x7));
 
-        packet->bytes[position / 8] |= (value & ((1U << bits_in_current_byte) - 1)) <<
-                                (position & 0x7);
-        value >>= bits_in_current_byte;
+        packet->bytes[position / 8] |=
+          chunk << (8 - (position & 0x7) - bits_in_current_byte);
         position += bits_in_current_byte;
         field_bits -= bits_in_current_byte;
       }
@@ -279,17 +283,18 @@ VM_FUNCTION(deconstruct_packet)
       values->elements[i].value.integer |= packet->bytes[position / 8];
       position += 8;
     } else {
-      /* Sub-byte field; mirror the little-endian-within-byte layout used
-         by construct_packet, including straddles across a byte boundary. */
-      vm_integer_t bits_read = 0;
+      /* Sub-byte field laid out MSB-first within each byte by
+         construct_packet; accumulate by shifting left and OR-ing each
+         chunk, including across byte-boundary straddles. */
       while(field_length > 0) {
         uint8_t bit_offset = position & 0x7;
         uint8_t bits_in_current_byte = VM_MIN(8 - bit_offset, field_length);
         vm_integer_t chunk =
-          (packet->bytes[position / 8] >> bit_offset) &
-          ((1 << bits_in_current_byte) - 1);
-        values->elements[i].value.integer |= chunk << bits_read;
-        bits_read += bits_in_current_byte;
+          (packet->bytes[position / 8] >>
+           (8 - bit_offset - bits_in_current_byte)) &
+          ((1U << bits_in_current_byte) - 1);
+        values->elements[i].value.integer =
+          (values->elements[i].value.integer << bits_in_current_byte) | chunk;
         position += bits_in_current_byte;
         field_length -= bits_in_current_byte;
       }
