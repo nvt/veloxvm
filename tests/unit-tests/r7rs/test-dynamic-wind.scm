@@ -6,14 +6,7 @@
 ;;; r7rs-parameters.scm.
 
 (include "../unit-test-framework.scm")
-
-;; Inline definition from r7rs-parameters.scm
-(define (make-parameter init)
-  (let ((value init))
-    (lambda args
-      (if (null? args)
-          value
-          (set! value (car args))))))
+(include "r7rs-parameters.scm")
 
 (test-suite "dynamic-wind and parameterize")
 

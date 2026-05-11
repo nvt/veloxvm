@@ -3,24 +3,7 @@
 ;;;        error-object-irritants, integration with raise/guard.
 
 (include "../unit-test-framework.scm")
-
-;; Inline definitions from
-;; languages/scheme-racket/runtime/r7rs-errors.scm
-(define *error-tag* 'error-object)
-
-(define (error msg . irritants)
-  (raise (vector *error-tag* msg irritants)))
-
-(define (error-object? obj)
-  (and (vector? obj)
-       (= (vector-length obj) 3)
-       (eq? (vector-ref obj 0) *error-tag*)))
-
-(define (error-object-message obj)
-  (vector-ref obj 1))
-
-(define (error-object-irritants obj)
-  (vector-ref obj 2))
+(include "r7rs-errors.scm")
 
 (test-suite "R7RS error objects")
 

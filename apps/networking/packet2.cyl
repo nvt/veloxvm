@@ -21,13 +21,8 @@ buffer = construct_packet(dio_packet_fields, dio_packet_values);
 
 parsed_packet_values = deconstruct_packet(dio_packet_fields, buffer);
 
-/* Multi-arg println currently expands into a single (display ...) call
-   in the Racket compiler, which display rejects. Use one arg per call. */
-display("Generated a packet from the values "); display(dio_packet_values);
-newline();
-display("Parsed the generated packet into the values ");
-display(parsed_packet_values);
-newline();
+println("Generated a packet from the values ", dio_packet_values);
+println("Parsed the generated packet into the values ", parsed_packet_values);
 
 /* Write the packet to a file. */
 file = open_output_file("packet-log.txt");

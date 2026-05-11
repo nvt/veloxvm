@@ -2,16 +2,7 @@
 ;;; Tests for: string-map, string-for-each.
 
 (include "../unit-test-framework.scm")
-
-;; Inline definitions from languages/scheme-racket/runtime/r7rs-strings.scm
-(define (string-map proc str)
-  (list->string (map proc (string->list str))))
-
-(define (string-for-each proc str)
-  (for-each proc (string->list str)))
-
-(define (char-foldcase ch) (char-downcase ch))
-(define (string-foldcase str) (string-map char-downcase str))
+(include "r7rs-strings.scm")
 
 (test-suite "R7RS string higher-order")
 

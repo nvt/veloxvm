@@ -3,35 +3,7 @@
 ;;;            floor-quotient, floor-remainder.
 
 (include "../unit-test-framework.scm")
-
-;; Inline definitions from languages/scheme-racket/runtime/r7rs-numeric.scm
-(define (square x) (* x x))
-
-(define (exact-integer? x)
-  (and (integer? x) (exact? x)))
-
-(define (truncate-quotient n m) (quotient n m))
-(define (truncate-remainder n m) (remainder n m))
-
-(define (floor-quotient n m)
-  (let ((q (quotient n m))
-        (r (remainder n m)))
-    (if (and (not (= r 0))
-             (or (and (< n 0) (> m 0))
-                 (and (> n 0) (< m 0))))
-        (- q 1)
-        q)))
-
-(define (floor-remainder n m) (modulo n m))
-
-(define (exact-integer-sqrt n)
-  (if (< n 2)
-      (list n 0)
-      (let loop ((x n))
-        (let ((y (quotient (+ x (quotient n x)) 2)))
-          (if (>= y x)
-              (list x (- n (* x x)))
-              (loop y))))))
+(include "r7rs-numeric.scm")
 
 (test-suite "R7RS numeric helpers")
 

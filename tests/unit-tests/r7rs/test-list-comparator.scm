@@ -4,23 +4,10 @@
 ;;; sites of the redefined names to the user binding.
 
 (include "../unit-test-framework.scm")
-
-;; Inline definitions from
-;; languages/scheme-racket/runtime/r7rs-lists.scm. These shadow the
-;; primitives 76 (assoc) and 73 (member) at top level.
-(define (assoc obj alist . rest)
-  (let ((cmp (if (null? rest) equal? (car rest))))
-    (let loop ((l alist))
-      (cond ((null? l) #f)
-            ((cmp obj (car (car l))) (car l))
-            (else (loop (cdr l)))))))
-
-(define (member obj lst . rest)
-  (let ((cmp (if (null? rest) equal? (car rest))))
-    (let loop ((l lst))
-      (cond ((null? l) #f)
-            ((cmp obj (car l)) l)
-            (else (loop (cdr l)))))))
+;; Including the runtime library brings in the 3-arg comparator-aware
+;; assoc and member, which shadow the 2-arg VM primitives via the
+;; compiler's top-level shadowing pass.
+(include "r7rs-lists.scm")
 
 (test-suite "R7RS comparator-aware assoc and member")
 
