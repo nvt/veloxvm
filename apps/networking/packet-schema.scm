@@ -5,7 +5,7 @@
 ;;
 ;; Field types:
 ;;   bit              1-bit unsigned
-;;   bits N           N-bit unsigned (1..32)
+;;   bits N           N-bit unsigned (1..8 — sub-byte; use uK/sK for wider)
 ;;   u8               unsigned byte
 ;;   u16, u24, u32    unsigned big-endian
 ;;   u16/le, u32/le   unsigned little-endian
@@ -14,9 +14,12 @@
 ;;   bytes N          N raw bytes (read/written as a Scheme vector of bytes)
 ;;
 ;; Sub-byte fields (bit, bits) are packed MSB-first within a byte, matching
-;; RFC bit-numbering. Multi-byte fields are big-endian unless suffixed /le.
+;; RFC bit-numbering. Multi-byte fields are big-endian unless suffixed /le
+;; and must start at a byte-aligned position; total schema width must be a
+;; whole number of bytes.
 ;;
 ;; Entry points:
+;;   (schema-validate SCHEMA)                  -> #t, or raises on error
 ;;   (schema-construct SCHEMA BINDINGS-ALIST)  -> byte buffer
 ;;   (schema-deconstruct SCHEMA BYTE-BUFFER)   -> bindings alist
 ;;   (schema-bit-width SCHEMA)                 -> total width in bits
@@ -25,6 +28,15 @@
   (raise (cons 'packet-schema-error (cons msg irritants))))
 
 ;; --- Type table ----------------------------------------------------------
+
+(define pkt-known-types
+  '(bit bits u8 u16 u24 u32 u16/le u32/le
+        s8 s16 s32 s16/le s32/le bytes))
+
+;; Every type except bit/bits must start at a byte boundary; bit-packed
+;; types are the only ones that may live mid-byte.
+(define (pkt-byte-aligned-type? type)
+  (not (memq type '(bit bits))))
 
 (define (pkt-field-bits spec)
   (let ((type (cadr spec)))
@@ -37,6 +49,110 @@
       ((memq type '(u32 u32/le s32 s32/le)) 32)
       ((eq? type 'bytes) (* 8 (caddr spec)))
       (else (pkt-error "unknown field type" type)))))
+
+;; --- Schema validation ---------------------------------------------------
+
+(define (pkt-validate-spec spec)
+  (unless (and (list? spec) (>= (length spec) 2) (<= (length spec) 3))
+    (pkt-error "field spec must be (name type [arg])" spec))
+  (let ((name (car spec)) (type (cadr spec)))
+    (unless (symbol? name)
+      (pkt-error "field name must be a symbol" 'spec spec))
+    (unless (memq type pkt-known-types)
+      (pkt-error "unknown field type" 'type type 'spec spec))
+    (cond
+      ((eq? type 'bit)
+       (when (= (length spec) 3)
+         (pkt-error "'bit takes no argument" 'spec spec)))
+      ((eq? type 'bits)
+       (unless (= (length spec) 3)
+         (pkt-error "'bits requires a width" 'spec spec))
+       (let ((n (caddr spec)))
+         (unless (and (integer? n) (>= n 1) (<= n 8))
+           (pkt-error "'bits width must be 1..8 (use u16/u24/u32 for wider)"
+                      'spec spec))))
+      ((eq? type 'bytes)
+       (unless (= (length spec) 3)
+         (pkt-error "'bytes requires a length" 'spec spec))
+       (let ((n (caddr spec)))
+         (unless (and (integer? n) (>= n 1))
+           (pkt-error "'bytes length must be >= 1" 'spec spec))))
+      (else
+       (when (= (length spec) 3)
+         (pkt-error "type does not take an argument" 'spec spec))))))
+
+(define (schema-validate schema)
+  (when (or (not (list? schema)) (null? schema))
+    (pkt-error "schema must be a non-empty list of field specs"))
+  (let loop ((rest schema) (pos 0))
+    (if (null? rest)
+        (if (zero? (modulo pos 8))
+            #t
+            (pkt-error "total schema width is not a multiple of 8" 'bits pos))
+        (let ((spec (car rest)))
+          (pkt-validate-spec spec)
+          (let ((bits (pkt-field-bits spec))
+                (type (cadr spec)))
+            (when (and (pkt-byte-aligned-type? type)
+                       (not (zero? (modulo pos 8))))
+              (pkt-error "byte-aligned field does not start at a byte boundary"
+                         'field (car spec) 'at-bit pos))
+            (loop (cdr rest) (+ pos bits)))))))
+
+;; --- Value validation ----------------------------------------------------
+
+(define (pkt-check-int value lo hi name)
+  (unless (integer? value)
+    (pkt-error "expected integer" 'field name 'got value))
+  (when (or (< value lo) (> value hi))
+    (pkt-error "value out of range"
+               'field name 'value value 'range (list lo hi))))
+
+(define (pkt-check-bytes value n name)
+  (unless (vector? value)
+    (pkt-error "expected byte vector" 'field name 'got value))
+  (unless (= (vector-length value) n)
+    (pkt-error "wrong vector length"
+               'field name 'expected n 'got (vector-length value)))
+  (let loop ((i 0))
+    (when (< i n)
+      (let ((b (vector-ref value i)))
+        (unless (and (integer? b) (>= b 0) (<= b 255))
+          (pkt-error "byte out of range 0..255"
+                     'field name 'index i 'value b)))
+      (loop (+ i 1)))))
+
+;; vm_integer_t is signed int32 here, so unsigned types beyond 31 bits
+;; cap at the positive int32 ceiling and signed s32 covers the whole int32.
+(define pkt-max-u32 #x7FFFFFFF)
+(define pkt-min-s32 -2147483648)
+(define pkt-max-s32 2147483647)
+
+(define (pkt-validate-value value type spec)
+  (let ((name (car spec)))
+    (cond
+      ((eq? type 'bit)
+       (pkt-check-int value 0 1 name))
+      ((eq? type 'bits)
+       (pkt-check-int value 0 (- (bit-shift 1 (caddr spec)) 1) name))
+      ((eq? type 'u8)
+       (pkt-check-int value 0 255 name))
+      ((memq type '(u16 u16/le))
+       (pkt-check-int value 0 65535 name))
+      ((memq type '(u24 u24/le))
+       (pkt-check-int value 0 #xFFFFFF name))
+      ((memq type '(u32 u32/le))
+       (pkt-check-int value 0 pkt-max-u32 name))
+      ((eq? type 's8)
+       (pkt-check-int value -128 127 name))
+      ((memq type '(s16 s16/le))
+       (pkt-check-int value -32768 32767 name))
+      ((memq type '(s32 s32/le))
+       (pkt-check-int value pkt-min-s32 pkt-max-s32 name))
+      ((eq? type 'bytes)
+       (pkt-check-bytes value (caddr spec) name))
+      (else
+       (pkt-error "internal: unvalidated type" type)))))
 
 ;; --- Bit/byte helpers ----------------------------------------------------
 
@@ -108,6 +224,7 @@
   (list->vector (map pkt-field-bits schema)))
 
 (define (schema-construct schema bindings)
+  (schema-validate schema)
   (let ((widths (pkt-schema-widths schema))
         (values
          (list->vector
@@ -116,12 +233,15 @@
                        (type (cadr spec)))
                    (let ((slot (assq name bindings)))
                      (if slot
-                         (pkt-encode (cdr slot) type spec)
-                         (pkt-error "missing field in bindings" name)))))
+                         (let ((v (cdr slot)))
+                           (pkt-validate-value v type spec)
+                           (pkt-encode v type spec))
+                         (pkt-error "missing field in bindings" 'field name)))))
                schema))))
     (construct-packet widths values)))
 
 (define (schema-deconstruct schema buffer)
+  (schema-validate schema)
   (let* ((widths (pkt-schema-widths schema))
          (raw    (deconstruct-packet widths buffer)))
     (let loop ((i 0) (rest schema) (acc '()))
