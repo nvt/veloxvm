@@ -144,9 +144,9 @@
      ;; Atom: encode as inline form (quote datum)
      (let* ([quote-enc (encode-symbol 'quote bc env)]
             [datum-enc (compile-atom datum bc env)]
-            [all-bytes (append (expr-encoding-data (encode-form-inline 2))
-                               (expr-encoding-data quote-enc)
-                               (expr-encoding-data datum-enc))])
+            [all-bytes (bytes-append (expr-encoding-data (encode-form-inline 2))
+                                     (expr-encoding-data quote-enc)
+                                     (expr-encoding-data datum-enc))])
        (expr-encoding 'form all-bytes))]))
 
 ;; Flatten a lambda's formal-parameter spec into a proper list of symbols.
@@ -296,20 +296,25 @@
 ;; the box, the inner lambda's snapshot is independent of the parent's
 ;; binding (and of any other closure capturing the same param), so writes
 ;; through one path are invisible to the others.
+;;
+;; Implementation: a single walk collects both sets simultaneously. The
+;; predecessor code did two full body traversals; merging halves the
+;; per-lambda analysis cost. State threaded through the walk:
+;;   inside? — are we under an inner lambda right now? (gates capture tracking)
+;;   local   — names rebound by an enclosing binder, used to suppress hits
+;;             from shadowed positions.
 (define (params-needing-box body params)
-  (let ([captured (params-captured-by-inner body params)]
-        [mutated (params-mutated-in body params)])
-    (filter (lambda (p) (and (member p captured) (member p mutated))) params)))
-
-;; Subset of params that are referenced inside any inner lambda nested in
-;; body, without that inner lambda or anything between rebinding the name.
-(define (params-captured-by-inner body params)
-  (define hits '())
+  (define captures '())
+  (define mutations '())
   (define (walk expr inside? local)
     (cond
       [(symbol? expr)
+       ;; A bare reference inside an inner lambda to a non-shadowed param
+       ;; is a capture. Mutations are tracked by the set! arm below; the
+       ;; set! target itself flows through this same symbol arm via the
+       ;; value-expression walk and contributes nothing extra there.
        (when (and inside? (member expr params) (not (member expr local)))
-         (set! hits (cons expr hits)))]
+         (set! captures (cons expr captures)))]
       [(not (pair? expr)) (void)]
       [(eq? (car expr) 'quote) (void)]
       [(eq? (car expr) 'lambda)
@@ -318,8 +323,12 @@
          (for-each (lambda (e) (walk e #t (append inner-params local)))
                    inner-body))]
       [(eq? (car expr) 'set!)
-       ;; The target itself isn't a "reference" -- it's the assignment
-       ;; LHS. Only the value expression contributes.
+       ;; LHS is a binding target, not a reference: don't run it through
+       ;; the symbol arm. It DOES contribute to the mutated set whenever
+       ;; the named binding still resolves to a param of this lambda.
+       (let ([target (cadr expr)])
+         (when (and (member target params) (not (member target local)))
+           (set! mutations (cons target mutations))))
        (walk (caddr expr) inside? local)]
       [(eq? (car expr) 'define)
        (let* ([target (cadr expr)]
@@ -331,39 +340,9 @@
       [else
        (for-each (lambda (e) (walk e inside? local)) expr)]))
   (for-each (lambda (e) (walk e #f '())) body)
-  (remove-duplicates hits))
-
-;; Subset of params that appear as the target of a set! somewhere in body
-;; (in a scope where the name still refers to this lambda's param, i.e.
-;; not shadowed by an inner binder that rebinds the same name).
-(define (params-mutated-in body params)
-  (define hits '())
-  (define (walk expr local)
-    (cond
-      [(symbol? expr) (void)]
-      [(not (pair? expr)) (void)]
-      [(eq? (car expr) 'quote) (void)]
-      [(eq? (car expr) 'lambda)
-       (let ([inner-params (formals->list (cadr expr))]
-             [inner-body (cddr expr)])
-         (for-each (lambda (e) (walk e (append inner-params local)))
-                   inner-body))]
-      [(eq? (car expr) 'set!)
-       (let ([target (cadr expr)])
-         (when (and (member target params) (not (member target local)))
-           (set! hits (cons target hits))))
-       (walk (caddr expr) local)]
-      [(eq? (car expr) 'define)
-       (let* ([target (cadr expr)]
-              [name (if (pair? target) (car target) target)]
-              [val (if (pair? target)
-                       `(lambda ,(cdr target) ,@(cddr expr))
-                       (caddr expr))])
-         (walk val (cons name local)))]
-      [else
-       (for-each (lambda (e) (walk e local)) expr)]))
-  (for-each (lambda (e) (walk e '())) body)
-  (remove-duplicates hits))
+  (let ([captured (remove-duplicates captures)]
+        [mutated (remove-duplicates mutations)])
+    (filter (lambda (p) (and (member p captured) (member p mutated))) params)))
 
 ;; Rewrite body so that boxed-params live in heap boxes:
 ;;   * Inject (set! p (box p)) at function entry to wrap the initial value.
@@ -442,12 +421,12 @@
          [test-enc (compile-subexpr test bc env)]
          [cons-enc (compile-subexpr consequent bc env)]
          [alt-enc (and alternate (compile-subexpr alternate bc env))]
-         [head-bytes (append (expr-encoding-data (encode-form-inline argc))
-                             (expr-encoding-data if-enc)
-                             (expr-encoding-data test-enc)
-                             (expr-encoding-data cons-enc))]
+         [head-bytes (bytes-append (expr-encoding-data (encode-form-inline argc))
+                                   (expr-encoding-data if-enc)
+                                   (expr-encoding-data test-enc)
+                                   (expr-encoding-data cons-enc))]
          [all-bytes (if alternate
-                        (append head-bytes (expr-encoding-data alt-enc))
+                        (bytes-append head-bytes (expr-encoding-data alt-enc))
                         head-bytes)])
     (expr-encoding 'form all-bytes)))
 
@@ -465,10 +444,10 @@
                [define-enc (encode-symbol 'define bc env)]
                [name-enc (encode-symbol name bc env)]
                [lambda-enc (compile-lambda params body bc env)]
-               [all-bytes (append (expr-encoding-data (encode-form-inline 3))
-                                  (expr-encoding-data define-enc)
-                                  (expr-encoding-data name-enc)
-                                  (expr-encoding-data lambda-enc))])
+               [all-bytes (bytes-append (expr-encoding-data (encode-form-inline 3))
+                                        (expr-encoding-data define-enc)
+                                        (expr-encoding-data name-enc)
+                                        (expr-encoding-data lambda-enc))])
           (expr-encoding 'form all-bytes))
         ;; Variable definition: (define var expr)
         (let* ([var first-arg]
@@ -476,10 +455,10 @@
                [define-enc (encode-symbol 'define bc env)]
                [var-enc (encode-symbol var bc env)]
                [val-enc (compile-subexpr val bc env)]
-               [all-bytes (append (expr-encoding-data (encode-form-inline 3))
-                                  (expr-encoding-data define-enc)
-                                  (expr-encoding-data var-enc)
-                                  (expr-encoding-data val-enc))])
+               [all-bytes (bytes-append (expr-encoding-data (encode-form-inline 3))
+                                        (expr-encoding-data define-enc)
+                                        (expr-encoding-data var-enc)
+                                        (expr-encoding-data val-enc))])
           (expr-encoding 'form all-bytes)))))
 
 (define (compile-set var val bc [env '()])
@@ -489,10 +468,10 @@
   (let* ([set-enc (encode-symbol 'set! bc env)]
          [var-enc (encode-symbol var bc env)]
          [val-enc (compile-subexpr val bc env)]
-         [all-bytes (append (expr-encoding-data (encode-form-inline 3))
-                            (expr-encoding-data set-enc)
-                            (expr-encoding-data var-enc)
-                            (expr-encoding-data val-enc))])
+         [all-bytes (bytes-append (expr-encoding-data (encode-form-inline 3))
+                                  (expr-encoding-data set-enc)
+                                  (expr-encoding-data var-enc)
+                                  (expr-encoding-data val-enc))])
     (expr-encoding 'form all-bytes)))
 
 ;; Shared helper: compile (op-sym arg1 arg2 ...) into an inline form where
@@ -503,9 +482,10 @@
          [op-enc (encode-symbol op-sym bc env)]
          [arg-encs (map (lambda (e) (compile-subexpr e bc env)) args)])
     (expr-encoding 'form
-                   (append (expr-encoding-data (encode-form-inline argc))
-                           (expr-encoding-data op-enc)
-                           (apply append (map expr-encoding-data arg-encs))))))
+                   (apply bytes-append
+                          (expr-encoding-data (encode-form-inline argc))
+                          (expr-encoding-data op-enc)
+                          (map expr-encoding-data arg-encs)))))
 
 (define (compile-begin exprs bc [env '()])
   (compile-inline-form 'begin exprs bc env))
@@ -531,9 +511,10 @@
          [func-enc (compile-subexpr func bc env)]
          [arg-encs (map (lambda (arg) (compile-subexpr arg bc env)) args)])
     (expr-encoding 'form
-                   (append (expr-encoding-data (encode-form-inline total-count))
-                           (expr-encoding-data func-enc)
-                           (apply append (map expr-encoding-data arg-encs))))))
+                   (apply bytes-append
+                          (expr-encoding-data (encode-form-inline total-count))
+                          (expr-encoding-data func-enc)
+                          (map expr-encoding-data arg-encs)))))
 
 ;; ============================================================================
 ;; Program Compilation

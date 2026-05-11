@@ -82,7 +82,7 @@
 (check-equal? (expr-encoding-type int-enc) 'atom "Integer is an atom")
 (define int-bytes (expr-encoding-data int-enc))
 (displayln (format "  42 encoded as: ~a" int-bytes))
-(check-equal? (car int-bytes) #x09 "Integer header byte (type=1, size=1, sign=0)")
+(check-equal? (bytes-ref int-bytes 0) #x09 "Integer header byte (type=1, size=1, sign=0)")
 (displayln "   Integer encoding correct\n")
 
 ;; Test boolean encoding.
@@ -91,7 +91,7 @@
 (check-equal? (expr-encoding-type bool-enc) 'atom "Boolean is an atom")
 (define bool-bytes (expr-encoding-data bool-enc))
 (displayln (format "  #t encoded as: ~a" bool-bytes))
-(check-equal? (car bool-bytes) #x08 "Boolean true header (type=0, info=1)")
+(check-equal? (bytes-ref bool-bytes 0) #x08 "Boolean true header (type=0, info=1)")
 (displayln "   Boolean encoding correct\n")
 
 ;; Test string encoding
@@ -118,7 +118,7 @@
 (define lambda-result (compile-expr '(lambda (x) x) lambda-bc))
 (check-equal? (expr-encoding-type lambda-result) 'form "Lambda result is a form")
 (define lambda-bytes (expr-encoding-data lambda-result))
-(define lambda-header (car lambda-bytes))
+(define lambda-header (bytes-ref lambda-bytes 0))
 (check-true (> (bitwise-and lambda-header #x80) 0) "Form token bit set")
 ;; Form type is bits 6-5, extracted as (header >> 5) & 3
 ;; (see VM_GET_FORM_TYPE in core/vm-bytecode.c)
@@ -133,7 +133,7 @@
 (define inline-result (compile-expr '(+ 1 2) inline-bc))
 (check-equal? (expr-encoding-type inline-result) 'form "Application result is a form")
 (define inline-bytes (expr-encoding-data inline-result))
-(define inline-header (car inline-bytes))
+(define inline-header (bytes-ref inline-bytes 0))
 (check-true (> (bitwise-and inline-header #x80) 0) "Form token bit set")
 ;; Form type is bits 6-5, extracted as (header >> 5) & 3
 (define inline-type (bitwise-and (arithmetic-shift inline-header -5) #x03))

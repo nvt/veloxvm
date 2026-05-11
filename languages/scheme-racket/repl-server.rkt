@@ -219,7 +219,7 @@
   (define-values (entry-expr-id final-kind)
     (cond
       [(null? expanded-list)
-       (define id (add-expr bc (expr-encoding 'atom (list))))
+       (define id (add-expr bc (expr-encoding 'atom #"")))
        (values id 'stmt)]
       [else
        (define rewritten (map rewrite-expr expanded-list))
@@ -250,7 +250,7 @@
 ;; expression's id.
 (define (compile-forms-as-entry bc forms)
   (define accumulated
-    (apply append
+    (apply bytes-append
            (for/list ([f forms])
              (expr-encoding-data (compile-expr f bc)))))
   (define id (add-expr bc (expr-encoding 'form accumulated)))
@@ -362,9 +362,8 @@
   (write-bytes (u16->bytes (length items)) out)
   (for ([e items])
     (define data (expr-encoding-data e))
-    (write-bytes (u16->bytes (length data)) out)
-    (for ([b data])
-      (write-byte b out)))
+    (write-bytes (u16->bytes (bytes-length data)) out)
+    (write-bytes data out))
   (get-output-bytes out))
 
 (define (encode-captures-section items)

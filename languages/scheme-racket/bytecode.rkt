@@ -63,9 +63,13 @@
   #:transparent)
 
 ;; Expression encoding
+;; data is a `bytes` (immutable or mutable byte string). Until 2026-05 this
+;; field was a (listof byte), and every compile-* helper concatenated with
+;; `apply append`, making byte concatenation O(N^2) in the total output
+;; length. Switching to byte strings linearises the cost.
 (struct expr-encoding
   (type           ; 'atom or 'form
-   data)          ; (listof byte)
+   data)          ; bytes
   #:transparent)
 
 ;; ============================================================================
@@ -165,10 +169,13 @@
 (define (integer-byte-length n)
   (max 1 (quotient (+ (integer-length n) 7) 8)))
 
-;; Convert integer to byte list (big-endian)
-(define (integer->bytes n num-bytes)
-  (for/list ([i (in-range (- num-bytes 1) -1 -1)])
-    (bitwise-and (arithmetic-shift n (* -8 i)) #xFF)))
+;; Convert integer to byte string (big-endian)
+(define (integer->byte-string n num-bytes)
+  (let ([buf (make-bytes num-bytes 0)])
+    (for ([i (in-range num-bytes)])
+      (bytes-set! buf i
+                  (bitwise-and (arithmetic-shift n (* -8 (- num-bytes 1 i))) #xFF)))
+    buf))
 
 ;; ============================================================================
 ;; Encoding Functions
@@ -176,7 +183,7 @@
 
 (define (encode-boolean b)
   (let ([header (pack-atom-header (if b 1 0) VM-TYPE-BOOLEAN)])
-    (expr-encoding 'atom (list header))))
+    (expr-encoding 'atom (bytes header))))
 
 ;; Maximum integer byte count accepted by the VM
 ;; (see core/vm-bytecode.c:get_integer — rejects nbytes > 4).
@@ -193,8 +200,8 @@
            ;; Embedded field (bits 6-3): bit 3 = sign, bits 2-0 = size
            [info (bitwise-ior (arithmetic-shift sign-bit 3) bytes-needed)]
            [header (pack-atom-header info VM-TYPE-INTEGER)]
-           [value-bytes (integer->bytes value bytes-needed)])
-      (expr-encoding 'atom (cons header value-bytes)))))
+           [value-bytes (integer->byte-string value bytes-needed)])
+      (expr-encoding 'atom (bytes-append (bytes header) value-bytes)))))
 
 (define (encode-rational n)
   ;; Rational number - encode as header + numerator encoding + denominator encoding
@@ -205,14 +212,13 @@
          [den-enc (encode-integer den)]
          [num-bytes (expr-encoding-data num-enc)]
          [den-bytes (expr-encoding-data den-enc)])
-    (expr-encoding 'atom (append (list header) num-bytes den-bytes))))
+    (expr-encoding 'atom (bytes-append (bytes header) num-bytes den-bytes))))
 
 (define (encode-real r)
   (let ([header (pack-atom-header 0 VM-TYPE-REAL)])
     ;; Real is encoded as header + 4-byte IEEE 754 float
-    ;; Convert real to 32-bit IEEE 754 representation
-    (define bytes (real->floating-point-bytes r 4 #f))
-    (expr-encoding 'atom (cons header (bytes->list bytes)))))
+    (define float-bytes (real->floating-point-bytes r 4 #f))
+    (expr-encoding 'atom (bytes-append (bytes header) float-bytes))))
 
 (define (encode-character ch)
   (let ([header (pack-atom-header 0 VM-TYPE-CHARACTER)]
@@ -223,7 +229,7 @@
       (error 'encode-character
              "character codepoint out of range (~a = U+~a, VM max is U+00FF): ~a"
              code (number->string code 16) ch))
-    (expr-encoding 'atom (list header code))))
+    (expr-encoding 'atom (bytes header code))))
 
 ;; String-table index: 7 bits (simple) or 15 bits (extended, 7+8).
 (define VM-MAX-STRING-INDEX (- (expt 2 15) 1))
@@ -238,12 +244,12 @@
     ;; String encoding: header + table index (1 or 2 bytes for extended)
     (if (< idx 128)
         ;; Simple form: 1 byte with bit 7=0, bits 6-0 = ID
-        (expr-encoding 'atom (list header idx))
+        (expr-encoding 'atom (bytes header idx))
         ;; Extended form: 2 bytes with bit 7=1, bits 6-0 = high 7 bits, byte 2 = low 8 bits
         (let* ([high-bits (bitwise-and (arithmetic-shift idx -8) #x7F)]
                [low-byte (bitwise-and idx #xFF)]
                [byte1 (bitwise-ior #x80 high-bits)])  ; bit 7=1 for extended
-          (expr-encoding 'atom (list header byte1 low-byte))))))
+          (expr-encoding 'atom (bytes header byte1 low-byte))))))
 
 ;; Pre-built hash for O(1) primitive-id lookup. vm-primitives is a fixed
 ;; list compiled into the module, so we can memoize once at load time.
@@ -296,14 +302,14 @@
         (let ([sym-byte (bitwise-ior (arithmetic-shift scope 7)
                                       ;; NO 0x40 - bit 6=0 for simple form
                                       idx)])
-          (expr-encoding 'atom (list header sym-byte)))
+          (expr-encoding 'atom (bytes header sym-byte)))
         ;; Extended form: 2 bytes (bit 6=1, bits 5-0 = high 6 bits, byte 2 = low 8 bits)
         (let* ([high-bits (bitwise-and (arithmetic-shift idx -8) #x3F)]
                [low-bits (bitwise-and idx #xFF)]
                [byte1 (bitwise-ior (arithmetic-shift scope 7)
                                    #x40  ; bit 6=1 for extended form
                                    high-bits)])
-          (expr-encoding 'atom (list header byte1 low-bits))))))
+          (expr-encoding 'atom (bytes header byte1 low-bits))))))
 
 (define (encode-nil)
   ;; NIL/empty list - encoded as a boolean false for now
@@ -329,7 +335,7 @@
   (let ([header (bitwise-ior #x80                     ; bit 7 = 1 (FORM token)
                              (arithmetic-shift 0 5)   ; bits 6-5 = 0 (INLINE)
                              (bitwise-and arg-count #x3F))]) ; bits 5-0 = argc
-    (expr-encoding 'form (list header))))
+    (expr-encoding 'form (bytes header))))
 
 ;; Lambda/ref form expr-id: 4 bits (simple) or 12 bits (extended, 4+8).
 (define VM-MAX-EXPR-ID (- (expt 2 12) 1))
@@ -348,7 +354,7 @@
                                   (arithmetic-shift 1 5)        ; bits 6-5 = 01 (LAMBDA)
                                   #x10                          ; bit 4 = 1 (simple)
                                   (bitwise-and expr-id #x0F))]) ; bits 3-0 = ID
-        (expr-encoding 'form (list header)))
+        (expr-encoding 'form (bytes header)))
       ;; Extended form: 12-bit ID
       ;; VM reads: expr_id = (header_bits_3_0 << 8) | next_byte
       ;; So for expr_id with bits [11:0], we encode:
@@ -359,7 +365,7 @@
              [header (bitwise-ior #x80                        ; bit 7 = 1 (FORM)
                                   (arithmetic-shift 1 5)      ; bits 6-5 = 01 (LAMBDA)
                                   bits-11-8)])                ; bits 3-0 = expr_id bits 11-8
-        (expr-encoding 'form (list header bits-7-0)))))
+        (expr-encoding 'form (bytes header bits-7-0)))))
 
 (define (encode-form-ref expr-id)
   ;; Form reference: bit 7=1, form-type=2 (REF), expr-id reference
@@ -381,7 +387,7 @@
                                   (arithmetic-shift 2 5)        ; bits 6-5 = 10 (REF)
                                   #x10                          ; bit 4 = 1 (simple)
                                   (bitwise-and expr-id #x0F))]) ; bits 3-0 = ID
-        (expr-encoding 'form (list header)))
+        (expr-encoding 'form (bytes header)))
       ;; Extended form: 12-bit ID
       ;; VM reads: expr_id = (header_bits_3_0 << 8) | next_byte
       (let* ([bits-11-8 (bitwise-and (arithmetic-shift expr-id -8) #x0F)]
@@ -389,7 +395,7 @@
              [header (bitwise-ior #x80                          ; bit 7 = 1 (FORM)
                                   (arithmetic-shift 2 5)        ; bits 6-5 = 10 (REF)
                                   bits-11-8)])                  ; bits 3-0 = expr_id bits 11-8
-        (expr-encoding 'form (list header bits-7-0)))))
+        (expr-encoding 'form (bytes header bits-7-0)))))
 
 ;; ============================================================================
 ;; Bytecode File Writing
@@ -446,9 +452,8 @@
 (define (write-expr-entry encoding)
   ;; Write expression entry: 16-bit length + bytes
   (let ([data (expr-encoding-data encoding)])
-    (write-u16 (length data))
-    (for ([byte data])
-      (write-u8 byte))))
+    (write-u16 (bytes-length data))
+    (write-bytes data)))
 
 ;; Helper functions
 (define (write-u16 n)

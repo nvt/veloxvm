@@ -14,7 +14,8 @@
 
 (provide compile-file
          compile-string
-         compile-expr)
+         compile-expr
+         compile-batch)
 
 ;; Compile Scheme file to VeloxVM bytecode
 (define (compile-file source-file [dest-file #f])
@@ -54,14 +55,14 @@
          ;; Create main bytecode with pre-allocated expression 0
          [bc (make-bytecode)]
          ;; Pre-allocate expression 0 as empty placeholder (will be replaced)
-         [_ (add-expr bc (expr-encoding 'atom '()))])
+         [_ (add-expr bc (expr-encoding 'atom #""))])
 
     ;; CL-Style: Accumulate bytes from each top-level expression into expression 0
     ;; Don't wrap in begin - compile each expression and concatenate their bytes
     ;; Compile directly into bc (not temp-bc) so nested expressions get correct IDs!
     (parameterize ([current-shadowed-primitives shadowed])
     (let* ([accumulated-bytes
-            (apply append
+            (apply bytes-append
               (for/list ([expr pruned])
                 (let ([enc (compile-expr expr bc)])  ; Compile into bc, not temp-bc!
                   (expr-encoding-data enc))))])
@@ -73,11 +74,11 @@
       ;; DEBUG
       (when (debug-mode)
         (printf "DEBUG: Compiled ~a top-level expressions\n" (length pruned))
-        (printf "DEBUG: Accumulated ~a bytes total\n" (length accumulated-bytes))
+        (printf "DEBUG: Accumulated ~a bytes total\n" (bytes-length accumulated-bytes))
         (printf "DEBUG: bc has ~a expressions\n" (bytecode-expression-count bc))
         (for ([i (in-naturals)]
               [expr (bytecode-expressions bc)])
-          (printf "DEBUG: Expression ~a: ~a bytes\n" i (length (expr-encoding-data expr))))))
+          (printf "DEBUG: Expression ~a: ~a bytes\n" i (bytes-length (expr-encoding-data expr))))))
 
     ) ; close parameterize
 
@@ -105,8 +106,39 @@
           (hash-set! seen name #t)))))
   (hash-keys seen))
 
+;; Compile every entry in a manifest file inside one Racket process so the
+;; module-load cost is paid once. Each manifest line is either
+;;   SRC                        (dest is SRC with .vm extension)
+;;   SRC<TAB>DEST
+;; Blank lines and lines starting with '#' are ignored. Per-file failures
+;; are reported to stderr but don't abort the batch; returns the count of
+;; failed entries so callers can exit non-zero.
+(define (compile-batch path)
+  (define failures 0)
+  (with-input-from-file path
+    (lambda ()
+      (for ([line (in-lines)])
+        (define trimmed (string-trim line))
+        (unless (or (string=? trimmed "")
+                    (regexp-match? #rx"^#" trimmed))
+          (define fields (string-split trimmed "\t"))
+          (with-handlers
+            ([exn:fail?
+              (lambda (e)
+                (set! failures (+ failures 1))
+                (eprintf "BATCH-FAIL ~a: ~a~n"
+                         (car fields) (exn-message e)))])
+            (case (length fields)
+              [(1) (compile-file (car fields))]
+              [(2) (compile-file (car fields) (cadr fields))]
+              [else
+               (set! failures (+ failures 1))
+               (eprintf "BATCH-FAIL ~a: malformed manifest line~n" trimmed)]))))))
+  failures)
+
 ;; Command-line interface
 (module+ main
+  (define batch-file #f)
   (command-line
    #:program "veloxvm-compile"
    #:once-each
@@ -117,8 +149,23 @@
    [("--no-optimize") "Disable all optimizations" (enable-optimizations #f)]
    [("--opt-stats") "Print per-bucket optimization fire counts to stderr" (opt-stats? #t)]
    [("--trace-opts") "Trace each optimization rewrite to stderr" (opt-trace? #t)]
-   #:args (source-file)
-   (compile-file source-file)))
+   [("--batch") manifest
+                "Compile every SRC[<tab>DEST] line in MANIFEST in one process"
+                (set! batch-file manifest)]
+   #:args sources
+   (cond
+     [batch-file
+      (unless (null? sources)
+        (error 'veloxvm-compile
+               "--batch is mutually exclusive with positional source files"))
+      (let ([failed (compile-batch batch-file)])
+        (when (> failed 0) (exit 1)))]
+     [(= (length sources) 1)
+      (compile-file (car sources))]
+     [else
+      (error 'veloxvm-compile
+             "expected one source file (or --batch MANIFEST); got ~a"
+             (length sources))])))
 
 ;; Parameters for configuration
 (define current-output-file (make-parameter #f))
