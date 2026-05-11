@@ -55,14 +55,14 @@
          ;; Create main bytecode with pre-allocated expression 0
          [bc (make-bytecode)]
          ;; Pre-allocate expression 0 as empty placeholder (will be replaced)
-         [_ (add-expr bc (expr-encoding 'atom '()))])
+         [_ (add-expr bc (expr-encoding 'atom #""))])
 
     ;; CL-Style: Accumulate bytes from each top-level expression into expression 0
     ;; Don't wrap in begin - compile each expression and concatenate their bytes
     ;; Compile directly into bc (not temp-bc) so nested expressions get correct IDs!
     (parameterize ([current-shadowed-primitives shadowed])
     (let* ([accumulated-bytes
-            (apply append
+            (apply bytes-append
               (for/list ([expr pruned])
                 (let ([enc (compile-expr expr bc)])  ; Compile into bc, not temp-bc!
                   (expr-encoding-data enc))))])
@@ -74,11 +74,11 @@
       ;; DEBUG
       (when (debug-mode)
         (printf "DEBUG: Compiled ~a top-level expressions\n" (length pruned))
-        (printf "DEBUG: Accumulated ~a bytes total\n" (length accumulated-bytes))
+        (printf "DEBUG: Accumulated ~a bytes total\n" (bytes-length accumulated-bytes))
         (printf "DEBUG: bc has ~a expressions\n" (bytecode-expression-count bc))
         (for ([i (in-naturals)]
               [expr (bytecode-expressions bc)])
-          (printf "DEBUG: Expression ~a: ~a bytes\n" i (length (expr-encoding-data expr))))))
+          (printf "DEBUG: Expression ~a: ~a bytes\n" i (bytes-length (expr-encoding-data expr))))))
 
     ) ; close parameterize
 

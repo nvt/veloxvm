@@ -144,9 +144,9 @@
      ;; Atom: encode as inline form (quote datum)
      (let* ([quote-enc (encode-symbol 'quote bc env)]
             [datum-enc (compile-atom datum bc env)]
-            [all-bytes (append (expr-encoding-data (encode-form-inline 2))
-                               (expr-encoding-data quote-enc)
-                               (expr-encoding-data datum-enc))])
+            [all-bytes (bytes-append (expr-encoding-data (encode-form-inline 2))
+                                     (expr-encoding-data quote-enc)
+                                     (expr-encoding-data datum-enc))])
        (expr-encoding 'form all-bytes))]))
 
 ;; Flatten a lambda's formal-parameter spec into a proper list of symbols.
@@ -442,12 +442,12 @@
          [test-enc (compile-subexpr test bc env)]
          [cons-enc (compile-subexpr consequent bc env)]
          [alt-enc (and alternate (compile-subexpr alternate bc env))]
-         [head-bytes (append (expr-encoding-data (encode-form-inline argc))
-                             (expr-encoding-data if-enc)
-                             (expr-encoding-data test-enc)
-                             (expr-encoding-data cons-enc))]
+         [head-bytes (bytes-append (expr-encoding-data (encode-form-inline argc))
+                                   (expr-encoding-data if-enc)
+                                   (expr-encoding-data test-enc)
+                                   (expr-encoding-data cons-enc))]
          [all-bytes (if alternate
-                        (append head-bytes (expr-encoding-data alt-enc))
+                        (bytes-append head-bytes (expr-encoding-data alt-enc))
                         head-bytes)])
     (expr-encoding 'form all-bytes)))
 
@@ -465,10 +465,10 @@
                [define-enc (encode-symbol 'define bc env)]
                [name-enc (encode-symbol name bc env)]
                [lambda-enc (compile-lambda params body bc env)]
-               [all-bytes (append (expr-encoding-data (encode-form-inline 3))
-                                  (expr-encoding-data define-enc)
-                                  (expr-encoding-data name-enc)
-                                  (expr-encoding-data lambda-enc))])
+               [all-bytes (bytes-append (expr-encoding-data (encode-form-inline 3))
+                                        (expr-encoding-data define-enc)
+                                        (expr-encoding-data name-enc)
+                                        (expr-encoding-data lambda-enc))])
           (expr-encoding 'form all-bytes))
         ;; Variable definition: (define var expr)
         (let* ([var first-arg]
@@ -476,10 +476,10 @@
                [define-enc (encode-symbol 'define bc env)]
                [var-enc (encode-symbol var bc env)]
                [val-enc (compile-subexpr val bc env)]
-               [all-bytes (append (expr-encoding-data (encode-form-inline 3))
-                                  (expr-encoding-data define-enc)
-                                  (expr-encoding-data var-enc)
-                                  (expr-encoding-data val-enc))])
+               [all-bytes (bytes-append (expr-encoding-data (encode-form-inline 3))
+                                        (expr-encoding-data define-enc)
+                                        (expr-encoding-data var-enc)
+                                        (expr-encoding-data val-enc))])
           (expr-encoding 'form all-bytes)))))
 
 (define (compile-set var val bc [env '()])
@@ -489,10 +489,10 @@
   (let* ([set-enc (encode-symbol 'set! bc env)]
          [var-enc (encode-symbol var bc env)]
          [val-enc (compile-subexpr val bc env)]
-         [all-bytes (append (expr-encoding-data (encode-form-inline 3))
-                            (expr-encoding-data set-enc)
-                            (expr-encoding-data var-enc)
-                            (expr-encoding-data val-enc))])
+         [all-bytes (bytes-append (expr-encoding-data (encode-form-inline 3))
+                                  (expr-encoding-data set-enc)
+                                  (expr-encoding-data var-enc)
+                                  (expr-encoding-data val-enc))])
     (expr-encoding 'form all-bytes)))
 
 ;; Shared helper: compile (op-sym arg1 arg2 ...) into an inline form where
@@ -503,9 +503,10 @@
          [op-enc (encode-symbol op-sym bc env)]
          [arg-encs (map (lambda (e) (compile-subexpr e bc env)) args)])
     (expr-encoding 'form
-                   (append (expr-encoding-data (encode-form-inline argc))
-                           (expr-encoding-data op-enc)
-                           (apply append (map expr-encoding-data arg-encs))))))
+                   (apply bytes-append
+                          (expr-encoding-data (encode-form-inline argc))
+                          (expr-encoding-data op-enc)
+                          (map expr-encoding-data arg-encs)))))
 
 (define (compile-begin exprs bc [env '()])
   (compile-inline-form 'begin exprs bc env))
@@ -531,9 +532,10 @@
          [func-enc (compile-subexpr func bc env)]
          [arg-encs (map (lambda (arg) (compile-subexpr arg bc env)) args)])
     (expr-encoding 'form
-                   (append (expr-encoding-data (encode-form-inline total-count))
-                           (expr-encoding-data func-enc)
-                           (apply append (map expr-encoding-data arg-encs))))))
+                   (apply bytes-append
+                          (expr-encoding-data (encode-form-inline total-count))
+                          (expr-encoding-data func-enc)
+                          (map expr-encoding-data arg-encs)))))
 
 ;; ============================================================================
 ;; Program Compilation
