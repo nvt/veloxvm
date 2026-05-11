@@ -235,21 +235,40 @@ VM_FUNCTION(deconstruct_packet)
     field_length = fields->elements[i].value.integer;
 
     values->elements[i].type = VM_TYPE_INTEGER;
-
     values->elements[i].value.integer = 0;
-    while(field_length > 8) {
-      values->elements[i].value.integer |= packet->bytes[position / 8];
-      values->elements[i].value.integer <<= 8;
-      field_length -= 8;
-      position += 8;
+
+    if(field_length > 8) {
+      /* Multi-byte field; construct_packet writes these big-endian at a
+         byte-aligned position. */
+      while(field_length > 8) {
+        values->elements[i].value.integer |= packet->bytes[position / 8];
+        values->elements[i].value.integer <<= 8;
+        field_length -= 8;
+        position += 8;
+      }
+      if(field_length > 0) {
+        values->elements[i].value.integer |=
+          packet->bytes[position / 8] & ((1 << field_length) - 1);
+        position += field_length;
+      }
+    } else {
+      /* Sub-byte field; mirror the little-endian-within-byte layout used
+         by construct_packet, including straddles across a byte boundary. */
+      vm_integer_t bits_read = 0;
+      while(field_length > 0) {
+        uint8_t bit_offset = position & 0x7;
+        uint8_t bits_in_current_byte = VM_MIN(8 - bit_offset, field_length);
+        vm_integer_t chunk =
+          (packet->bytes[position / 8] >> bit_offset) &
+          ((1 << bits_in_current_byte) - 1);
+        values->elements[i].value.integer |= chunk << bits_read;
+        bits_read += bits_in_current_byte;
+        position += bits_in_current_byte;
+        field_length -= bits_in_current_byte;
+      }
     }
 
-    if(field_length > 0) {
-      values->elements[i].value.integer |= packet->bytes[position / 8] & ((1 << field_length) - 1);
-      position += field_length;
-    }
-
-    VM_PRINTF("Integer %d. field length %d\n",
-              (int)values->elements[i].value.integer, (int)field_length);
+    VM_DEBUG(VM_DEBUG_MEDIUM, "Field %d value %d\n",
+             i, (int)values->elements[i].value.integer);
   }
 }

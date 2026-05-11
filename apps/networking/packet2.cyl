@@ -4,7 +4,13 @@ dio_packet_fields = vector(8, 8, 16, 1, 1, 3, 3, 8, 8, 8, 128);
 /* Initialize the field values of the next DIO packet to send. */
 rpl_instance_id = 0; version = 0; rank = 256; global = 1;
 mop = 0; prf = 0; dtsn = 0; flags = 0;
-dodag_id = vector(0xaa, 0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1);
+
+/* Built via make_vector + indexed assignment because the VM caps form
+   arity (VM_OBJECT_STACK_SIZE) below the 16 bytes a DODAG-ID needs. */
+dodag_id = make_vector(16, 0);
+dodag_id[0] = 0xaa;
+dodag_id[1] = 0xaa;
+dodag_id[15] = 1;
 
 dio_packet_values = vector(rpl_instance_id, version, rank, global, 0,
                     mop, prf, dtsn, flags, 0, dodag_id);
@@ -15,8 +21,13 @@ buffer = construct_packet(dio_packet_fields, dio_packet_values);
 
 parsed_packet_values = deconstruct_packet(dio_packet_fields, buffer);
 
-println("Generated a packet from the values ", dio_packet_values);
-println("Parsed the generated packet into the values ", parsed_packet_values);
+/* Multi-arg println currently expands into a single (display ...) call
+   in the Racket compiler, which display rejects. Use one arg per call. */
+display("Generated a packet from the values "); display(dio_packet_values);
+newline();
+display("Parsed the generated packet into the values ");
+display(parsed_packet_values);
+newline();
 
 /* Write the packet to a file. */
 file = open_output_file("packet-log.txt");
