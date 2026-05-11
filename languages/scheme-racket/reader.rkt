@@ -5,8 +5,24 @@
 ;;
 ;; Supports R7RS 'include' for compile-time file inclusion
 
+(require racket/runtime-path)
+
 (provide read-all-exprs
-         read-expr)
+         read-expr
+         include-search-paths)
+
+;; Compiler-side search path used as a fallback when an (include "X")
+;; isn't found relative to the including source file. Resolved at
+;; compile time via define-runtime-path so it points at the runtime/
+;; directory shipped with this compiler regardless of where the user
+;; invokes it from.
+(define-runtime-path compiler-runtime-dir "runtime")
+
+;; Mutable parameter so callers can extend the search path if needed
+;; (e.g. a custom prelude directory). Order is significant -- earlier
+;; entries are tried first.
+(define include-search-paths
+  (make-parameter (list compiler-runtime-dir)))
 
 ;; Read all expressions from a string or port
 ;; source-file: optional path to source file (for resolving relative includes)
@@ -116,16 +132,31 @@
                                                     new-included)])
       included-exprs)))
 
-;; Resolve include path. Absolute paths are used verbatim; relative
-;; paths resolve against the including file's directory, falling back
-;; to the current directory if the including source has no known path.
+;; Resolve include path. Absolute paths are used verbatim. Relative paths
+;; resolve against the including file's directory first; if that file
+;; doesn't exist, fall through to the configured search paths.
 (define (resolve-include-path include-path source-file)
   (cond
     [(absolute-path? include-path) include-path]
-    [source-file
-     (let* ([source-dir (or (path-only source-file) (current-directory))])
-       (build-path source-dir include-path))]
-    [else include-path]))
+    [else
+     (let* ([source-dir (if source-file
+                            (or (path-only source-file) (current-directory))
+                            (current-directory))]
+            [source-relative (build-path source-dir include-path)])
+       (cond
+         [(file-exists? source-relative) source-relative]
+         [else (search-include-path include-path source-relative)]))]))
+
+;; Try each entry in (include-search-paths); fall back to the source-
+;; relative path so callers get a "file not found" error that references
+;; the user's actual include argument and most-likely-expected location.
+(define (search-include-path include-path fallback)
+  (let loop ([paths (include-search-paths)])
+    (cond
+      [(null? paths) fallback]
+      [(file-exists? (build-path (car paths) include-path))
+       (build-path (car paths) include-path)]
+      [else (loop (cdr paths))])))
 
 ;; Read single expression from string or port
 ;; Returns: s-expr or eof-object

@@ -138,6 +138,25 @@
                   (length rest)))
               "Include inside a define with dotted-rest formals")
 
+;; Search-path resolution: if a relative include isn't found beside the
+;; source file, the reader falls back to (include-search-paths).
+(define search-dir (make-temporary-file "veloxvm-search-~a" 'directory))
+(define lib-dir   (build-path search-dir "lib"))
+(make-directory lib-dir)
+
+(with-output-to-file (build-path lib-dir "shared.scm") #:exists 'replace
+  (lambda () (display "(define shared-x 99)")))
+
+;; Source file in test-dir; include path "shared.scm" only resolves via
+;; the search path entry in lib-dir.
+(write-file "use-shared.scm" "(include \"shared.scm\") shared-x")
+
+(parameterize ([include-search-paths (list lib-dir)])
+  (check-equal? (read-file "use-shared.scm")
+                '((define shared-x 99) shared-x)
+                "Include resolves through include-search-paths"))
+
+(delete-directory/files search-dir)
 (delete-directory/files test-dir)
 
 (displayln "All reader tests passed!")
