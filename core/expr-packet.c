@@ -183,8 +183,10 @@ VM_FUNCTION(deconstruct_packet)
   vm_vector_t *fields;
   vm_vector_t *values;
   vm_vector_t *packet;
+  vm_vector_t *byte_vec;
   vm_integer_t packet_length;
   int i;
+  int j;
   size_t position;
   vm_integer_t field_length;
 
@@ -251,6 +253,22 @@ VM_FUNCTION(deconstruct_packet)
         vm_set_error_string(thread,
           "field bits must be a multiple of 8 when exceeding 8");
         return;
+      }
+      if(field_length > (vm_integer_t)(8 * sizeof(vm_integer_t))) {
+        /* Wider than vm_integer_t; emit as a regular vector of byte
+           integers, mirroring the shape construct_packet accepts. */
+        byte_vec = vm_vector_create(&values->elements[i], field_length / 8,
+                                    VM_VECTOR_FLAG_REGULAR);
+        if(byte_vec == NULL) {
+          vm_signal_error(thread, VM_ERROR_HEAP);
+          return;
+        }
+        for(j = 0; j < byte_vec->length; j++) {
+          byte_vec->elements[j].type = VM_TYPE_INTEGER;
+          byte_vec->elements[j].value.integer = packet->bytes[position / 8];
+          position += 8;
+        }
+        continue;
       }
       while(field_length > 8) {
         values->elements[i].value.integer |= packet->bytes[position / 8];
