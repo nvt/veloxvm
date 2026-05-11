@@ -23,19 +23,41 @@
               '(= (remainder x 2) 0)
               "Rewrite even?")
 
-;; Test abs
-(check-equal? (rewrite-expr '(abs x))
-              '(if (< x 0) (- x) x)
-              "Rewrite abs")
+;; Test abs. The rewriter binds the argument to a temp so the
+;; expression isn't duplicated; after the let rewriter runs, the
+;; result is a single-arg lambda application.
+(let ([result (rewrite-expr '(abs x))])
+  (check-pred (lambda (r)
+                (match r
+                  [`((lambda (,t1) (if (< ,t2 0) (- ,t3) ,t4)) x)
+                   (and (eq? t1 t2) (eq? t1 t3) (eq? t1 t4))]
+                  [_ #f]))
+              result
+              "abs binds the argument once and uses the temp three times"))
 
-;; Test max/min
-(check-equal? (rewrite-expr '(max a b))
-              '(if (> a b) a b)
-              "Rewrite max")
+;; Test max/min. Both arguments bound first, then the if dispatches
+;; over the temps.
+(let ([result (rewrite-expr '(max a b))])
+  (check-pred (lambda (r)
+                (match r
+                  [`((lambda (,ta ,tb) (if (> ,ta1 ,tb1) ,ta2 ,tb2)) a b)
+                   (and (eq? ta ta1) (eq? ta ta2)
+                        (eq? tb tb1) (eq? tb tb2)
+                        (not (eq? ta tb)))]
+                  [_ #f]))
+              result
+              "max binds both args once each"))
 
-(check-equal? (rewrite-expr '(min a b))
-              '(if (< a b) a b)
-              "Rewrite min")
+(let ([result (rewrite-expr '(min a b))])
+  (check-pred (lambda (r)
+                (match r
+                  [`((lambda (,ta ,tb) (if (< ,ta1 ,tb1) ,ta2 ,tb2)) a b)
+                   (and (eq? ta ta1) (eq? ta ta2)
+                        (eq? tb tb1) (eq? tb tb2)
+                        (not (eq? ta tb)))]
+                  [_ #f]))
+              result
+              "min binds both args once each"))
 
 ;; Test I/O
 (check-equal? (rewrite-expr '(newline))
@@ -84,10 +106,18 @@
               '(< (string-compare a b) 0)
               "Rewrite string<?")
 
-;; Test nested rewriting
-(check-equal? (rewrite-expr '(+ (abs x) (max a b)))
-              '(+ (if (< x 0) (- x) x) (if (> a b) a b))
-              "Rewrite nested expressions")
+;; Test nested rewriting. abs and max each expand to a lambda
+;; application around the arg-binding temp; check the shape rather
+;; than exact symbol identity.
+(let ([result (rewrite-expr '(+ (abs x) (max a b)))])
+  (check-pred (lambda (r)
+                (match r
+                  [`(+ ((lambda (,_) (if (< ,_ 0) (- ,_) ,_)) x)
+                       ((lambda (,_ ,_) (if (> ,_ ,_) ,_ ,_)) a b))
+                   #t]
+                  [_ #f]))
+              result
+              "nested abs/max each expand to a lambda app, leaving the outer + intact"))
 
 ;; Test no rewriting for unknown forms
 (check-equal? (rewrite-expr '(unknown-form a b))

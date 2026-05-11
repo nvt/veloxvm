@@ -303,9 +303,18 @@
       [`(* (* ,a ,b) ,c) #:when (and (number? b) (number? c))
        (optimize-aggressive `(* ,a ,(* b c)))]
 
-      ;; Strength reduction
-      [`(* ,expr 2) `(+ ,expr ,expr)]
-      [`(* 2 ,expr) `(+ ,expr ,expr)]
+      ;; Strength reduction. Bind the argument to a temp so the
+      ;; expression isn't evaluated twice -- the previous (+ ,expr
+      ;; ,expr) substitution silently re-ran side effects and double-
+      ;; computed even pure expressions. The optimizer runs after the
+      ;; rewriter, so we emit a lambda application directly rather
+      ;; than a let form (which would never be rewritten).
+      [`(* ,e 2)
+       (let ([t (gensym '$mul2)])
+         `((lambda (,t) (+ ,t ,t)) ,e))]
+      [`(* 2 ,e)
+       (let ([t (gensym '$mul2)])
+         `((lambda (,t) (+ ,t ,t)) ,e))]
 
       ;; Boolean short-circuits
       [`(and #f ,_) #f]

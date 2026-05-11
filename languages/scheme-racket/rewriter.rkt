@@ -94,21 +94,33 @@
 (define-rewriter (even? expr)
   `(= (remainder ,(cadr expr) 2) 0))
 
-;; Absolute value
+;; Absolute value. Bind the argument to a temp first -- otherwise the
+;; argument expression is duplicated three times in the template,
+;; which silently re-runs side effects and wastes work even for pure
+;; values.
 (define-rewriter (abs expr)
-  (let ([x (cadr expr)])
-    `(if (< ,x 0) (- ,x) ,x)))
+  (let ([x (cadr expr)]
+        [t (gensym '$abs)])
+    `(let ((,t ,x))
+       (if (< ,t 0) (- ,t) ,t))))
 
-;; Max/min (binary for now)
+;; Max/min (binary for now). Same fix as abs: each argument is used
+;; twice in the if-template, so we bind first.
 (define-rewriter (max expr)
   (let ([a (cadr expr)]
-        [b (caddr expr)])
-    `(if (> ,a ,b) ,a ,b)))
+        [b (caddr expr)]
+        [ta (gensym '$max-a)]
+        [tb (gensym '$max-b)])
+    `(let ((,ta ,a) (,tb ,b))
+       (if (> ,ta ,tb) ,ta ,tb))))
 
 (define-rewriter (min expr)
   (let ([a (cadr expr)]
-        [b (caddr expr)])
-    `(if (< ,a ,b) ,a ,b)))
+        [b (caddr expr)]
+        [ta (gensym '$min-a)]
+        [tb (gensym '$min-b)])
+    `(let ((,ta ,a) (,tb ,b))
+       (if (< ,ta ,tb) ,ta ,tb))))
 
 ;; I/O
 (define-rewriter (newline expr)

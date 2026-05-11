@@ -180,3 +180,31 @@
   (check-equal? (optimize-expr '((lambda (x) (null? x)) '()))
                 '(null? '())
                 "Quoted empty list literal inlined"))
+
+;; ============================================================================
+;; Aggressive (level 2) strength reduction binds the argument to a temp
+;; ============================================================================
+
+(parameterize ([optimization-level 2])
+  ;; (* expr 2) and (* 2 expr) should now produce a let-binding so the
+  ;; argument is evaluated only once. After the let rewriter and
+  ;; optimize-basic's beta-reduction (item #2) run on a literal arg,
+  ;; the form folds further.
+  (let ([result (optimize-expr '(* x 2))])
+    (check-pred (lambda (r)
+                  (match r
+                    [`((lambda (,t1) (+ ,t2 ,t3)) x)
+                     (and (eq? t1 t2) (eq? t1 t3))]
+                    [_ #f]))
+                result
+                "(* x 2) binds x once and uses the temp twice"))
+
+  (let ([result (optimize-expr '(* 2 x))])
+    (check-pred (lambda (r)
+                  (match r
+                    [`((lambda (,t1) (+ ,t2 ,t3)) x)
+                     (and (eq? t1 t2) (eq? t1 t3))]
+                    [_ #f]))
+                result
+                "(* 2 x) (other order) also binds x once")))
+
