@@ -101,4 +101,82 @@
 
   (parameterize ([optimization-level 0])
     (check-equal? (optimize-expr '(+ 2 3)) '(+ 2 3)
-                  "No folding at level 0")))
+                  "No folding at level 0"))
+
+  ;; ============================================================================
+  ;; Beta-reduce single-use let bindings
+  ;; (let rewriter has already turned (let ((x v)) body) into
+  ;;  ((lambda (x) body) v) by the time the optimizer sees it.)
+  ;; ============================================================================
+
+  (check-equal? (optimize-expr '((lambda (x) (+ x 1)) 5)) 6
+                "Numeric literal inlined, then (+ 5 1) folds")
+
+  (check-equal? (optimize-expr '((lambda (x) (+ x x)) 5)) 10
+                "Literal inlined at multiple use sites")
+
+  (check-equal? (optimize-expr '((lambda (x) (g x x)) 7))
+                '(g 7 7)
+                "Literal inlined twice into a non-foldable call")
+
+  (check-equal? (optimize-expr '((lambda (flag) (if flag 'yes 'no)) #t))
+                ''yes
+                "Boolean inline + if folding")
+
+  (check-equal? (optimize-expr '((lambda (x y) (+ x y)) 5 10)) 15
+                "Multi-binding lambda: both literals inlined, then folded")
+
+  (check-equal? (optimize-expr '((lambda (x y) (+ x y)) 5 (g)))
+                '((lambda (y) (+ 5 y)) (g))
+                "Partial inline: literal x inlined, non-literal y kept")
+
+  (check-equal? (optimize-expr '((lambda (x) (begin (set! x 6) x)) 5))
+                '((lambda (x) (begin (set! x 6) x)) 5)
+                "set! on parameter blocks inlining")
+
+  (check-equal? (optimize-expr '((lambda (x) (g x)) (h)))
+                '((lambda (x) (g x)) (h))
+                "Non-literal value: not inlined (would change order)")
+
+  (check-equal? (optimize-expr '((lambda (x) ((lambda (y) (+ x y)) 4)) 3)) 7
+                "Nested lambda apps: cascade through both inlines and folds")
+
+  (check-equal? (optimize-expr '((lambda (x) (lambda (x) x)) 5))
+                '(lambda (x) x)
+                "Inner lambda shadows: outer x inlined, inner x stays")
+
+  ;; ============================================================================
+  ;; Variadic and arity-mismatched lambdas are left alone
+  ;; ============================================================================
+
+  (check-equal? (optimize-expr '((lambda args (length args)) 1 2 3))
+                '((lambda args (length args)) 1 2 3)
+                "Bare-symbol formals not beta-reduced")
+
+  (check-equal? (optimize-expr '((lambda (x . rest) x) 1 2 3))
+                '((lambda (x . rest) x) 1 2 3)
+                "Dotted formals not beta-reduced")
+
+  ;; ============================================================================
+  ;; Quote opacity in substitution
+  ;; ============================================================================
+
+  (check-equal? (optimize-expr '((lambda (x) '(x x x)) 5))
+                ''(x x x)
+                "Don't substitute into quoted data")
+
+  (check-equal? (optimize-expr '((lambda (x) (quote x)) 5))
+                ''x
+                "Quoted symbol stays even if name matches")
+
+  ;; ============================================================================
+  ;; Quoted-atom literals inline
+  ;; ============================================================================
+
+  (check-equal? (optimize-expr '((lambda (x) (eq? x 'a)) 'a))
+                '(eq? 'a 'a)
+                "Quoted symbol literal inlined")
+
+  (check-equal? (optimize-expr '((lambda (x) (null? x)) '()))
+                '(null? '())
+                "Quoted empty list literal inlined"))

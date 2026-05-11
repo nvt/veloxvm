@@ -72,14 +72,17 @@
       (cons (optimize-basic (car expr))
             (map optimize-basic (cdr expr))))]))
 
-;; Apply local rules until they stop firing at this node. eq? is the
-;; right termination check: rules that fire either build a fresh value
-;; (e.g. (+ 1 2) -> 3) or return a sub-element (e.g. (+ e 0) -> e), and
-;; in both cases the result is not eq? to the input pair. When no rule
-;; matches, apply-basic-rules returns the input unchanged and eq?
-;; succeeds.
+;; Apply local rules until they stop firing at this node. Beta-reduction
+;; is tried first; if it doesn't fire, the constant-folding match rules
+;; run. eq? is the right termination check: rules that fire either build
+;; a fresh value (e.g. (+ 1 2) -> 3) or return a sub-element (e.g.
+;; (+ e 0) -> e), and in both cases the result is not eq? to the input.
+;; When neither pass changes the expression, eq? succeeds.
 (define (apply-basic-rules-fixpoint expr)
-  (let ([next (apply-basic-rules expr)])
+  (let* ([beta (try-beta-reduce expr)]
+         [next (if (eq? beta expr)
+                   (apply-basic-rules expr)
+                   beta)])
     (if (eq? next expr)
         expr
         (apply-basic-rules-fixpoint next))))
@@ -127,6 +130,164 @@
 
     ;; No rule matched.
     [else expr]))
+
+;; ============================================================================
+;; Beta-reduction of let bindings
+;; ============================================================================
+
+;; The let rewriter turns (let ((x v)) body) into ((lambda (x) body) v),
+;; which allocates a bind_function frame at runtime. When v is a literal
+;; with no allocation cost, we can drop that binding entirely by inlining
+;; v at every reference of x. The lambda disappears once all its
+;; parameters are inlined, eliminating the frame allocation.
+;;
+;; Conservative literal predicate: a value is safe to duplicate at
+;; arbitrary use sites if it is self-evaluating and has no eq? identity.
+;; Numbers, booleans, characters, and atomic quoted data qualify.
+;; Strings and quoted lists/vectors are excluded -- strings have eq?
+;; identity, and quoted lists currently allocate fresh storage at each
+;; evaluation (item #3 will fix the latter; until then, duplicating a
+;; quoted list use can be a runtime regression).
+(define (beta-literal? v)
+  (or (number? v)
+      (boolean? v)
+      (char? v)
+      (and (pair? v)
+           (eq? (car v) 'quote)
+           (= (length v) 2)
+           (let ([d (cadr v)])
+             (or (symbol? d) (null? d)
+                 (number? d) (boolean? d) (char? d))))))
+
+;; Try to beta-reduce ((lambda (params...) body...) args...). Inlines
+;; each parameter whose value is a literal (see beta-literal?) and
+;; whose binding is never the target of a set!. Returns the input expr
+;; unchanged if no parameters could be inlined, otherwise returns the
+;; inlined body run through optimize-basic so newly-exposed folds fire.
+;; Variadic lambdas (dotted or bare-symbol formals) are skipped.
+(define (try-beta-reduce expr)
+  (cond
+    [(and (pair? expr)
+          (pair? (car expr))
+          (eq? (caar expr) 'lambda)
+          (>= (length (car expr)) 3)
+          (proper-list-of-symbols? (cadar expr))
+          (= (length (cadar expr)) (length (cdr expr))))
+     (let* ([params (cadar expr)]
+            [body-list (cddar expr)]
+            [body (if (= (length body-list) 1)
+                      (car body-list)
+                      `(begin ,@body-list))]
+            [args (cdr expr)]
+            [reduced (beta-fold params args body expr)])
+       (if (eq? reduced expr)
+           expr
+           ;; Re-walk so substituted literals can feed folding rules in
+           ;; the surrounding positions.
+           (optimize-basic reduced)))]
+    [else expr]))
+
+;; Walk (param, arg) pairs in order, inlining each pair where arg is a
+;; beta-literal and param has no set! in body. Returns:
+;;   - `original` (the input expr) if nothing changed,
+;;   - the substituted body if all parameters were inlined,
+;;   - a smaller (lambda+args) for the partial-inline case.
+(define (beta-fold params args body original)
+  (let loop ([params params] [args args]
+             [keep-params '()] [keep-args '()]
+             [body body] [changed? #f])
+    (cond
+      [(null? params)
+       (cond
+         [(not changed?) original]
+         [(null? keep-params) body]
+         [else `((lambda ,(reverse keep-params) ,body)
+                 ,@(reverse keep-args))])]
+      [else
+       (let ([p (car params)] [a (car args)])
+         (if (and (beta-literal? a)
+                  (= (count-set!s body p) 0))
+             (loop (cdr params) (cdr args)
+                   keep-params keep-args
+                   (substitute body p a) #t)
+             (loop (cdr params) (cdr args)
+                   (cons p keep-params) (cons a keep-args)
+                   body changed?)))])))
+
+(define (proper-list-of-symbols? xs)
+  (cond
+    [(null? xs) #t]
+    [(pair? xs) (and (symbol? (car xs))
+                     (proper-list-of-symbols? (cdr xs)))]
+    [else #f]))
+
+;; Flatten a formal-parameter spec (proper, dotted, or bare-symbol) into
+;; a plain list for shadow checks. Mirrors compiler.rkt's helper.
+(define (formals->flat-list formals)
+  (cond
+    [(null? formals) '()]
+    [(symbol? formals) (list formals)]
+    [(pair? formals) (cons (car formals) (formals->flat-list (cdr formals)))]
+    [else '()]))
+
+;; Substitute free occurrences of `name` with `value` in `expr`,
+;; respecting binder forms (lambda formals, define-shorthand formals,
+;; (define name ...) targets) and quote opacity. set! targets are
+;; binding positions, not references, so they are not substituted; the
+;; assignment value is.
+(define (substitute expr name value)
+  (cond
+    [(eq? expr name) value]
+    [(symbol? expr) expr]
+    [(not (pair? expr)) expr]
+    [(eq? (car expr) 'quote) expr]
+    [(and (eq? (car expr) 'lambda) (>= (length expr) 3))
+     (if (member name (formals->flat-list (cadr expr)))
+         expr
+         `(lambda ,(cadr expr)
+            ,@(map (lambda (e) (substitute e name value)) (cddr expr))))]
+    [(and (eq? (car expr) 'define) (>= (length expr) 3))
+     (let ([target (cadr expr)])
+       (cond
+         [(eq? target name) expr]
+         [(and (pair? target)
+               (or (eq? (car target) name)
+                   (member name (formals->flat-list (cdr target)))))
+          expr]
+         [else
+          `(define ,target
+             ,@(map (lambda (e) (substitute e name value)) (cddr expr)))]))]
+    [(eq? (car expr) 'set!)
+     `(set! ,(cadr expr) ,(substitute (caddr expr) name value))]
+    [else
+     (cons (substitute (car expr) name value)
+           (map (lambda (e) (substitute e name value)) (cdr expr)))]))
+
+;; Count set! statements targeting `name` in `expr`, respecting the
+;; same scope rules as substitute.
+(define (count-set!s expr name)
+  (cond
+    [(symbol? expr) 0]
+    [(not (pair? expr)) 0]
+    [(eq? (car expr) 'quote) 0]
+    [(and (eq? (car expr) 'lambda) (>= (length expr) 3))
+     (if (member name (formals->flat-list (cadr expr)))
+         0
+         (apply + (map (lambda (e) (count-set!s e name)) (cddr expr))))]
+    [(and (eq? (car expr) 'define) (>= (length expr) 3))
+     (let ([target (cadr expr)])
+       (cond
+         [(eq? target name) 0]
+         [(and (pair? target)
+               (or (eq? (car target) name)
+                   (member name (formals->flat-list (cdr target)))))
+          0]
+         [else (apply + (map (lambda (e) (count-set!s e name)) (cddr expr)))]))]
+    [(eq? (car expr) 'set!)
+     (+ (if (eq? (cadr expr) name) 1 0)
+        (count-set!s (caddr expr) name))]
+    [else
+     (apply + (map (lambda (e) (count-set!s e name)) expr))]))
 
 ;; ============================================================================
 ;; Aggressive Optimizations (Level 2)
