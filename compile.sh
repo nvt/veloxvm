@@ -110,19 +110,34 @@ compile_scheme () {
     printf "Compiling %d Scheme %s using Racket compiler... " $TO_COMPILE $STR
   fi
 
-  # Second pass: compile files that need it
-  for source_file in "${FILES_TO_COMPILE[@]}"; do
-    SOURCE_DIR=$(dirname "$source_file")
-    BIN_DIR="${SOURCE_DIR}/bin"
-    BASENAME=$(basename "${source_file%.*}")
-    OUTPUT_FILE="${BIN_DIR}/${BASENAME}.vm"
-    mkdir -p "$BIN_DIR"
+  # Second pass: build a manifest and compile every file in one Racket
+  # process. Single-file invocation pays the Racket module-load cost on
+  # every call, which dominates wall-clock for multi-file builds; --batch
+  # amortises that cost across the whole list.
+  if [ $TO_COMPILE -gt 0 ]; then
+    MANIFEST=$(mktemp -t veloxvm-batch.XXXXXX)
+    trap 'rm -f "$MANIFEST"' EXIT
+    for source_file in "${FILES_TO_COMPILE[@]}"; do
+      SOURCE_DIR=$(dirname "$source_file")
+      BIN_DIR="${SOURCE_DIR}/bin"
+      BASENAME=$(basename "${source_file%.*}")
+      OUTPUT_FILE="${BIN_DIR}/${BASENAME}.vm"
+      mkdir -p "$BIN_DIR"
+      printf "%s\t%s\n" "$source_file" "$OUTPUT_FILE" >> "$MANIFEST"
+    done
 
-    racket "$RACKET_COMPILER" $RACKET_FLAGS -o "$OUTPUT_FILE" "$source_file" 2>&1 | grep -v "^Compiling\|^Compilation successful"
-    if [ ${PIPESTATUS[0]} -ne 0 ]; then
-      ERRORS=$((ERRORS + 1))
+    BATCH_OUTPUT=$(racket "$RACKET_COMPILER" $RACKET_FLAGS --batch "$MANIFEST" 2>&1)
+    BATCH_STATUS=$?
+    # Surface compile failures (one BATCH-FAIL line per failing source);
+    # success lines are suppressed to keep build output tidy.
+    echo "$BATCH_OUTPUT" | grep -v "^Compiling\|^Compilation successful\|^Compiled " || true
+    ERRORS=$(echo "$BATCH_OUTPUT" | grep -c "^BATCH-FAIL " || true)
+    if [ "$BATCH_STATUS" -ne 0 ] && [ "$ERRORS" -eq 0 ]; then
+      ERRORS=1  # batch exited non-zero with no per-file diagnostic
     fi
-  done
+    rm -f "$MANIFEST"
+    trap - EXIT
+  fi
 
   # Print results
   if [ $TO_COMPILE -gt 0 ]; then

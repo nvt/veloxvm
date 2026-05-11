@@ -51,15 +51,33 @@ if [ -z "$TEST_FILES" ]; then
     exit 1
 fi
 
-# Run each test suite
+# Pre-compile every test in a single Racket invocation. compile-racket.sh
+# launches one Racket process per source, and each pays the full module
+# load cost, which dominates the suite's wall-clock before any compile
+# work happens. --batch loads main.rkt once and iterates compile-file
+# over the manifest.
+MANIFEST=$(mktemp -t veloxvm-tests-batch.XXXXXX)
+trap 'rm -f "$MANIFEST"' EXIT
+for test_file in $TEST_FILES; do
+    test_name=$(basename "$test_file" .scm)
+    printf "%s\t%s/%s.vm\n" "$test_file" "$BUILD_DIR" "$test_name" >> "$MANIFEST"
+done
+printf "Compiling %d test suites... " "$(wc -l < "$MANIFEST" | tr -d ' ')"
+if racket languages/scheme-racket/main.rkt --batch "$MANIFEST" > /dev/null 2>"$BUILD_DIR/batch-errors.log"; then
+    printf "${GREEN}OK${NC}\n\n"
+else
+    printf "${YELLOW}some failed (see %s/batch-errors.log)${NC}\n\n" "$BUILD_DIR"
+fi
+
+# Run each test suite. Compile failures show up as a missing .vm output;
+# everything else proceeds through the runtime.
 for test_file in $TEST_FILES; do
     test_name=$(basename "$test_file" .scm)
     vm_file="$BUILD_DIR/${test_name}.vm"
 
     printf "Running ${BLUE}%s${NC}... " "$test_name"
 
-    # Compile to build directory
-    if ! ./compile-racket.sh "$test_file" "$vm_file" > /dev/null 2>&1; then
+    if [ ! -f "$vm_file" ]; then
         printf "${RED}COMPILE FAILED${NC}\n"
         SUITES_FAILED=$((SUITES_FAILED + 1))
         continue
