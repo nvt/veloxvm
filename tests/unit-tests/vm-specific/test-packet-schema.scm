@@ -1,9 +1,10 @@
 ;; VeloxVM Unit Tests - Packet schema (fixed-width fields)
 ;; Tests for: schema-validate, schema-construct, schema-deconstruct
-;; over the apps/networking/packet-schema.scm library.
+;; from languages/scheme-racket/runtime/packet-schema.scm
+;; (resolved via the reader's include search path).
 
 (include "../unit-test-framework.scm")
-(include "../../../apps/networking/packet-schema.scm")
+(include "packet-schema.scm")
 
 ;; Helpers to build bindings at runtime (the Racket compiler doesn't
 ;; round-trip dotted-pair literals through quoted forms).

@@ -5,7 +5,7 @@ Two layered APIs for assembling and parsing binary packets:
 1. **The C primitives** — `construct-packet` and `deconstruct-packet`, an
    anonymous bit packer that takes a vector of bit-widths plus a parallel
    vector of values. Small and fast; no field names, no type information.
-2. **The schema layer** — `apps/networking/packet-schema.scm`, a Scheme
+2. **The schema layer** — `languages/scheme-racket/runtime/packet-schema.scm`, a Scheme
    library that wraps the primitives with named, typed fields plus
    variable-length support.
 
@@ -124,7 +124,18 @@ A schema is a list of field specs. Each spec is `(NAME TYPE [ARG])`:
 
 ### Public API
 
-`apps/networking/packet-schema.scm` exports:
+The schema layer ships as part of the Racket compiler's runtime
+library. Use it from any program with:
+
+```scheme
+(include "packet-schema.scm")
+```
+
+The reader resolves the name against `languages/scheme-racket/runtime/`
+via its built-in include search path, regardless of where the program
+itself lives.
+
+It exports:
 
 - `(schema-validate SCHEMA)` — returns `#t`, or raises `packet-schema-error`.
 - `(schema-construct SCHEMA BINDINGS)` — validates schema and bindings,
