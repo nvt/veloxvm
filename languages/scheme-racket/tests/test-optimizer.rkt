@@ -361,7 +361,68 @@
   ;; Cascade: arithmetic folds first, then dead-code drops pure intermediates.
   (check-equal? (optimize-expr '(begin (+ 1 2) (* 3 4) (foo)))
                 '(foo)
-                "compose folding and dead-code elimination"))
+                "compose folding and dead-code elimination")
+
+  ;; ============================================================================
+  ;; (apply F '(...)) flattening (item #11)
+  ;; ============================================================================
+
+  ;; Basic flatten + arithmetic cascade.
+  (check-equal? (optimize-expr '(apply + '(1 2 3))) 6
+                "(apply + '(1 2 3)) flattens to (+ 1 2 3), then folds")
+
+  ;; Prefix args before the final list.
+  (check-equal? (optimize-expr '(apply + 10 '(1 2 3))) 16
+                "prefix args preserved: (apply + 10 '(1 2 3)) -> (+ 10 1 2 3) -> 16")
+
+  ;; Empty list: just (f) (or with prefix, (f prefix...)).
+  (check-equal? (optimize-expr '(apply f '())) '(f)
+                "empty list: zero-arg call")
+  (check-equal? (optimize-expr '(apply f 'a 'b '())) '(f 'a 'b)
+                "empty list with prefix args: prefix preserved")
+
+  ;; Self-evaluating elements (numbers, strings, chars, booleans):
+  ;; spliced as-is, no quote needed.
+  (check-equal? (optimize-expr '(apply f '(1 "hi" #\c #t)))
+                '(f 1 "hi" #\c #t)
+                "self-evaluating elements spliced bare")
+
+  ;; Symbol elements: re-quoted so they stay literal values, not
+  ;; variable references.
+  (check-equal? (optimize-expr '(apply f '(a b c)))
+                '(f 'a 'b 'c)
+                "symbol elements get re-quoted")
+
+  ;; Nested list element: kept quoted.
+  (check-equal? (optimize-expr '(apply f '(a (b c) d)))
+                '(f 'a '(b c) 'd)
+                "nested list element gets its quote back")
+
+  ;; Mixed: each element handled individually.
+  (check-equal? (optimize-expr '(apply f '(1 a "x" b)))
+                '(f 1 'a "x" 'b)
+                "mixed self-eval / symbol elements")
+
+  ;; Function position can be a lambda; the result is then a beta-
+  ;; reducible form and item #2 takes over.
+  (check-equal? (optimize-expr '(apply (lambda (x) (* x x)) '(5))) 25
+                "lambda in function position: cascade through beta + fold")
+
+  ;; ============================================================================
+  ;; Non-matching shapes are left alone
+  ;; ============================================================================
+
+  ;; Variable argument: not a literal list.
+  (check-equal? (optimize-expr '(apply f xs)) '(apply f xs)
+                "variable last arg: not folded")
+
+  ;; Improper list literal: leave alone (compile-quote doesn't handle it).
+  (check-equal? (optimize-expr '(apply f '(1 . 2))) '(apply f '(1 . 2))
+                "improper list literal: not folded")
+
+  ;; Single-arg apply (just function, no list): not the shape we touch.
+  (check-equal? (optimize-expr '(apply f)) '(apply f)
+                "no list arg at all: unchanged"))
 
 ;; ============================================================================
 ;; Aggressive (level 2) strength reduction binds the argument to a temp

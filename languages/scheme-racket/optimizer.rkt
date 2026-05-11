@@ -206,8 +206,36 @@
                  (self-evaluating-literal? b))
      (equal? a b)]
 
+    ;; (apply f arg1 ... '(elem1 elem2 ...)) -> (f arg1 ... elem1 elem2 ...)
+    ;; Removes the runtime apply-machinery dispatch and the temporary
+    ;; argument-list allocation. Only fires when the final argument is
+    ;; a quoted proper-list literal; elements that are not self-
+    ;; evaluating get re-wrapped in (quote ...) so the result preserves
+    ;; the original value semantics.
+    [(list 'apply f rest ...)
+     #:when (and (not (null? rest))
+                 (let ([last-arg (last rest)])
+                   (and (pair? last-arg)
+                        (eq? (car last-arg) 'quote)
+                        (= (length last-arg) 2)
+                        (list? (cadr last-arg)))))
+     (let* ([prefix (drop-right rest 1)]
+            [tail (cadr (last rest))])
+       (cons f (append prefix (map maybe-quote-elem tail))))]
+
     ;; No rule matched.
     [else expr]))
+
+;; Re-attach a quote to a value unless it's self-evaluating. Used when
+;; splicing the elements of a quoted-list argument into a call -- a
+;; symbol becomes a variable reference if left bare.
+(define (maybe-quote-elem v)
+  (cond
+    [(number? v) v]
+    [(boolean? v) v]
+    [(char? v) v]
+    [(string? v) v]
+    [else (list 'quote v)]))
 
 ;; ============================================================================
 ;; Predicates supporting pure-builtin folding
