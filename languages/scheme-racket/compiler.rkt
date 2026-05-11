@@ -296,20 +296,25 @@
 ;; the box, the inner lambda's snapshot is independent of the parent's
 ;; binding (and of any other closure capturing the same param), so writes
 ;; through one path are invisible to the others.
+;;
+;; Implementation: a single walk collects both sets simultaneously. The
+;; predecessor code did two full body traversals; merging halves the
+;; per-lambda analysis cost. State threaded through the walk:
+;;   inside? — are we under an inner lambda right now? (gates capture tracking)
+;;   local   — names rebound by an enclosing binder, used to suppress hits
+;;             from shadowed positions.
 (define (params-needing-box body params)
-  (let ([captured (params-captured-by-inner body params)]
-        [mutated (params-mutated-in body params)])
-    (filter (lambda (p) (and (member p captured) (member p mutated))) params)))
-
-;; Subset of params that are referenced inside any inner lambda nested in
-;; body, without that inner lambda or anything between rebinding the name.
-(define (params-captured-by-inner body params)
-  (define hits '())
+  (define captures '())
+  (define mutations '())
   (define (walk expr inside? local)
     (cond
       [(symbol? expr)
+       ;; A bare reference inside an inner lambda to a non-shadowed param
+       ;; is a capture. Mutations are tracked by the set! arm below; the
+       ;; set! target itself flows through this same symbol arm via the
+       ;; value-expression walk and contributes nothing extra there.
        (when (and inside? (member expr params) (not (member expr local)))
-         (set! hits (cons expr hits)))]
+         (set! captures (cons expr captures)))]
       [(not (pair? expr)) (void)]
       [(eq? (car expr) 'quote) (void)]
       [(eq? (car expr) 'lambda)
@@ -318,8 +323,12 @@
          (for-each (lambda (e) (walk e #t (append inner-params local)))
                    inner-body))]
       [(eq? (car expr) 'set!)
-       ;; The target itself isn't a "reference" -- it's the assignment
-       ;; LHS. Only the value expression contributes.
+       ;; LHS is a binding target, not a reference: don't run it through
+       ;; the symbol arm. It DOES contribute to the mutated set whenever
+       ;; the named binding still resolves to a param of this lambda.
+       (let ([target (cadr expr)])
+         (when (and (member target params) (not (member target local)))
+           (set! mutations (cons target mutations))))
        (walk (caddr expr) inside? local)]
       [(eq? (car expr) 'define)
        (let* ([target (cadr expr)]
@@ -331,39 +340,9 @@
       [else
        (for-each (lambda (e) (walk e inside? local)) expr)]))
   (for-each (lambda (e) (walk e #f '())) body)
-  (remove-duplicates hits))
-
-;; Subset of params that appear as the target of a set! somewhere in body
-;; (in a scope where the name still refers to this lambda's param, i.e.
-;; not shadowed by an inner binder that rebinds the same name).
-(define (params-mutated-in body params)
-  (define hits '())
-  (define (walk expr local)
-    (cond
-      [(symbol? expr) (void)]
-      [(not (pair? expr)) (void)]
-      [(eq? (car expr) 'quote) (void)]
-      [(eq? (car expr) 'lambda)
-       (let ([inner-params (formals->list (cadr expr))]
-             [inner-body (cddr expr)])
-         (for-each (lambda (e) (walk e (append inner-params local)))
-                   inner-body))]
-      [(eq? (car expr) 'set!)
-       (let ([target (cadr expr)])
-         (when (and (member target params) (not (member target local)))
-           (set! hits (cons target hits))))
-       (walk (caddr expr) local)]
-      [(eq? (car expr) 'define)
-       (let* ([target (cadr expr)]
-              [name (if (pair? target) (car target) target)]
-              [val (if (pair? target)
-                       `(lambda ,(cdr target) ,@(cddr expr))
-                       (caddr expr))])
-         (walk val (cons name local)))]
-      [else
-       (for-each (lambda (e) (walk e local)) expr)]))
-  (for-each (lambda (e) (walk e '())) body)
-  (remove-duplicates hits))
+  (let ([captured (remove-duplicates captures)]
+        [mutated (remove-duplicates mutations)])
+    (filter (lambda (p) (and (member p captured) (member p mutated))) params)))
 
 ;; Rewrite body so that boxed-params live in heap boxes:
 ;;   * Inject (set! p (box p)) at function entry to wrap the initial value.
