@@ -2,10 +2,12 @@
 
 # Purpose: Compilation script for Velox applications.
 #
-# Usage: ./compile.sh [-f|--force] [<path>]
+# Usage: ./compile.sh [-f|--force] [--opt-stats] [--trace-opts] [<path>]
 #
 # Options:
 #   -f, --force     Force recompilation even if files are up-to-date
+#   --opt-stats     Print per-bucket optimization fire counts (Racket compiler)
+#   --trace-opts    Trace each optimization rewrite to stderr (Racket compiler)
 #
 # When no path is supplied, this script builds all available apps, tests, and benchmarks.
 #
@@ -116,7 +118,7 @@ compile_scheme () {
     OUTPUT_FILE="${BIN_DIR}/${BASENAME}.vm"
     mkdir -p "$BIN_DIR"
 
-    racket "$RACKET_COMPILER" -o "$OUTPUT_FILE" "$source_file" 2>&1 | grep -v "^Compiling\|^Compilation successful"
+    racket "$RACKET_COMPILER" $RACKET_FLAGS -o "$OUTPUT_FILE" "$source_file" 2>&1 | grep -v "^Compiling\|^Compilation successful"
     if [ ${PIPESTATUS[0]} -ne 0 ]; then
       ERRORS=$((ERRORS + 1))
     fi
@@ -332,15 +334,21 @@ find_source_file() {
 }
 
 # Parse command-line arguments
+RACKET_FLAGS=""
 while [[ $# -gt 0 ]]; do
   case $1 in
     -f|--force)
       FORCE_COMPILE=1
       shift
       ;;
+    --opt-stats|--trace-opts)
+      # Forward optimizer-diagnostic flags to the Racket compiler.
+      RACKET_FLAGS="$RACKET_FLAGS $1"
+      shift
+      ;;
     -*)
       echo "Unknown option: $1"
-      echo "Usage: ./compile.sh [-f|--force] [<path>]"
+      echo "Usage: ./compile.sh [-f|--force] [--opt-stats] [--trace-opts] [<path>]"
       exit 1
       ;;
     *)
