@@ -550,6 +550,19 @@ vm_objects_deep_equal(vm_thread_t *thread, vm_obj_t *obj1, vm_obj_t *obj2)
       return 0;
     }
 
+    /* Regular vectors store elements in ->elements; byte buffers store
+       bytes in ->bytes and leave ->elements NULL. Treat the two storage
+       shapes as distinct -- a 3-element regular vector of integers is
+       not equal to a 3-byte buffer with the same numeric content. */
+    if(VM_IS_SET(vector1->flags, VM_VECTOR_FLAG_BUFFER) !=
+       VM_IS_SET(vector2->flags, VM_VECTOR_FLAG_BUFFER)) {
+      return 0;
+    }
+
+    if(VM_IS_SET(vector1->flags, VM_VECTOR_FLAG_BUFFER)) {
+      return memcmp(vector1->bytes, vector2->bytes, vector1->length) == 0;
+    }
+
     for(i = 0; i < vector1->length; i++) {
       if(!vm_objects_deep_equal(thread, &vector1->elements[i],
                                 &vector2->elements[i])) {
