@@ -524,7 +524,52 @@
                 "(not (not VARIABLE)) NOT folded: coerces to boolean")
   (check-equal? (optimize-expr '(not (not 5)))
                 #t
-                "(not (not 5)): outer (not #f) -> #t via existing rules"))
+                "(not (not 5)): outer (not #f) -> #t via existing rules")
+
+  ;; ============================================================================
+  ;; and/or short-circuit folding at level 1 (item #17)
+  ;; The killer feature is trimming unreachable references so they
+  ;; don't widen closure capture sets.
+  ;; ============================================================================
+
+  ;; Empty / single-arg cases (R5RS identities).
+  (check-equal? (optimize-expr '(and)) #t "(and) -> #t")
+  (check-equal? (optimize-expr '(or)) #f "(or) -> #f")
+  (check-equal? (optimize-expr '(and x)) 'x "(and x) -> x")
+  (check-equal? (optimize-expr '(or x)) 'x "(or x) -> x")
+
+  ;; (and ... #f ...) with no impure prefix: collapses to #f, killing
+  ;; references in the tail.
+  (check-equal? (optimize-expr '(and #f (foo) (bar))) #f
+                "(and #f ...) drops the tail")
+  (check-equal? (optimize-expr '(and (+ 1 2) #f some-helper))
+                #f
+                "(and pure #f ...): pure prefix dropped, tail dropped")
+
+  ;; Impure prefix preserved in a begin.
+  (check-equal? (optimize-expr '(and (display "x") #f (foo)))
+                '(begin (display "x") #f)
+                "impure prefix wrapped in begin before #f")
+
+  ;; (or TRUTHY-LIT ...): rest dropped.
+  (check-equal? (optimize-expr '(or #t (foo) (bar))) #t
+                "(or #t ...) drops the tail")
+  (check-equal? (optimize-expr '(or 5 (foo))) 5
+                "(or 5 ...) returns 5 (numbers are truthy)")
+  (check-equal? (optimize-expr '(or "hi" (foo))) "hi"
+                "(or \"hi\" ...) returns \"hi\"")
+
+  ;; (or X) without trailing args: just the arg.
+  (check-equal? (optimize-expr '(or some-var)) 'some-var
+                "single-arg or returns the arg")
+
+  ;; No fold when there's no determining literal.
+  (check-equal? (optimize-expr '(and x y z)) '(and x y z)
+                "no #f in and: unchanged")
+  (check-equal? (optimize-expr '(or x y)) '(or x y)
+                "no truthy literal at head of or: unchanged")
+  (check-equal? (optimize-expr '(or #f x y)) '(or #f x y)
+                "(or #f ...) is NOT unconditionally foldable -- first arg might be needed"))
 
 ;; ============================================================================
 ;; Aggressive (level 2) strength reduction binds the argument to a temp

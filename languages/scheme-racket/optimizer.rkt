@@ -119,6 +119,30 @@
     ;; rule below subsumes the (not #t) / (not #f) cases.
     [`(not ,v) #:when (literal-truthy-known? v) (not v)]
     [`(not (quote ,d)) (not d)]
+
+    ;; and/or short-circuit folding. R5RS: (and) = #t, (or) = #f;
+    ;; both forms short-circuit on the first determining argument.
+    ;; Eliminating the unreachable tail trims free-variable
+    ;; references that would otherwise widen closure capture sets
+    ;; (item #17 framing).
+    [(list 'and) #t]
+    [(list 'or) #f]
+    [`(and ,e) e]
+    [`(or ,e) e]
+    ;; (and X1 ... #f ...): #f stops evaluation; any preceding pure
+    ;; sub-expressions are dropped, impure ones survive in a begin.
+    [(list 'and es ...)
+     #:when (and (not (null? es)) (memq #f es))
+     (let* ([prefix (takef es (lambda (e) (not (eq? e #f))))]
+            [impure (filter (lambda (e) (not (pure? e))) prefix)])
+       (cond
+         [(null? impure) #f]
+         [else `(begin ,@impure #f)]))]
+    ;; (or LIT-TRUTHY ...): the first arg short-circuits, drop the
+    ;; rest. Truthy here means any non-#f literal.
+    [(list 'or first rest ...)
+     #:when (and (not (null? rest)) (literal-truthy? first))
+     first]
     ;; (not (not x)) -> x, but only when x is provably boolean. For a
     ;; non-boolean x the original form coerces to a boolean while x
     ;; itself doesn't: (not (not 5)) is #t, 5 is 5. We don't have a
@@ -287,6 +311,19 @@
 ;; coercion: #f is false, everything else is true (R5RS 6.3.1).
 (define (literal-truthy-known? v)
   (or (number? v) (boolean? v) (char? v) (string? v)))
+
+;; True iff v is a literal whose runtime value is truthy. R5RS 6.3.1:
+;; only #f is false; everything else (including 0, '(), "", #\null)
+;; is true. A (quote ...) form counts because quote's value is a
+;; literal datum.
+(define (literal-truthy? v)
+  (cond
+    [(boolean? v) v]
+    [(number? v) #t]
+    [(char? v) #t]
+    [(string? v) #t]
+    [(and (pair? v) (eq? (car v) 'quote)) #t]
+    [else #f]))
 
 ;; Inside (quote DATUM), DATUM is a literal regardless of its shape;
 ;; eq? has deterministic identity on symbols (interned), booleans
