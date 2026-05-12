@@ -3,7 +3,8 @@
 ;; VeloxVM Racket Compiler - Main Entry Point
 ;; Copyright (c) 2025, RISE Research Institutes of Sweden AB
 
-(require "reader.rkt"
+(require racket/runtime-path
+         "reader.rkt"
          "expander.rkt"  ; Macro expansion
          "rewriter.rkt"
          "optimizer.rkt"  ; Optimizations
@@ -11,6 +12,34 @@
          "errors.rkt"     ; Error handling
          "compiler.rkt"
          "bytecode.rkt")
+
+;; Runtime-library prelude: auto-prepended to every user program so the
+;; pure-Scheme procedures shipped under runtime/ are reachable without
+;; an explicit (include ...). The dead-define pass strips any prelude
+;; binding the user program doesn't reference, so the bytecode cost is
+;; paid only for what is actually used.
+;;
+;; r7rs-lists.scm is excluded because it would redefine the primitive
+;; names assoc / member; including it in the prelude would shadow those
+;; primitives for every program. Users who want the optional-comparator
+;; form can still (include "r7rs-lists.scm") explicitly.
+(define-runtime-path prelude-dir "runtime")
+
+(define prelude-files
+  '("r7rs-numeric.scm"
+    "r7rs-strings.scm"
+    "r7rs-features.scm"
+    "r7rs-bytevectors.scm"
+    "r7rs-parameters.scm"
+    "r7rs-errors.scm"
+    "r5rs-io.scm"))
+
+;; Read once at module load; reused for every compile-string call.
+(define prelude-exprs
+  (apply append
+    (for/list ([f (in-list prelude-files)])
+      (let ([path (build-path prelude-dir f)])
+        (read-all-exprs (file->string path) path)))))
 
 (provide compile-file
          compile-string
@@ -34,7 +63,10 @@
 ;; source-file: optional path for resolving include directives
 (define (compile-string source-code [source-file #f])
   (opt-stats-reset!)
-  (let* ([exprs (read-all-exprs source-code source-file)]
+  (let* ([user-exprs (read-all-exprs source-code source-file)]
+         ;; Prepend the runtime-library prelude. Dead-define elimination
+         ;; later in the pipeline drops anything the user doesn't use.
+         [exprs (append prelude-exprs user-exprs)]
          ;; Expand macros first (handles define-syntax)
          ;; Filter out *FILTERED* sentinel values (from define-syntax)
          [expanded (filter (lambda (e) (not (eq? e *FILTERED*)))
