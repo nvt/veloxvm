@@ -64,33 +64,23 @@ Before using the VM for the first time, please ensure that you have the
 following software installed:
  * bison
  * flex
- * clang
- * clisp (or one of the other LISP distributions listed below)
+ * clang (or gcc)
+ * [Racket](https://racket-lang.org/) 8.0 or later — required by the
+   Scheme front-end compiler under `languages/scheme-racket/`.
 
 To be able to run all the tests, the following software is also needed:
  * afl-fuzz
  * python3
  * python3-pexpect
 
-The following LISP distributions are supported:
- * Armed Bear Common LISP (abcl),
- * Clozure CL (ccl)
- * CMU Common LISP (cmucl)
- * GNU CLISP (clisp)
- * Steel Bank Common LISP (sbcl)
+### Archived Common Lisp compiler
 
-By default, the system uses GNU CLISP, but this can be changed
-in compiler/run.sh by setting the CL_IMPL parameter to either of the values
-enclosed within parentheses above.
-
-In addition, native compiler executables are supported. To use such an
-executable, the CL_IMPL value should be set to "native". At the moment,
-there is only support for creating a native compiler using SBCL. It should
-also be possible, however, to create a native compiler manually using
-another LISP implementation and naming the resulting file "compiler".
-
-To create a native compiler based on SBCL, go to compiler/ and 
-run "sbcl --load sbcl-compile.lisp".
+The original Scheme compiler was written in Common Lisp and is preserved
+under `languages/scheme-cl-legacy/` for historical reference only. It emits
+bytecode format version 1 and works only with a VeloxVM built at master
+commit `6f3c0a3` (2026-04-20, the last v1 commit) or earlier. It is not
+maintained and is not part of the active build. See that directory's
+README for details.
 
 ## Trying out VeloxVM in a POSIX environment
 

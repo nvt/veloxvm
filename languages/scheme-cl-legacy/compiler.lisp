@@ -60,17 +60,16 @@
   '(+ - * / gcd lcm numerator denominator quotient remainder modulo
     = /= < <= > >= zero?
 ;; Primitive functions.
-    bind bind_function return begin if define set! and or apply quote
+    bind return begin if define set! and or apply quote
     number? integer? rational? real? complex? exact? inexact? procedure?
     boolean? port? not eq? eqv? equal?
 ;; System functions.
     system-info load-program import get-devices print random time
     get-programs program-info exit
 ;; List functions.
-    list cons push pop car cdr list-ref list-tail slice append remove reverse
+    list cons push pop car cdr list-ref list-tail append remove reverse
     length null? list? pair? set-car! set-cdr! memq memv member
     assq assv assoc
-    list-enumerate list-zip list-index
 ;; Higher-order list functions.
     map filter for-each reduce count
 ;; Character functions.
@@ -79,7 +78,7 @@
 ;; String functions.
     make-string string string? string-length string-ref
     string-set! string->list list->string vector->string string-fill!
-    string-compare substring string-append string-copy string-split string-join
+    string-compare substring string-append string-copy string-split
     number->string string->number
 ;; Exception and condition functions.
     guard raise
@@ -94,8 +93,6 @@
     make-vector vector vector? buffer? vector-merge vector-length vector-ref
     vector-set! vector->list list->vector vector-fill! make-buffer
     buffer-append
-;; Higher-order vector functions.
-    vector-for-each vector-count vector-fold vector-map
 ;; Input/output functions.
     input-port? output-port? current-input-port current-output-port
     open-input-file open-output-file close-input-port close-output-port
@@ -106,35 +103,13 @@
     incoming-client? addr->string resolve-hostname
 ; Floating-point mathematics functions.
     floor ceiling round truncate exp log sin cos tan asin acos atan
-    sqrt expt exact->inexact inexact->exact
+    sqrt expt exact-to-inexact inexact-to-exact
 ;; Continuations functions.
     call-with-current-continuation values call-with-values dynamic-wind eval
 ;; Bit manipulation functions.
     bit-and bit-or bit-invert bit-not bit-xor bit-shift
 ;; Data packet functions.
-    construct-packet deconstruct-packet
-;; Symbol functions.
-    symbol?
-    symbol->string
-;; Box functions (compiler-emitted for closure mutable captures).
-    box box-ref box-set!
-;; Variadic-lambda binding (compiler-emitted; mirrors bind_function but
-;; the last formal soaks up extras as a list).
-    bind_function_rest
-;; R7RS string->symbol (restricted form: looks up names already in the
-;; program's symbol table; raises if not found).
-    string->symbol
-;; R7RS eof-object constructor (returns a value of the disjoint EOF type;
-;; what read-char / read / peek-char return at end of stream).
-    eof-object
-;; Unified close (R7RS), newline (R5RS), flush-output-port (R7RS).
-    close-port newline flush-output-port
-;; R7RS port-open predicates.
-    input-port-open? output-port-open?
-;; R7RS string ports.
-    open-input-string open-output-string get-output-string
-;; R7RS bytevector ports.
-    open-input-bytevector open-output-bytevector get-output-bytevector))
+    construct-packet deconstruct-packet))
 
 ;; The following values are stored in the first two bytes of a VM app
 ;; to be able to identify the app.

@@ -75,8 +75,9 @@ compile_scheme () {
     echo "Error: Racket is not installed"
     echo "Please install Racket from https://racket-lang.org/"
     echo ""
-    echo "To use the legacy Common Lisp compiler instead:"
-    echo "  cd languages/scheme-cl-legacy && ./run.sh <files>"
+    echo "(An archived Common Lisp compiler exists at"
+    echo " languages/scheme-cl-legacy/, but its output only runs on"
+    echo " a historical VeloxVM build -- see that directory's README.)"
     exit 1
   fi
 
