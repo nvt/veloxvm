@@ -76,6 +76,17 @@ VM_DECLARE_FUNCTION(display);
 VM_DECLARE_FUNCTION(with_input_from_file);
 VM_DECLARE_FUNCTION(with_output_to_file);
 
+/* R7RS binary and block-transfer I/O. */
+VM_DECLARE_FUNCTION(read_u8);
+VM_DECLARE_FUNCTION(peek_u8);
+VM_DECLARE_FUNCTION(write_u8);
+VM_DECLARE_FUNCTION(read_bytevector);
+VM_DECLARE_FUNCTION(read_bytevector_into);
+VM_DECLARE_FUNCTION(write_bytevector);
+VM_DECLARE_FUNCTION(read_string);
+VM_DECLARE_FUNCTION(write_string);
+VM_DECLARE_FUNCTION(read_line);
+
 /* Mathematical functions. */
 VM_DECLARE_FUNCTION(add);
 VM_DECLARE_FUNCTION(subtract);

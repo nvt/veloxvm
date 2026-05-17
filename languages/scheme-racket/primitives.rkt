@@ -98,7 +98,10 @@
     close-port newline flush-output-port
     input-port-open? output-port-open?
     open-input-string open-output-string get-output-string
-    open-input-bytevector open-output-bytevector get-output-bytevector))
+    open-input-bytevector open-output-bytevector get-output-bytevector
+    read-u8 peek-u8 write-u8
+    read-bytevector read-bytevector! write-bytevector
+    read-string write-string read-line))
 
 ;; Check if symbol is a VM primitive
 (define (vm-primitive? sym)

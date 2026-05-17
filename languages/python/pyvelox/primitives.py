@@ -155,6 +155,11 @@ VM_PRIMITIVES = [
 
     # R7RS bytevector ports.
     'open_input_bytevector', 'open_output_bytevector', 'get_output_bytevector',
+
+    # R7RS §6.13 binary I/O and block read/write.
+    'read_u8', 'peek_u8', 'write_u8',
+    'read_bytevector', 'read_bytevector_into', 'write_bytevector',
+    'read_string', 'write_string', 'read_line',
 ]
 
 # Create reverse lookup dictionary (name -> ID)
@@ -310,6 +315,15 @@ SCHEME_ALIASES = {
     'open-input-bytevector': 'open_input_bytevector',
     'open-output-bytevector': 'open_output_bytevector',
     'get-output-bytevector': 'get_output_bytevector',
+    'read-u8': 'read_u8',
+    'peek-u8': 'peek_u8',
+    'write-u8': 'write_u8',
+    'read-bytevector': 'read_bytevector',
+    'read-bytevector!': 'read_bytevector_into',
+    'write-bytevector': 'write_bytevector',
+    'read-string': 'read_string',
+    'write-string': 'write_string',
+    'read-line': 'read_line',
 }
 
 
@@ -321,7 +335,7 @@ def get_primitive_id(name: str) -> int:
         name: The primitive name (e.g., 'add', '+', 'list-ref')
 
     Returns:
-        The symbol ID (0-205) or None if not a primitive
+        The symbol ID (0-228) or None if not a primitive
     """
     # Check if it's a Scheme alias
     if name in SCHEME_ALIASES:
@@ -348,7 +362,7 @@ def get_primitive_name(symbol_id: int) -> str:
     Get the primitive name for a given symbol ID.
 
     Args:
-        symbol_id: The symbol ID (0-205)
+        symbol_id: The symbol ID (0-228)
 
     Returns:
         The primitive name or None if invalid ID
@@ -359,4 +373,4 @@ def get_primitive_name(symbol_id: int) -> str:
 
 
 # The primitive count must match core/vm-procedures.c exactly.
-assert len(VM_PRIMITIVES) == 220, f"Expected 220 primitives, got {len(VM_PRIMITIVES)}"
+assert len(VM_PRIMITIVES) == 229, f"Expected 229 primitives, got {len(VM_PRIMITIVES)}"

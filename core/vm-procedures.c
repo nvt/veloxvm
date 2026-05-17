@@ -461,6 +461,30 @@ static const vm_procedure_t operators[] = {
               VM_PROCEDURE_EVAL_ARGS, 0, 0),
   VM_OPERATOR(get_output_bytevector, VM_TYPE_FLAG(VM_TYPE_PORT),
               VM_PROCEDURE_EVAL_ARGS, 1, 1),
+
+  /* R7RS §6.13 binary I/O: byte-at-a-time reads/writes and block
+     transfers between ports and bytevectors. read-u8 / peek-u8 take an
+     optional port; write-u8 takes byte plus optional port. */
+  VM_OPERATOR(read_u8, VM_TYPE_FLAG(VM_TYPE_PORT),
+              VM_PROCEDURE_EVAL_ARGS, 0, 1),
+  VM_OPERATOR(peek_u8, VM_TYPE_FLAG(VM_TYPE_PORT),
+              VM_PROCEDURE_EVAL_ARGS, 0, 1),
+  VM_OPERATOR(write_u8, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 1, 2),
+  VM_OPERATOR(read_bytevector, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 1, 2),
+  VM_OPERATOR(read_bytevector_into, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 1, 4),
+  VM_OPERATOR(write_bytevector, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 1, 4),
+
+  /* R7RS §6.13 text I/O block forms. */
+  VM_OPERATOR(read_string, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 1, 2),
+  VM_OPERATOR(write_string, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 1, 4),
+  VM_OPERATOR(read_line, VM_TYPE_FLAG(VM_TYPE_PORT),
+              VM_PROCEDURE_EVAL_ARGS, 0, 1),
 };
 
 #define MAX_COMMON_SYMBOL_ID 127
