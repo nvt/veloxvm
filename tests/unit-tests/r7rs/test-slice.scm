@@ -62,7 +62,7 @@
 ;; be a regular vector, when it didn't outright segfault).
 (define bs (slice b 1 4))
 (assert-equal #t (buffer? bs) "buffer slice: still a buffer")
-(assert-equal #t (vector? bs) "buffer slice: still a vector (vector? is true for buffers)")
+(assert-equal #f (vector? bs) "buffer slice: vector? rejects buffers (R7RS disjointness)")
 (assert-equal 3 (vector-length bs) "buffer slice: length")
 (assert-equal 66 (char->integer (vector-ref bs 0)) "buffer slice: byte 0")
 (assert-equal 67 (char->integer (vector-ref bs 1)) "buffer slice: byte 1")
