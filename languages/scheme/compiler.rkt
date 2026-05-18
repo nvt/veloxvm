@@ -1,6 +1,6 @@
 #lang racket
 
-;; VeloxVM Racket Compiler - Core Compiler
+;; VeloxVM Scheme Compiler - Core Compiler
 ;; Copyright (c) 2025, RISE Research Institutes of Sweden AB
 ;;
 ;; Compiles Scheme expressions to VeloxVM bytecode

@@ -66,7 +66,7 @@ following software installed:
  * flex
  * clang (or gcc)
  * [Racket](https://racket-lang.org/) 8.0 or later — required by the
-   Scheme front-end compiler under `languages/scheme-racket/`.
+   Scheme front-end compiler under `languages/scheme/`.
 
 To be able to run all the tests, the following software is also needed:
  * afl-fuzz

@@ -1,6 +1,6 @@
 #lang racket
 
-;; VeloxVM Racket Compiler - Optimizer Tests
+;; VeloxVM Scheme Compiler - Optimizer Tests
 ;; Copyright (c) 2025, RISE Research Institutes of Sweden AB
 
 (require rackunit

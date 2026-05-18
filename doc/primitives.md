@@ -3,8 +3,7 @@
 Canonical order of the VM's built-in operators. Every component that
 depends on primitive IDs must follow this order exactly: the C
 operator table in `core/vm-procedures.c`, the symbol table in
-`core/vm-symbols.c`, the Scheme-Racket compiler, and the Python
-compiler.
+`core/vm-symbols.c`, the Scheme compiler, and the Python compiler.
 
 `tests/primitives/run-tests.sh` verifies consistency against all four
 sources and fails the build on divergence.

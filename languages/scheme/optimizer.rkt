@@ -1,6 +1,6 @@
 #lang racket
 
-;; VeloxVM Racket Compiler - Optimizer
+;; VeloxVM Scheme Compiler - Optimizer
 ;; Copyright (c) 2025, RISE Research Institutes of Sweden AB
 ;;
 ;; Performs compile-time optimizations:

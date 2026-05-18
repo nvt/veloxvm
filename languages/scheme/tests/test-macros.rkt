@@ -1,6 +1,6 @@
 #lang racket
 
-;; VeloxVM Racket Compiler - Macro System Tests
+;; VeloxVM Scheme Compiler - Macro System Tests
 ;; Comprehensive tests for pattern matching, template expansion, and define-syntax
 
 (require rackunit

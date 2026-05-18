@@ -51,8 +51,8 @@ make
 ./bin/vm apps/hello.vm
 ```
 
-The top-level `compile.sh` wraps the Racket compiler; you can also invoke it
-directly with `./compile-racket.sh apps/hello.scm`.
+The top-level `compile.sh` wraps the Scheme compiler; you can also invoke it
+directly with `./compile-scheme.sh apps/hello.scm`.
 
 ## Quick start
 
@@ -78,7 +78,7 @@ Compile and run:
 ## Command-line usage
 
 ```bash
-./compile-racket.sh [options] <file.scm>
+./compile-scheme.sh [options] <file.scm>
 ```
 
 Common options:
@@ -92,7 +92,7 @@ Common options:
 You can also invoke the compiler directly:
 
 ```bash
-racket languages/scheme-racket/main.rkt [options] app.scm
+racket languages/scheme/main.rkt [options] app.scm
 ```
 
 ## Quasiquotation
@@ -239,7 +239,7 @@ Examples of what the optimizer does:
 Enable debug output with `--debug`:
 
 ```bash
-./compile-racket.sh --debug app.scm
+./compile-scheme.sh --debug app.scm
 ```
 
 Typical output:

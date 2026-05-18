@@ -1,6 +1,6 @@
 #lang racket
 
-;; VeloxVM Racket Compiler - Main Entry Point
+;; VeloxVM Scheme Compiler - Main Entry Point
 ;; Copyright (c) 2025, RISE Research Institutes of Sweden AB
 
 (require racket/runtime-path

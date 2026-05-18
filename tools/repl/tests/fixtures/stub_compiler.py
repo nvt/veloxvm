@@ -1,6 +1,6 @@
-"""In-process stand-in for the Racket compiler service.
+"""In-process stand-in for the Scheme compiler service.
 
-Used so the driver can be exercised end-to-end before the real Racket
+Used so the driver can be exercised end-to-end before the real Scheme
 ``--repl-server`` mode exists. Speaks the real driver-compiler line
 protocol (s-expressions over stdio), but the deltas it produces are in
 ``stub_delta`` format and only meaningful to ``stub_vm``.

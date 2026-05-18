@@ -1,6 +1,6 @@
 #lang racket
 
-;; VeloxVM Racket Compiler - Rewriter Tests
+;; VeloxVM Scheme Compiler - Rewriter Tests
 ;; Copyright (c) 2025, RISE Research Institutes of Sweden AB
 
 (require rackunit

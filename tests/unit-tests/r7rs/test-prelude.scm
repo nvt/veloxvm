@@ -3,7 +3,7 @@
 ;;; reachable from a user program WITHOUT an explicit (include ...).
 ;;;
 ;;; The compiler auto-prepends a fixed list of runtime files (see
-;;; languages/scheme-racket/main.rkt:prelude-files) so these names
+;;; languages/scheme/main.rkt:prelude-files) so these names
 ;;; resolve out of the box; the dead-define pass strips unused
 ;;; bindings, so a program that doesn't use the prelude pays no
 ;;; bytecode cost for it.

@@ -481,7 +481,7 @@ applicable.
 ## Runtime library
 
 The runtime library provides R5RS procedures implemented in Scheme rather
-than in the VM core. It lives at `languages/scheme-racket/runtime/` and
+than in the VM core. It lives at `languages/scheme/runtime/` and
 holds one file:
 
 - `r5rs-io.scm` — `call-with-input-file` and `call-with-output-file`.
@@ -516,7 +516,7 @@ recommended approach is to copy the two definitions into your program:
     (display "Hello, World!" port)))
 ```
 
-Alternatively, `(include "languages/scheme-racket/runtime/r5rs-io.scm")`
+Alternatively, `(include "languages/scheme/runtime/r5rs-io.scm")`
 at the top level works.
 
 #### Limitations

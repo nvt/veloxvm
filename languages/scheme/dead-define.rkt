@@ -1,6 +1,6 @@
 #lang racket
 
-;; VeloxVM Racket Compiler - Dead Top-Level Define Elimination
+;; VeloxVM Scheme Compiler - Dead Top-Level Define Elimination
 ;; Copyright (c) 2025, RISE Research Institutes of Sweden AB
 ;;
 ;; Removes top-level (define NAME VAL) forms whose NAME is never

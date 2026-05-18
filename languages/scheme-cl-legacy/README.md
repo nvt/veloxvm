@@ -3,7 +3,7 @@
 The original Scheme-to-bytecode compiler for VeloxVM, implemented in
 Common Lisp. **This compiler is archived: it is preserved as a
 historical reference and is no longer maintained.** The active Scheme
-front-end is the Racket-based compiler under `languages/scheme-racket/`.
+front-end is the Racket-based compiler under `languages/scheme/`.
 
 ## Current state and last working VM
 
@@ -20,8 +20,8 @@ current VM (`VM_BYTECODE_VERSION 4`) rejects its output with
 
 ## Why no longer maintained
 
-The active Scheme front-end is the Racket compiler under
-`languages/scheme-racket/`. Forward-porting this compiler to the
+The active Scheme front-end is the Racket-based compiler under
+`languages/scheme/`. Forward-porting this compiler to the
 current bytecode format would require implementing the structural
 changes added in versions 2, 3, and 4 (16-bit string/symbol
 tables, vector literals, the `include` directive, and the
@@ -55,6 +55,6 @@ The primitive-sync invariant in `CLAUDE.md` and
 
 ## See also
 
-- `../scheme-racket/` — the active Scheme compiler
+- `../scheme/` — the active Scheme compiler
 - `../../doc/bytecode-format.md` — current bytecode specification
 - `../../doc/instruction-set.md` — VM instruction reference

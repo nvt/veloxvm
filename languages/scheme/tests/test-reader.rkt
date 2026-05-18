@@ -1,6 +1,6 @@
 #lang racket
 
-;; VeloxVM Racket Compiler - Reader Tests
+;; VeloxVM Scheme Compiler - Reader Tests
 ;; Copyright (c) 2025, RISE Research Institutes of Sweden AB
 
 (require rackunit

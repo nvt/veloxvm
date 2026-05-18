@@ -1,6 +1,6 @@
 #lang racket
 
-;; VeloxVM Racket Compiler - VM Primitive Definitions
+;; VeloxVM Scheme Compiler - VM Primitive Definitions
 ;; Copyright (c) 2025, RISE Research Institutes of Sweden AB
 ;;
 ;; Defines VM types and primitive operations

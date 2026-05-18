@@ -165,7 +165,7 @@ Auto-detect resolves, relative to the repo root:
 
 | What       | Scheme                                              | Python                                       |
 |------------|-----------------------------------------------------|----------------------------------------------|
-| Compiler   | `racket languages/scheme-racket/repl-server.rkt`    | `languages/python/pyvelox-repl-server`       |
+| Compiler   | `racket languages/scheme/repl-server.rkt`           | `languages/python/pyvelox-repl-server`       |
 | VM         | `bin/vm-repl`                                       | (same)                                       |
 
 Override examples:

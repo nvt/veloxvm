@@ -5,7 +5,7 @@ Two layered APIs for assembling and parsing binary packets:
 1. **The C primitives** — `construct-packet` and `deconstruct-packet`, an
    anonymous bit packer that takes a vector of bit-widths plus a parallel
    vector of values. Small and fast; no field names, no type information.
-2. **The schema layer** — `languages/scheme-racket/runtime/packet-schema.scm`, a Scheme
+2. **The schema layer** — `languages/scheme/runtime/packet-schema.scm`, a Scheme
    library that wraps the primitives with named, typed fields plus
    variable-length support.
 
@@ -124,14 +124,14 @@ A schema is a list of field specs. Each spec is `(NAME TYPE [ARG])`:
 
 ### Public API
 
-The schema layer ships as part of the Racket compiler's runtime
+The schema layer ships as part of the Scheme compiler's runtime
 library. Use it from any program with:
 
 ```scheme
 (include "packet-schema.scm")
 ```
 
-The reader resolves the name against `languages/scheme-racket/runtime/`
+The reader resolves the name against `languages/scheme/runtime/`
 via its built-in include search path, regardless of where the program
 itself lives.
 
@@ -172,7 +172,7 @@ buffer (made with `make-buffer`). The schema layer normalises both forms.
 ### Quoted-literal alists
 
 A quoted literal like `'((a . 1) (b . 2))` does not currently round-trip
-through the Racket compiler (dotted-pair literals lose their structure).
+through the Scheme compiler (dotted-pair literals lose their structure).
 Build bindings at runtime with `(list (cons 'a 1) (cons 'b 2))` instead.
 
 ## Variable-length fields

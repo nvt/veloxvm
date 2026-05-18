@@ -51,7 +51,7 @@ if [ -z "$TEST_FILES" ]; then
     exit 1
 fi
 
-# Pre-compile every test in a single Racket invocation. compile-racket.sh
+# Pre-compile every test in a single Racket invocation. compile-scheme.sh
 # launches one Racket process per source, and each pays the full module
 # load cost, which dominates the suite's wall-clock before any compile
 # work happens. --batch loads main.rkt once and iterates compile-file
@@ -63,7 +63,7 @@ for test_file in $TEST_FILES; do
     printf "%s\t%s/%s.vm\n" "$test_file" "$BUILD_DIR" "$test_name" >> "$MANIFEST"
 done
 printf "Compiling %d test suites... " "$(wc -l < "$MANIFEST" | tr -d ' ')"
-if racket languages/scheme-racket/main.rkt --batch "$MANIFEST" > /dev/null 2>"$BUILD_DIR/batch-errors.log"; then
+if racket languages/scheme/main.rkt --batch "$MANIFEST" > /dev/null 2>"$BUILD_DIR/batch-errors.log"; then
     printf "${GREEN}OK${NC}\n\n"
 else
     printf "${YELLOW}some failed (see %s/batch-errors.log)${NC}\n\n" "$BUILD_DIR"

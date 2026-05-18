@@ -32,7 +32,7 @@ REPO = Path(__file__).resolve().parents[2]
 APPS_DIR = Path(__file__).resolve().parent / "apps"
 BIN_DIR = APPS_DIR / "bin"
 VM = REPO / "bin" / "vm"
-RACKET_COMPILER = REPO / "languages" / "scheme-racket" / "main.rkt"
+RACKET_COMPILER = REPO / "languages" / "scheme" / "main.rkt"
 PYVELOX_COMPILE = REPO / "languages" / "python" / "pyvelox-compile"
 
 SCHEME_SOURCES = [
@@ -209,7 +209,7 @@ def main() -> int:
         print(f"VM binary not found at {VM} - run 'make' first.", file=sys.stderr)
         return 1
     if not RACKET_COMPILER.exists():
-        print(f"Racket compiler not found at {RACKET_COMPILER}.", file=sys.stderr)
+        print(f"Scheme compiler not found at {RACKET_COMPILER}.", file=sys.stderr)
         return 1
     if not os.access(PYVELOX_COMPILE, os.X_OK):
         print(f"pyvelox-compile not executable at {PYVELOX_COMPILE}.", file=sys.stderr)
