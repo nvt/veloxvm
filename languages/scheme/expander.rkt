@@ -1,6 +1,6 @@
 #lang racket
 
-;; VeloxVM Racket Compiler - Macro Expander
+;; VeloxVM Scheme Compiler - Macro Expander
 ;; Implements pattern matching and template expansion for syntax-rules
 
 (provide match-pattern

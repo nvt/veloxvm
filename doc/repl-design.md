@@ -25,9 +25,9 @@ runs its output, and the driver doesn't know what's being evaluated.
 - Zero overhead on production embedded deployments. All REPL code is
   gated behind `VM_REPL_ENABLE` and is omitted from default builds for
   Contiki-NG and other resource-constrained ports.
-- Multiple surface languages on the same VM (Scheme via Racket compiler
-  today; PyVelox and Cyclus added by introducing new compiler services
-  with no driver/VM changes).
+- Multiple surface languages on the same VM (Scheme today; PyVelox and
+  Cyclus added by introducing new compiler services with no driver/VM
+  changes).
 - A single wire protocol usable over any transport: stdio (subprocess),
   Unix domain socket (local daemon), UDP (LAN), CoAP (constrained IoT
   devices).
@@ -86,7 +86,7 @@ changes).
 
 A long-running subprocess that exposes one operation: "compile this
 source into a delta." For Scheme this is `racket
-languages/scheme-racket/repl-server.rkt`, which wraps the existing
+languages/scheme/repl-server.rkt`, which wraps the existing
 `compile-string` machinery in a session that holds the bytecode object
 and macro environment across calls. PyVelox would add an equivalent
 `pyvelox-repl-server`.

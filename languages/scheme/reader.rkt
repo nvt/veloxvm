@@ -1,6 +1,6 @@
 #lang racket
 
-;; VeloxVM Racket Compiler - S-Expression Reader
+;; VeloxVM Scheme Compiler - S-Expression Reader
 ;; Copyright (c) 2025, RISE Research Institutes of Sweden AB
 ;;
 ;; Supports R7RS 'include' for compile-time file inclusion

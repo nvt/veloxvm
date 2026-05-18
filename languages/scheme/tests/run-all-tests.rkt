@@ -39,7 +39,7 @@
 
 (displayln "")
 (displayln "========================================")
-(displayln "VeloxVM Racket Compiler - Test Suite")
+(displayln "VeloxVM Scheme Compiler - Test Suite")
 (displayln "========================================")
 (displayln "")
 

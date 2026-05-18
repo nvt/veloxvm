@@ -7,7 +7,7 @@ following files are checked:
 
   * core/vm-procedures.c - VM_OPERATOR entries (C identifier column)
   * core/vm-symbols.c    - symbol_map SYM(...) entries (Scheme column)
-  * languages/scheme-racket/primitives.rkt (Scheme column)
+  * languages/scheme/primitives.rkt (Scheme column)
   * languages/python/pyvelox/primitives.py (C identifier column)
 
 Any disagreement with the canonical table - in order, count, or name -
@@ -73,12 +73,12 @@ def parse_vm_symbols() -> list[str]:
 def parse_racket() -> list[str]:
     body = re.search(
         r"\(define vm-primitives\s+'\((.*?)\)\)",
-        read("languages/scheme-racket/primitives.rkt"),
+        read("languages/scheme/primitives.rkt"),
         re.S,
     )
     if not body:
         raise SystemExit(
-            "could not locate vm-primitives in languages/scheme-racket/primitives.rkt"
+            "could not locate vm-primitives in languages/scheme/primitives.rkt"
         )
     # Strip comments and whitespace.
     tokens = re.sub(r";.*", "", body.group(1)).split()
@@ -124,7 +124,7 @@ def main() -> int:
     sources = [
         ("core/vm-procedures.c", parse_vm_procedures(), c_names),
         ("core/vm-symbols.c", parse_vm_symbols(), scheme_names),
-        ("languages/scheme-racket/primitives.rkt", parse_racket(), scheme_names),
+        ("languages/scheme/primitives.rkt", parse_racket(), scheme_names),
         ("languages/python/pyvelox/primitives.py", parse_python(), c_names),
     ]
     for name, got, want in sources:

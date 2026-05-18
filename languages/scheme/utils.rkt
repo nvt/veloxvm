@@ -1,6 +1,6 @@
 #lang racket
 
-;; VeloxVM Racket Compiler - Utility Functions
+;; VeloxVM Scheme Compiler - Utility Functions
 ;; Copyright (c) 2025, RISE Research Institutes of Sweden AB
 
 (provide gensym-counter

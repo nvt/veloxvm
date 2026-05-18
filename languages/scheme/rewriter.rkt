@@ -1,6 +1,6 @@
 #lang racket
 
-;; VeloxVM Racket Compiler - Expression Rewriter
+;; VeloxVM Scheme Compiler - Expression Rewriter
 ;; Copyright (c) 2025, RISE Research Institutes of Sweden AB
 ;;
 ;; Implements rewrite rules similar to scheme-lib.lisp

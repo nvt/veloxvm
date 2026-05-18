@@ -1,13 +1,13 @@
 #lang racket
 
-;; VeloxVM Racket Compiler - REPL Server
+;; VeloxVM Scheme Compiler - REPL Server
 ;; Copyright (c) 2026, RISE Research Institutes of Sweden AB
 ;;
 ;; Long-running compiler service for the VeloxVM REPL. Speaks the
 ;; s-expression line protocol from doc/repl-design.md and emits
 ;; deltas in the wire format described there (magic 0x5E 0xB6).
 ;;
-;; Run as:  racket languages/scheme-racket/repl-server.rkt
+;; Run as:  racket languages/scheme/repl-server.rkt
 ;;
 ;; Holds session state across calls so that strings, symbols,
 ;; expressions, and macros defined in one REPL turn are visible in the

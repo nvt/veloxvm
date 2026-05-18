@@ -1,12 +1,12 @@
 ;; VeloxVM Unit Tests - Packet schema (fixed-width fields)
 ;; Tests for: schema-validate, schema-construct, schema-deconstruct
-;; from languages/scheme-racket/runtime/packet-schema.scm
+;; from languages/scheme/runtime/packet-schema.scm
 ;; (resolved via the reader's include search path).
 
 (include "../unit-test-framework.scm")
 (include "packet-schema.scm")
 
-;; Helpers to build bindings at runtime (the Racket compiler doesn't
+;; Helpers to build bindings at runtime (the Scheme compiler doesn't
 ;; round-trip dotted-pair literals through quoted forms).
 (define (b1 name val) (list (cons name val)))
 (define (b2 n1 v1 n2 v2) (list (cons n1 v1) (cons n2 v2)))

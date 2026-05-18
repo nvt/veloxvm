@@ -1,6 +1,6 @@
 ;; VeloxVM Unit Tests - Packet schema variable-length fields
 ;; Tests for: rest, length-prefixed
-;; from languages/scheme-racket/runtime/packet-schema.scm
+;; from languages/scheme/runtime/packet-schema.scm
 ;; (resolved via the reader's include search path).
 
 (include "../unit-test-framework.scm")

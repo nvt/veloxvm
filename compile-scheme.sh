@@ -1,11 +1,11 @@
 #!/bin/bash
-# VeloxVM Racket Compiler Wrapper Script
+# VeloxVM Scheme Compiler Wrapper Script
 # Copyright (c) 2025, RISE Research Institutes of Sweden AB
 
 set -e
 
 # Configuration
-RACKET_COMPILER="languages/scheme-racket/main.rkt"
+RACKET_COMPILER="languages/scheme/main.rkt"
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Check if racket is installed
@@ -19,7 +19,7 @@ fi
 if [ $# -lt 1 ]; then
     echo "Usage: $0 <source.scm> [output.vm]"
     echo ""
-    echo "Compile Scheme source to VeloxVM bytecode using Racket compiler"
+    echo "Compile Scheme source to VeloxVM bytecode"
     echo ""
     echo "Options:"
     echo "  -v, --verbose    Verbose output"
@@ -71,7 +71,7 @@ fi
 
 # Compile
 cd "$SCRIPT_DIR"
-echo "Compiling $SOURCE with Racket compiler..."
+echo "Compiling $SOURCE..."
 racket "$RACKET_COMPILER" $VERBOSE $DEBUG $OUTPUT "$SOURCE"
 
 echo "Compilation successful!"

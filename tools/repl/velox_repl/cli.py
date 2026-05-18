@@ -5,8 +5,8 @@ prompt_toolkit-driven loop. The frontend is deliberately thin: all
 evaluation logic lives in ``ReplSession`` and all rendering in
 ``velox_repl.render``.
 
-By default the wrapper auto-detects the real Racket REPL server
-(``languages/scheme-racket/repl-server.rkt`` + ``racket`` on PATH) and
+By default the wrapper auto-detects the real Scheme REPL server
+(``languages/scheme/repl-server.rkt`` + ``racket`` on PATH) and
 the real C VM (``bin/vm-repl``), both resolved relative to the package
 location. ``--compiler stub`` / ``--vm stub`` switch to the in-tree
 test fixtures under ``tests/fixtures/`` for driver-side testing.
@@ -321,7 +321,7 @@ def _resolve_compiler(spec: Optional[str], language: str) -> Tuple[List[str], st
                 "racket not on PATH; install Racket from https://racket-lang.org/ "
                 "or pass --compiler stub for the test fixture"
             )
-        rkt = _repo_root() / "languages" / "scheme-racket" / "repl-server.rkt"
+        rkt = _repo_root() / "languages" / "scheme" / "repl-server.rkt"
         if not rkt.exists():
             raise _ResolutionError(
                 f"compiler not found at {rkt}; pass --compiler stub for the test fixture"
@@ -386,7 +386,7 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
     p.add_argument(
         "--compiler",
         help='compiler command; "stub" uses the in-tree test fixture; '
-             'omit to auto-detect the real Racket repl-server',
+             'omit to auto-detect the real Scheme repl-server',
     )
     p.add_argument(
         "--vm",

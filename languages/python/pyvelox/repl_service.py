@@ -55,7 +55,7 @@ from .translator import PythonTranslator
 
 # ---------------------------------------------------------------------------
 # Wire-format constants. Match include/vm-bytecode.h delta tags and the Racket
-# emitter in languages/scheme-racket/repl-server.rkt.
+# emitter in languages/scheme/repl-server.rkt.
 # ---------------------------------------------------------------------------
 
 DELTA_MAGIC = b"\x5e\xb6"

@@ -93,7 +93,7 @@ def encode_integer(n: int) -> bytes:
         - bits 5-3 = byte count (1-4)
     - Bytes 1+: value in big-endian (1-4 bytes)
 
-    Note: This matches the Racket compiler and actual VM implementation.
+    Note: This matches the Scheme compiler and actual VM implementation.
     The bytecode-format.md doc describes a different (unused) format.
 
     Args:

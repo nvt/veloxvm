@@ -17,7 +17,7 @@ Each stage transforms its input into a form suitable for the next stage.
 ## Directory layout
 
 ```
-languages/scheme-racket/
+languages/scheme/
 |-- main.rkt          Entry point, CLI argument parsing
 |-- reader.rkt        S-expression parser
 |-- expander.rkt      Macro expansion engine
@@ -153,11 +153,11 @@ source file. Error categories: syntax, expansion, compilation, optimization.
 
 ## Testing
 
-Tests live in `languages/scheme-racket/tests/`, one file per stage plus an
+Tests live in `languages/scheme/tests/`, one file per stage plus an
 end-to-end suite:
 
 ```bash
-cd languages/scheme-racket/tests
+cd languages/scheme/tests
 racket run-all-tests.rkt
 ```
 
@@ -184,7 +184,7 @@ New tests follow the RackUnit form:
 ```racket
 #lang racket
 
-(require "languages/scheme-racket/main.rkt")
+(require "languages/scheme/main.rkt")
 
 (compile-file "input.scm" "output.vm")
 
@@ -209,10 +209,10 @@ Parameters:
 Custom pipelines can be composed from the individual modules:
 
 ```racket
-(require "languages/scheme-racket/reader.rkt")
-(require "languages/scheme-racket/expander.rkt")
-(require "languages/scheme-racket/optimizer.rkt")
-(require "languages/scheme-racket/compiler.rkt")
+(require "languages/scheme/reader.rkt")
+(require "languages/scheme/expander.rkt")
+(require "languages/scheme/optimizer.rkt")
+(require "languages/scheme/compiler.rkt")
 
 (define (my-compile source)
   (let* ([exprs     (read-from-string source)]
@@ -254,7 +254,7 @@ expected to call.
 ### Debug mode
 
 ```bash
-./compile-racket.sh --debug program.scm
+./compile-scheme.sh --debug program.scm
 ```
 
 Shows expression count, total bytecode size, per-expression sizes, and any

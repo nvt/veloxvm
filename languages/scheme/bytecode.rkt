@@ -1,6 +1,6 @@
 #lang racket
 
-;; VeloxVM Racket Compiler - Bytecode Generation
+;; VeloxVM Scheme Compiler - Bytecode Generation
 ;; Copyright (c) 2025, RISE Research Institutes of Sweden AB
 ;;
 ;; Generates VeloxVM bytecode files

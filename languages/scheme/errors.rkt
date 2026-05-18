@@ -1,6 +1,6 @@
 #lang racket
 
-;; VeloxVM Racket Compiler - Error Handling
+;; VeloxVM Scheme Compiler - Error Handling
 ;; Copyright (c) 2025, RISE Research Institutes of Sweden AB
 ;;
 ;; Provides better error messages with context

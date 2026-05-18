@@ -1,6 +1,6 @@
 #lang racket
 
-;; VeloxVM Racket Compiler - Primitives Tests
+;; VeloxVM Scheme Compiler - Primitives Tests
 ;; Copyright (c) 2025, RISE Research Institutes of Sweden AB
 
 (require rackunit

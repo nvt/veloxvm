@@ -6,8 +6,8 @@
 #
 # Options:
 #   -f, --force     Force recompilation even if files are up-to-date
-#   --opt-stats     Print per-bucket optimization fire counts (Racket compiler)
-#   --trace-opts    Trace each optimization rewrite to stderr (Racket compiler)
+#   --opt-stats     Print per-bucket optimization fire counts (Scheme compiler)
+#   --trace-opts    Trace each optimization rewrite to stderr (Scheme compiler)
 #
 # When no path is supplied, this script builds all available apps, tests, and benchmarks.
 #
@@ -66,7 +66,7 @@ needs_compilation() {
 
 # compile_scheme: Compile source files implemented in Scheme to Velox bytecode.
 compile_scheme () {
-  RACKET_COMPILER=./languages/scheme-racket/main.rkt
+  RACKET_COMPILER=./languages/scheme/main.rkt
 
   SOURCES=$@
 
@@ -108,7 +108,7 @@ compile_scheme () {
     if [ $TO_COMPILE -eq 1 ]; then
       STR="file"
     fi
-    printf "Compiling %d Scheme %s using Racket compiler... " $TO_COMPILE $STR
+    printf "Compiling %d Scheme %s... " $TO_COMPILE $STR
   fi
 
   # Second pass: build a manifest and compile every file in one Racket
@@ -358,7 +358,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --opt-stats|--trace-opts)
-      # Forward optimizer-diagnostic flags to the Racket compiler.
+      # Forward optimizer-diagnostic flags to the Scheme compiler.
       RACKET_FLAGS="$RACKET_FLAGS $1"
       shift
       ;;
