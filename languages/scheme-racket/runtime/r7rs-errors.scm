@@ -36,4 +36,30 @@
 (define (error-object-irritants obj)
   (vector-ref obj 2))
 
+;; R7RS §6.11 with-exception-handler. The handler is installed for the
+;; dynamic extent of (thunk); on raise, control unwinds to the guard
+;; clause and the handler is invoked with the raised object. The
+;; handler's return value becomes the value of the
+;; with-exception-handler form.
+;;
+;; Limitation vs. the R7RS spec: the spec mandates that raise produce
+;; a secondary error if the handler returns (i.e. raise is
+;; non-continuable). VeloxVM does not currently implement that
+;; secondary-error behaviour; the handler's return value is simply
+;; returned. In practice handlers either run to completion (the case
+;; this implementation handles) or escape via an outer continuation
+;; (not the targeted use case for this VM).
+(define (with-exception-handler handler thunk)
+  (guard (e (else (handler e)))
+    (thunk)))
+
+;; R7RS §6.11 raise-continuable. The full spec calls the handler in
+;; the dynamic extent of the raise and threads the handler's return
+;; value back to the raise-continuable call site; that requires a
+;; per-thread handler stack the VM does not have. Aliased to raise so
+;; user code that catches the raised object still works -- the
+;; handler's return value flows out of the with-exception-handler
+;; form rather than back into the raise-continuable site.
+(define raise-continuable raise)
+
 ;;; End of r7rs-errors.scm

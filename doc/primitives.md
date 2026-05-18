@@ -236,3 +236,12 @@ code writes.
 | 217 | `open_input_bytevector` | `open-input-bytevector` |
 | 218 | `open_output_bytevector` | `open-output-bytevector` |
 | 219 | `get_output_bytevector` | `get-output-bytevector` |
+| 220 | `read_u8` | `read-u8` |
+| 221 | `peek_u8` | `peek-u8` |
+| 222 | `write_u8` | `write-u8` |
+| 223 | `read_bytevector` | `read-bytevector` |
+| 224 | `read_bytevector_into` | `read-bytevector!` |
+| 225 | `write_bytevector` | `write-bytevector` |
+| 226 | `read_string` | `read-string` |
+| 227 | `write_string` | `write-string` |
+| 228 | `read_line` | `read-line` |

@@ -84,14 +84,16 @@
 
 (test-suite "Packet schema construct/deconstruct - happy paths")
 
-;; Limit values exercise the range check boundaries.
-(assert-true (vector? (schema-construct u8-schema (b1 'x 0)))
+;; Limit values exercise the range check boundaries. schema-construct
+;; returns a buffer-backed bytevector, which is disjoint from vector?
+;; per R7RS §3.2.
+(assert-true (bytevector? (schema-construct u8-schema (b1 'x 0)))
              "u8 at 0")
-(assert-true (vector? (schema-construct u8-schema (b1 'x 255)))
+(assert-true (bytevector? (schema-construct u8-schema (b1 'x 255)))
              "u8 at 255")
-(assert-true (vector? (schema-construct '((x s16)) (b1 'x -32768)))
+(assert-true (bytevector? (schema-construct '((x s16)) (b1 'x -32768)))
              "s16 at min")
-(assert-true (vector? (schema-construct '((x s16)) (b1 'x 32767)))
+(assert-true (bytevector? (schema-construct '((x s16)) (b1 'x 32767)))
              "s16 at max")
 
 ;; bytes round-trip preserves contents.

@@ -75,9 +75,16 @@ VM_FUNCTION(vector)
   memcpy(vector->elements, argv, sizeof(vm_obj_t) * argc);
 }
 
+/* R7RS §3.2 disjointness: vector? and bytevector? must be mutually
+   exclusive. Buffer-flagged vectors are the storage backing
+   bytevectors (bytevector? aliases buffer?), so vector? must not
+   match them. The flag check costs one extra load relative to the
+   plain type-tag test. */
 VM_FUNCTION(vectorp)
 {
-  VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_VECTOR);
+  VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_VECTOR &&
+                  VM_IS_CLEAR(argv[0].value.vector->flags,
+                              VM_VECTOR_FLAG_BUFFER));
 }
 
 VM_FUNCTION(bufferp)
