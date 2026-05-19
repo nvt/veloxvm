@@ -112,28 +112,21 @@
 ;; ============================================================================
 
 (define (compile-quote datum bc [env '()])
-  ;; Quote is a VM special form that doesn't evaluate its argument
-  ;; We must encode it as: inline(2) + quote-symbol + datum
-  ;; The quote operator receives the unevaluated datum and returns it as-is
-  ;;
-  ;; For lists: The CL compiler rewrites (quote (a b c)) to (list (quote a) (quote b) (quote c))
-  ;; For vectors: Rewrite (quote #(a b c)) to (vector (quote a) (quote b) (quote c))
-  ;; For atoms: We generate (quote atom) as an inline form
-  ;;
-  ;; R5RS COMPLIANCE: Empty list '() must be distinct from #f (see R5RS 6.3.1)
-  ;; We handle empty lists by rewriting '() to (list), creating a VM_TYPE_LIST object
+  ;; Quote is a VM special form that doesn't evaluate its argument; it
+  ;; encodes as inline(2) + quote-symbol + datum and returns the datum
+  ;; as-is. Compound literals can't be encoded that way -- the bytecode
+  ;; has no general datum-literal form -- so we rewrite them into a
+  ;; constructor call before recursing:
+  ;;   (quote (a b c))   => (list (quote a) (quote b) (quote c))
+  ;;   (quote #(a b c))  => (vector (quote a) (quote b) (quote c))
+  ;;   (quote ())        => (list)   ; per R5RS 6.3.1, '() is distinct from #f
   (cond
     [(and (list? datum) (not (null? datum)))
-     ;; Non-empty list: rewrite to list constructor with quoted elements
-     ;; This matches CL compiler behavior: (quote (a b)) => (list (quote a) (quote b))
      (compile-expr `(list ,@(map (lambda (e) `(quote ,e)) datum)) bc env)]
     [(null? datum)
-     ;; Empty list: rewrite '() to (list) to create VM_TYPE_LIST object
-     ;; This ensures '() is distinct from #f per R5RS requirements
      (compile-expr '(list) bc env)]
     [(vector? datum)
-     ;; Vector literal: rewrite to vector constructor with quoted elements
-     ;; (quote #(a b c)) => (vector (quote a) (quote b) (quote c))
+     ;; Vector literal: rewrite to vector constructor with quoted elements.
      (let ([elements (vector->list datum)])
        (if (null? elements)
            ;; Empty vector

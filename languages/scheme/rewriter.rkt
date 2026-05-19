@@ -3,8 +3,9 @@
 ;; VeloxVM Scheme Compiler - Expression Rewriter
 ;; Copyright (c) 2025, RISE Research Institutes of Sweden AB
 ;;
-;; Implements rewrite rules similar to scheme-lib.lisp
-;; Transforms R5RS convenience forms into VM primitives
+;; Rewrites R5RS derived forms (cond, case, when, let, do, guard,
+;; quasiquote, ...) into the small core of forms the compiler knows
+;; how to emit bytecode for.
 
 (require "optimizer.rkt")  ; opt-note-fire! for letrec-to-let trace
 
@@ -432,7 +433,15 @@
      (cons (car formals) (letrec-formals->list (cdr formals)))]
     [else '()]))
 
-;; do: Transform into named let with recursion
+;; do: expand to a self-recursive letrec.
+;;
+;; The previous expansion used (begin (define $loop ...) ($loop ...)),
+;; which abuses define inside an expression context -- the loop name
+;; leaks into the global symbol table even when the do is nested deep
+;; in another function. A letrec gives the loop name proper local
+;; scope, mirrors the named-let expansion, and lets the self-recursive
+;; letrec-lifting pass collapse the simple cases back to a top-level
+;; helper.
 (define-rewriter (do expr)
   (let* ([var-clauses (cadr expr)]
          [test-clause (caddr expr)]
@@ -447,18 +456,17 @@
                         var-clauses)]
          [test-expr (car test-clause)]
          [result-exprs (cdr test-clause)])
-    `(begin
-       (define ,loop-name
-         (lambda ,var-names
-           (if ,test-expr
-               ,(if (null? result-exprs)
-                    #f  ; No result exprs
-                    (if (= (length result-exprs) 1)
-                        (car result-exprs)
-                        `(begin ,@result-exprs)))
-               (begin
-                 ,@commands
-                 (,loop-name ,@var-steps)))))
+    `(letrec ((,loop-name
+               (lambda ,var-names
+                 (if ,test-expr
+                     ,(if (null? result-exprs)
+                          #f
+                          (if (= (length result-exprs) 1)
+                              (car result-exprs)
+                              `(begin ,@result-exprs)))
+                     (begin
+                       ,@commands
+                       (,loop-name ,@var-steps))))))
        (,loop-name ,@var-inits))))
 
 ;; Per-expansion counter to give nested dynamic-winds unique formal
@@ -742,28 +750,23 @@
 ;; Exception Handling
 ;; ============================================================================
 
-;; guard: R5RS exception handling
-;; R5RS syntax: (guard (var clause...) body...)
-;; VM expects: (guard var (cond clause...) (begin body...))
-;; Uses 'vm-guard internally to avoid infinite rewriting, converted back to 'guard later
-;; NOTE: Full R6RS/R7RS compliance (as of 2025-12-15):
-;;       - Exception propagation from handler clauses works correctly
-;;       - Automatic re-raising when no else clause (implicit else added)
+;; guard: R5RS exception handling.
+;; Source syntax: (guard (var clause...) body...)
+;; VM form:       (guard var (cond clause...) (begin body...))
+;; Emits 'vm-guard internally to avoid retriggering this rewriter; it
+;; is converted back to 'guard by finalize-guard before compilation.
+;; If no else clause is supplied, an implicit (else (raise var)) is
+;; appended so the exception re-raises when no handler matches, per
+;; R6RS/R7RS.
 (define-rewriter (guard expr)
-  ;; Transform R5RS format to VM format using temporary 'vm-guard symbol
-  ;; This avoids infinite recursion since vm-guard won't trigger this rewriter
-  (let* ([exception-var (car (cadr expr))]     ; Extract exception variable
-         [handler-clauses (cdr (cadr expr))]   ; Extract handler clauses
-         [body-exprs (cddr expr)]              ; Extract body expressions
-         ;; Check if there's an else clause (R6RS/R7RS compliance)
+  (let* ([exception-var (car (cadr expr))]
+         [handler-clauses (cdr (cadr expr))]
+         [body-exprs (cddr expr)]
          [has-else? (and (pair? handler-clauses)
                          (ormap (lambda (clause)
                                   (and (pair? clause)
                                        (eq? (car clause) 'else)))
                                 handler-clauses))]
-         ;; If no else clause, add implicit re-raise (R6RS/R7RS requirement)
-         ;; "If every cond clause's test evaluates to #f and there is no else
-         ;;  clause, then raise is re-invoked on the raised object"
          [final-clauses (if has-else?
                             handler-clauses
                             (append handler-clauses
@@ -780,13 +783,10 @@
 (define-rewriter (zero? expr)
   `(= ,(cadr expr) 0))
 
-;; list?: Check if argument is a proper list
-;; NOTE: Removed broken rewriter that used (or (null? x) (pair? x))
-;; This was incorrect because improper pairs like (cons 1 2) are pairs but NOT lists.
-;; Now calls the VM primitive which correctly checks the VM_LIST_FLAG_PAIR flag.
-;; (define-rewriter (list? expr)
-;;   (let ([x (cadr expr)])
-;;     `(or (null? ,x) (pair? ,x))))
+;; list?: no rewriter -- defer to the VM primitive, which distinguishes
+;; proper lists from improper pairs like (cons 1 2). A naive
+;; (or (null? x) (pair? x)) rewrite would misclassify improper pairs
+;; as lists.
 
 ;; call/cc: Abbreviation for call-with-current-continuation
 (define-rewriter (call/cc expr)
@@ -837,26 +837,27 @@
 ;; String Operations (Case-Insensitive)
 ;; ============================================================================
 
-;; Case-insensitive string comparisons
-;; Note: These would need VM support for string-downcase or similar
-;; For now, we'll implement simplified versions
+;; Case-insensitive string comparisons. The VM has no string-downcase
+;; primitive, so these currently fall through to the case-sensitive
+;; comparators -- not R5RS-conformant, but no worse than rejecting the
+;; call outright. A real implementation needs VM-side case folding.
 (define-rewriter (string-ci=? expr)
-  `(string=? ,@(cdr expr)))  ; TODO: Add proper case-insensitive support
+  `(string=? ,@(cdr expr)))
 
 (define-rewriter (string-ci<? expr)
-  `(string<? ,@(cdr expr)))  ; TODO: Add proper case-insensitive support
+  `(string<? ,@(cdr expr)))
 
 (define-rewriter (string-ci>? expr)
-  `(string>? ,@(cdr expr)))  ; TODO: Add proper case-insensitive support
+  `(string>? ,@(cdr expr)))
 
 (define-rewriter (string-ci<=? expr)
-  `(string<=? ,@(cdr expr)))  ; TODO: Add proper case-insensitive support
+  `(string<=? ,@(cdr expr)))
 
 (define-rewriter (string-ci>=? expr)
-  `(string>=? ,@(cdr expr)))  ; TODO: Add proper case-insensitive support
+  `(string>=? ,@(cdr expr)))
 
 ;; ============================================================================
-;; Quasiquotation (Phase 3)
+;; Quasiquotation
 ;; ============================================================================
 
 ;; Quasiquote expansion algorithm based on R5RS specification
@@ -900,8 +901,8 @@
              ;; Fold (append '(a b) '(c d)) -> '(a b c d) when both
              ;; the spliced value and the expanded tail are quoted
              ;; proper-list literals. Otherwise emit the runtime
-             ;; append. Item #18: keeps fully-static quasi-quotes
-             ;; from generating a runtime append call.
+             ;; append. The fold keeps fully-static quasi-quotes from
+             ;; generating a runtime append call.
              (let ([splice (cadar expr)]
                    [tail-exp (expand-quasiquote (cdr expr) depth)])
                (if (and (quoted-list-literal? splice)

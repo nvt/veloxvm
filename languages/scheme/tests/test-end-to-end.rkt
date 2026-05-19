@@ -92,7 +92,11 @@
 ;; Test 8: Do loop (derived form)
 (displayln "Test 8: Do loop (do ((i 0 (+ i 1))) ((> i 10) i))")
 (define rw8 (rewrite-only '(do ((i 0 (+ i 1))) ((> i 10) i))))
-(check-true (contains-sym? 'define rw8) "Do creates internal define")
+;; do now expands via letrec (locally-scoped recursive helper) rather
+;; than a top-level-style define. The letrec then further rewrites to
+;; a lambda application + set! pattern.
+(check-true (contains-sym? 'lambda rw8) "Do produces a recursive helper lambda")
+(check-true (contains-sym? 'set! rw8) "Do binds the helper via the letrec set! dance")
 (check-true (contains-sym? 'if rw8) "Do uses 'if'")
 (displayln "   PASSED\n")
 
