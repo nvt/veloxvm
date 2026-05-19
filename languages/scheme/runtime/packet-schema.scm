@@ -389,10 +389,7 @@
   (if (null? bufs)
       result
       (let ((chunk (car bufs)))
-        ;; buffer-append rejects index == dst-length even for a zero-byte
-        ;; source, so skip empty chunks rather than emit a spurious error.
-        (when (> (vector-length chunk) 0)
-          (buffer-append result pos chunk))
+        (buffer-append result pos chunk)
         (pkt-concat-walk (cdr bufs)
                          result
                          (+ pos (vector-length chunk))))))
