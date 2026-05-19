@@ -59,9 +59,10 @@
       (printf "Compiled ~a -> ~a\n" source-file dest)
       dest)))
 
-;; Compile Scheme source string
-;; Uses CL-style pre-allocation: expression 0 is pre-allocated as entry point
-;; source-file: optional path for resolving include directives
+;; Compile a Scheme source string. Expression 0 is pre-allocated as
+;; the program entry point and gets backfilled with the concatenated
+;; bytes of all top-level forms below.
+;; source-file: optional path for resolving include directives.
 (define (compile-string source-code [source-file #f])
   (opt-stats-reset!)
   (let* ([user-exprs (read-all-exprs source-code source-file)]
@@ -96,18 +97,20 @@
          ;; Pre-allocate expression 0 as empty placeholder (will be replaced)
          [_ (add-expr bc (expr-encoding 'atom #""))])
 
-    ;; CL-Style: Accumulate bytes from each top-level expression into expression 0
-    ;; Don't wrap in begin - compile each expression and concatenate their bytes
-    ;; Compile directly into bc (not temp-bc) so nested expressions get correct IDs!
+    ;; Accumulate bytes from each top-level expression into expression
+    ;; 0. We don't wrap the body in begin; instead each expression is
+    ;; compiled in turn and its bytes are concatenated. Compiling
+    ;; directly into bc (not a temporary) is what makes nested
+    ;; expressions in the body get correct IDs.
     (parameterize ([current-shadowed-primitives shadowed])
     (let* ([accumulated-bytes
             (apply bytes-append
               (for/list ([expr pruned])
-                (let ([enc (compile-expr expr bc)])  ; Compile into bc, not temp-bc!
+                (let ([enc (compile-expr expr bc)])
                   (expr-encoding-data enc))))])
 
-      ;; Replace expression 0 with all accumulated bytes
-      ;; This matches CL's approach: expression 0 contains ALL top-level code sequentially
+      ;; Replace expression 0 with all accumulated bytes: expression 0
+      ;; ends up containing every top-level form sequentially.
       (replace-expr bc 0 (expr-encoding 'form accumulated-bytes))
 
       ;; DEBUG

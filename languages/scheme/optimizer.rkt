@@ -132,8 +132,7 @@
     ;; and/or short-circuit folding. R5RS: (and) = #t, (or) = #f;
     ;; both forms short-circuit on the first determining argument.
     ;; Eliminating the unreachable tail trims free-variable
-    ;; references that would otherwise widen closure capture sets
-    ;; (item #17 framing).
+    ;; references that would otherwise widen closure capture sets.
     [(list 'and) #t]
     [(list 'or) #f]
     [`(and ,e) e]
@@ -399,8 +398,8 @@
 ;; Numbers, booleans, characters, and atomic quoted data qualify.
 ;; Strings and quoted lists/vectors are excluded -- strings have eq?
 ;; identity, and quoted lists currently allocate fresh storage at each
-;; evaluation (item #3 will fix the latter; until then, duplicating a
-;; quoted list use can be a runtime regression).
+;; evaluation, so duplicating a quoted list use can be a runtime
+;; regression.
 (define (beta-literal? v)
   (or (number? v)
       (boolean? v)
