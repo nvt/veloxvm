@@ -7,6 +7,7 @@
          "reader.rkt"
          "expander.rkt"  ; Macro expansion
          "rewriter.rkt"
+         "letrec-lifting.rkt"  ; Lift single self-recursive letrec to top level
          "optimizer.rkt"  ; Optimizations
          "dead-define.rkt"    ; Strip unreferenced top-level defines
          "errors.rkt"     ; Error handling
@@ -75,8 +76,14 @@
          [rewritten (map rewrite-expr expanded)]
          ;; Finalize guard: convert vm-guard back to guard
          [finalized (map finalize-guard rewritten)]
+         ;; Hoist single self-recursive letrec forms to top-level
+         ;; bindings. Detects the post-rewrite shape
+         ;; ((lambda (f) (set! f LAMBDA) BODY) #f) where LAMBDA is
+         ;; self-contained, and emits (define $rec-N LAMBDA') + BODY'.
+         ;; Skips the box rewrite the compiler would otherwise apply.
+         [letrec-lifted (lift-self-recursive-letrec finalized)]
          ;; Optimize expressions (constant folding, etc.)
-         [optimized (map optimize-expr finalized)]
+         [optimized (map optimize-expr letrec-lifted)]
          ;; Strip top-level defines whose names are never referenced.
          [pruned (eliminate-dead-defines optimized)]
          ;; Collect top-level user (define name ...) names that also
