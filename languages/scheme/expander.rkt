@@ -25,7 +25,7 @@
          expand-letrec-syntax)
 
 ;; ============================================================================
-;; PATTERN MATCHING (Milestone 4.1)
+;; PATTERN MATCHING
 ;; ============================================================================
 
 ;; Match a pattern against input, returning bindings or #f
@@ -142,7 +142,7 @@
        (list? (hash-ref bindings var))))
 
 ;; ============================================================================
-;; TEMPLATE EXPANSION (Milestone 4.2)
+;; TEMPLATE EXPANSION
 ;; ============================================================================
 
 ;; Expand a template using bindings from pattern matching
@@ -224,7 +224,7 @@
     [else '()]))
 
 ;; ============================================================================
-;; SYNTAX-RULES TRANSFORMER (Milestone 4.3)
+;; SYNTAX-RULES TRANSFORMER
 ;; ============================================================================
 
 ;; Create a macro transformer from a syntax-rules specification
@@ -258,7 +258,7 @@
              (loop (cdr remaining)))]))))
 
 ;; ============================================================================
-;; DEFINE-SYNTAX INTEGRATION (Milestone 4.4)
+;; DEFINE-SYNTAX INTEGRATION
 ;; ============================================================================
 
 ;; Scope-based macro system
