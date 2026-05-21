@@ -63,7 +63,7 @@ vm_eval_object(vm_thread_t *thread, vm_obj_t *obj)
       vm_signal_error(thread, VM_ERROR_SYMBOL_UNDEFINED);
       vm_set_error_object(thread, obj);
     } else {
-      memmove(obj, resolved_obj, sizeof(vm_obj_t));
+      memcpy(obj, resolved_obj, sizeof(vm_obj_t));
     }
     break;
   case VM_TYPE_RATIONAL:
