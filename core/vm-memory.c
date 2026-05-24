@@ -61,6 +61,40 @@
 #include "vm-log.h"
 #include "vm-mempool.h"
 
+#if VM_PAUSE_PROFILING
+#include "vm-port.h"
+
+/* Convert a vm_native_time_t reading to nanoseconds. POSIX returns
+   ns directly (resolution = 1e9 ticks/s), Contiki-NG returns rtimer
+   ticks at RTIMER_SECOND resolution. Histogram bucketing is in
+   log2 microseconds so per-port precision differences are absorbed
+   by the bucket width. */
+static uint64_t
+pause_now_ns(void)
+{
+  return (uint64_t)VM_NATIVE_TIME() *
+         (1000000000ULL / VM_NATIVE_TIME_RESOLUTION());
+}
+
+static unsigned
+pause_bucket(uint64_t ns)
+{
+  uint64_t us;
+  unsigned b;
+
+  if(ns < 1000) {
+    return 0;
+  }
+  us = ns / 1000;
+  b = 0;
+  while(us > 0 && b < VM_PAUSE_BUCKETS - 1) {
+    us >>= 1;
+    b++;
+  }
+  return b;
+}
+#endif
+
 #define VM_POOL_ELEMENT_SIZE    sizeof(vm_list_item_t)
 #define VM_MAX_POOL_ALLOCATIONS (VM_OBJECT_POOL_SIZE / VM_POOL_ELEMENT_SIZE)
 #define VM_MAX_HEAP_ALLOCATIONS (VM_HEAP_SIZE / VM_POOL_ELEMENT_SIZE)
@@ -514,6 +548,10 @@ do_gc(int force)
   unsigned deallocated;
   vm_thread_t *thread;
   void *free_ptr;
+#if VM_PAUSE_PROFILING
+  uint64_t pause_start;
+  uint64_t pause_ns;
+#endif
 
   /* Honour the disable counter and the allocation threshold unless the
      caller is forcing a sweep (e.g. for accurate live-memory reporting,
@@ -528,6 +566,9 @@ do_gc(int force)
   }
 
   mem_stats.gc_invocations++;
+#if VM_PAUSE_PROFILING
+  pause_start = pause_now_ns();
+#endif
 
   /* Mark phase: mark all objects that have been allocated by the threads.
      Iterate the thread table by index, not by vm_thread_get(): the latter
@@ -580,6 +621,15 @@ do_gc(int force)
 
   /* Reset memory allocation counter. */
   allocated_since_gc = 0;
+
+#if VM_PAUSE_PROFILING
+  pause_ns = pause_now_ns() - pause_start;
+  mem_stats.gc_pause_ns_total += pause_ns;
+  if(pause_ns > mem_stats.gc_pause_ns_max) {
+    mem_stats.gc_pause_ns_max = pause_ns;
+  }
+  mem_stats.gc_pause_buckets[pause_bucket(pause_ns)]++;
+#endif
 }
 
 void
@@ -724,6 +774,27 @@ vm_memory_profile_print(void)
          (unsigned long)stats.used_bytes,
          (unsigned long)stats.peak_bytes,
          (unsigned long)stats.capacity_bytes);
+
+#if VM_PAUSE_PROFILING
+  {
+    unsigned k;
+    uint64_t mean_ns = mem_stats.gc_invocations > 0
+                       ? mem_stats.gc_pause_ns_total / mem_stats.gc_invocations
+                       : 0;
+    printf("MEM gc_pause_ns total=%llu mean=%llu max=%llu\n",
+           (unsigned long long)mem_stats.gc_pause_ns_total,
+           (unsigned long long)mean_ns,
+           (unsigned long long)mem_stats.gc_pause_ns_max);
+    /* Bucket k holds counts of pauses in [2^(k-1), 2^k) microseconds
+       for k >= 1; bucket 0 is sub-microsecond. */
+    printf("MEM gc_pause_hist");
+    for(k = 0; k < VM_PAUSE_BUCKETS; k++) {
+      printf(" b%u=%llu", k,
+             (unsigned long long)mem_stats.gc_pause_buckets[k]);
+    }
+    printf("\n");
+  }
+#endif
 }
 
 int

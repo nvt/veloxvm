@@ -212,6 +212,12 @@ typedef struct vm_device {
   uint8_t flags;
 } vm_device_t;
 
+#if VM_PAUSE_PROFILING
+#ifndef VM_PAUSE_BUCKETS
+#define VM_PAUSE_BUCKETS 16
+#endif
+#endif
+
 typedef struct vm_memory_stats {
   uint64_t allocations;
   uint64_t allocated_bytes;
@@ -220,6 +226,11 @@ typedef struct vm_memory_stats {
   uint64_t mempool_forwards;
   uint64_t gc_invocations;
   uint32_t peak_heap_allocations;
+#if VM_PAUSE_PROFILING
+  uint64_t gc_pause_ns_total;
+  uint64_t gc_pause_ns_max;
+  uint64_t gc_pause_buckets[VM_PAUSE_BUCKETS];
+#endif
 } vm_memory_stats_t;
 
 /* Scheduler functions. (vm-sched.c) */
