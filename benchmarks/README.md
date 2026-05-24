@@ -24,6 +24,25 @@ These benchmarks are designed to measure VM performance characteristics and vali
   around depth 40; depth 200 proves iterative mark works
 - Complementary to tree-walk.scm, which exercises a branched shape
 
+#### GC stress suite
+
+Adversarial benchmarks that each isolate a single GC cost vector for
+profiling and tuning. Pair with the per-GC pause-time instrumentation
+in `core/vm-memory.c` (gated on `VM_PAUSE_PROFILING`) to derive the
+contribution of each phase. Each non-`crash-spine` benchmark has a
+`-small` companion sized to fit the Zoul-tier (5 / 3 kB) and mid-tier
+(32 / 16 kB) heap configurations.
+
+| Benchmark                       | Isolates                                                |
+|---------------------------------|---------------------------------------------------------|
+| alloc-and-drop.scm              | Per-GC constant overhead with a near-zero live set      |
+| wide-vector.scm                 | `VECTOR` mark walk over an N-element elements array     |
+| pool-near-full.scm              | Object-pool sweep gated by the 2/3-full threshold       |
+| ext-objects.scm                 | Linear walk of `ext_object_list_head` on every GC       |
+| combined-deep-and-full.scm      | Depth + multi-root + sweep-gate stress together         |
+| shared-symtab-threads.scm       | Per-thread re-mark of the shared symbol-bindings table  |
+| crash-spine.scm                 | Recursive-marker C-stack overflow at large spine depth (no `-small` variant — the point is to crash, run on the target you want to characterise) |
+
 ### Compute
 
 **fib-recursive.scm** - Naive recursive Fibonacci, repeated
