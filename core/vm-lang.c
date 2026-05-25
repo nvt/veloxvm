@@ -376,6 +376,9 @@ write_object_depth(vm_port_t *port, vm_obj_t *obj, int depth)
     nested_print = 0;
     break;
   }
+  case VM_TYPE_NIL:
+    vm_write(port, "()");
+    break;
   case VM_TYPE_VECTOR:
     if(VM_IS_SET(obj->value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
       output_raw = port != NULL &&
@@ -528,6 +531,9 @@ vm_objects_equal(vm_thread_t *thread, vm_obj_t *obj1, vm_obj_t *obj2)
        same iff they are the same allocation. NULL pair (defensive)
        compares equal to NULL pair. */
     return obj1->value.pair == obj2->value.pair;
+  case VM_TYPE_NIL:
+    /* All empty lists are eq?. */
+    return 1;
   case VM_TYPE_VECTOR:
     return obj1->value.vector->length == obj2->value.vector->length &&
       obj1->value.vector->elements == obj2->value.vector->elements;
@@ -560,12 +566,14 @@ vm_objects_deep_equal(vm_thread_t *thread, vm_obj_t *obj1, vm_obj_t *obj2)
   int i;
 
   /* Cross-type list/pair equality. During the cons-quadratic
-     migration, '(1 2 3) (VM_TYPE_LIST) and (cons 1 (cons 2 (cons 3
-     '()))) (VM_TYPE_PAIR chain) are structurally identical and must
-     compare equal? under R5RS/R7RS. Walk both with the unified
-     iterator. */
-  if((obj1->type == VM_TYPE_LIST || obj1->type == VM_TYPE_PAIR) &&
-     (obj2->type == VM_TYPE_LIST || obj2->type == VM_TYPE_PAIR)) {
+     migration, '(1 2 3) (VM_TYPE_LIST), (cons 1 (cons 2 (cons 3
+     '()))) (VM_TYPE_PAIR chain), and VM_TYPE_NIL (empty list) are
+     all structurally compatible and must compare equal? under
+     R5RS/R7RS. Walk both with the unified iterator. */
+  if((obj1->type == VM_TYPE_LIST || obj1->type == VM_TYPE_PAIR ||
+      obj1->type == VM_TYPE_NIL) &&
+     (obj2->type == VM_TYPE_LIST || obj2->type == VM_TYPE_PAIR ||
+      obj2->type == VM_TYPE_NIL)) {
     vm_list_walker_t w1, w2;
     vm_obj_t *car1, *car2;
     vm_obj_t term1, term2;

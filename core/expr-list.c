@@ -687,10 +687,10 @@ VM_FUNCTION(length)
   vm_integer_t n;
   vm_obj_t obj;
 
-  /* Support lists, strings, and pair chains. For VM_TYPE_PAIR walk
-     the cdr chain to a terminating empty list; raise on improper
-     list (R5RS §6.3.2 leaves length on improper lists unspecified;
-     here it errors). */
+  if(argv[0].type == VM_TYPE_NIL) {
+    VM_PUSH_INTEGER(0);
+    return;
+  }
   if(argv[0].type == VM_TYPE_LIST) {
     VM_PUSH_INTEGER(argv[0].value.list->length);
     return;
@@ -706,7 +706,8 @@ VM_FUNCTION(length)
       n++;
       obj = obj.value.pair->cdr;
     }
-    if(obj.type == VM_TYPE_LIST && obj.value.list->length == 0) {
+    if(obj.type == VM_TYPE_NIL ||
+       (obj.type == VM_TYPE_LIST && obj.value.list->length == 0)) {
       VM_PUSH_INTEGER(n);
       return;
     }
@@ -718,20 +719,25 @@ VM_FUNCTION(length)
 
 VM_FUNCTION(nullp)
 {
-  /* VM_TYPE_PAIR is never the empty list; only an empty VM_TYPE_LIST is. */
-  VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_LIST &&
-                  argv[0].value.list->length == 0);
+  /* The empty list is VM_TYPE_NIL after Phase 4, or a length-0
+     VM_TYPE_LIST under the legacy representation (still produced by
+     a few code paths during the transition). */
+  VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_NIL ||
+                  (argv[0].type == VM_TYPE_LIST &&
+                   argv[0].value.list->length == 0));
 }
 
 VM_FUNCTION(listp)
 {
   vm_obj_t obj;
 
-  /* R5RS §6.3.2: list? is #t for proper lists -- structures terminating
-     in the empty list. For VM_TYPE_LIST the PAIR flag distinguishes
-     improper pair structure from proper list. For VM_TYPE_PAIR walk
-     the cdr chain to its terminator. Cycle detection is deferred (no
-     cycles can be constructed until set-cdr! supports sharing). */
+  /* R5RS §6.3.2: list? is #t for proper lists -- structures
+     terminating in the empty list. The empty list itself is a
+     proper list. */
+  if(argv[0].type == VM_TYPE_NIL) {
+    VM_PUSH_BOOLEAN(VM_TRUE);
+    return;
+  }
   if(argv[0].type == VM_TYPE_LIST) {
     VM_PUSH_BOOLEAN(VM_IS_CLEAR(argv[0].value.list->flags, VM_LIST_FLAG_PAIR));
     return;
@@ -744,7 +750,9 @@ VM_FUNCTION(listp)
   while(obj.type == VM_TYPE_PAIR && obj.value.pair != NULL) {
     obj = obj.value.pair->cdr;
   }
-  VM_PUSH_BOOLEAN(obj.type == VM_TYPE_LIST && obj.value.list->length == 0);
+  VM_PUSH_BOOLEAN(obj.type == VM_TYPE_NIL ||
+                  (obj.type == VM_TYPE_LIST &&
+                   obj.value.list->length == 0));
 }
 
 VM_FUNCTION(pairp)

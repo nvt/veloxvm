@@ -63,7 +63,10 @@ typedef enum vm_obj_type {
      car and cdr inline. The tag is appended to the end of the enum
      to avoid shifting existing tag values that may be embedded in
      compiled bytecode or policy specs. */
-  VM_TYPE_PAIR      = 18
+  VM_TYPE_PAIR      = 18,
+  /* R7RS-style empty-list singleton. The tag is the value -- the
+     union payload is unused. */
+  VM_TYPE_NIL       = 19
 } vm_obj_type_t;
 
 /* Definitions for denoting multiple object types; e.g., in specifications

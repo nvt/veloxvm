@@ -44,7 +44,9 @@ vm_list_walker_init(vm_list_walker_t *w, const vm_obj_t *obj)
     w->suffix_obj = *obj;
     return 1;
   }
-  if(obj->type == VM_TYPE_PAIR) {
+  if(obj->type == VM_TYPE_PAIR || obj->type == VM_TYPE_NIL) {
+    /* Pair-or-nil walk. NIL initializes to "already terminated"
+       so walker_next returns 0 (clean end) on first call. */
     w->kind = VM_TYPE_PAIR;
     w->list_root = NULL;
     w->list_item = NULL;
@@ -81,7 +83,11 @@ vm_list_walker_next(vm_list_walker_t *w, vm_obj_t **car_out)
       w->list_item = w->list_root->head;
       /* Fall through to the LIST handling below. */
     } else {
-      /* Genuine terminator. Proper if empty list or NULL pair. */
+      /* Genuine terminator. Proper if nil, empty-list LIST,
+         or NULL pair. Anything else is improper. */
+      if(w->pair_cur.type == VM_TYPE_NIL) {
+        return 0;
+      }
       if(w->pair_cur.type == VM_TYPE_LIST &&
          w->pair_cur.value.list != NULL &&
          w->pair_cur.value.list->length == 0) {
@@ -171,6 +177,9 @@ vm_obj_is_pair(const vm_obj_t *obj)
 int
 vm_obj_is_null(const vm_obj_t *obj)
 {
+  if(obj->type == VM_TYPE_NIL) {
+    return 1;
+  }
   return obj->type == VM_TYPE_LIST &&
          obj->value.list != NULL &&
          obj->value.list->length == 0;
@@ -183,6 +192,9 @@ vm_obj_is_proper_list(const vm_obj_t *obj)
   vm_obj_t *car;
   int status;
 
+  if(obj->type == VM_TYPE_NIL) {
+    return 1;
+  }
   if(obj->type == VM_TYPE_LIST) {
     return obj->value.list != NULL &&
            VM_IS_CLEAR(obj->value.list->flags, VM_LIST_FLAG_PAIR);
@@ -216,14 +228,9 @@ vm_pair_builder_append(vm_pair_builder_t *b, const vm_obj_t *obj)
     return 0;
   }
   p->car = *obj;
-  /* New pair becomes the new tail; its cdr is the empty list until
-     another append extends the chain. */
-  p->cdr.type = VM_TYPE_LIST;
-  p->cdr.value.list = vm_list_create();
-  if(p->cdr.value.list == NULL) {
-    /* The fresh pair becomes garbage at the next GC. */
-    return 0;
-  }
+  /* New pair becomes the new tail; its cdr is the nil singleton
+     until another append extends the chain. */
+  p->cdr.type = VM_TYPE_NIL;
 
   if(b->head == NULL) {
     b->head = p;
@@ -239,10 +246,9 @@ void
 vm_pair_builder_result(const vm_pair_builder_t *b, vm_obj_t *out)
 {
   if(b->head == NULL) {
-    out->type = VM_TYPE_LIST;
-    out->value.list = vm_list_create();
-    /* Caller is responsible for checking for NULL if heap pressure
-       is a concern; the empty-list path is not the hot one. */
+    /* Empty result: emit the R7RS nil singleton, not a vm_list_t of
+       length 0. The nil tag is the value; no allocation needed. */
+    out->type = VM_TYPE_NIL;
     return;
   }
   out->type = VM_TYPE_PAIR;
