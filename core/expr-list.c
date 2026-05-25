@@ -480,15 +480,21 @@ VM_FUNCTION(slice)
     memcpy(result_string->str, string->str + start, end - start);
     result_string->str[result_string->length] = '\0';
     return;
-  } else if(argv[0].type == VM_TYPE_LIST) {
-    /* List slicing */
-    vm_list_t *input_list;
+  } else if(argv[0].type == VM_TYPE_LIST ||
+            argv[0].type == VM_TYPE_PAIR) {
+    /* List/pair slicing. Walks the input uniformly via the walker so
+       both representations work; output is currently still emitted
+       as VM_TYPE_LIST. */
     vm_list_t *result_list;
-    vm_list_item_t *item;
+    vm_list_walker_t walker;
+    vm_obj_t *car;
     vm_integer_t i;
+    int status;
 
-    input_list = argv[0].value.list;
-    length = input_list->length;
+    if(vm_list_length_walk(&argv[0], &length) < 0) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+      return;
+    }
     normalize_slice_bounds(length, &start, &end);
 
     /* Disable GC during list construction */
@@ -502,20 +508,32 @@ VM_FUNCTION(slice)
       return;
     }
 
+    if(!vm_list_walker_init(&walker, &argv[0])) {
+      vm_gc_enable();
+      vm_list_destroy(result_list);
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+      return;
+    }
+
     /* Skip to start position */
-    item = input_list->head;
-    for(i = 0; i < start && item != NULL; i++) {
-      item = item->next;
+    for(i = 0; i < start; i++) {
+      if(vm_list_walker_next(&walker, &car) != 1) {
+        break;
+      }
     }
 
     /* Copy elements from start to end */
-    for(i = start; i < end && item != NULL; i++) {
-      if(!vm_list_insert_tail(result_list, &item->obj)) {
+    for(i = start; i < end; i++) {
+      status = vm_list_walker_next(&walker, &car);
+      if(status != 1) {
+        break;
+      }
+      if(!vm_list_insert_tail(result_list, car)) {
         vm_gc_enable();
+        vm_list_destroy(result_list);
         vm_signal_error(thread, VM_ERROR_HEAP);
         return;
       }
-      item = item->next;
     }
 
     vm_gc_enable();
@@ -612,21 +630,20 @@ VM_FUNCTION(append)
 
 VM_FUNCTION(remove)
 {
-  vm_list_t *src_list;
   vm_list_t *new_list;
-  vm_list_item_t *item;
-
-  if(argv[1].type != VM_TYPE_LIST) {
-    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-    return;
-  }
-
-  src_list = argv[1].value.list;
+  vm_list_walker_t walker;
+  vm_obj_t *car;
+  int status;
 
   /* Build a fresh list of elements that don't match argv[0]. R5RS /
      SRFI-1 specify remove as non-destructive; the previous in-place
      mutation corrupted any other reference to the same list (notably
      quoted-list constants, which the compiler reuses across uses). */
+  if(!vm_list_walker_init(&walker, &argv[1])) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+
   vm_gc_disable();
 
   new_list = vm_list_create();
@@ -636,10 +653,11 @@ VM_FUNCTION(remove)
     return;
   }
 
-  for(item = src_list->head; item != NULL; item = item->next) {
-    if(!vm_objects_deep_equal(thread, &item->obj, &argv[0])) {
-      if(!vm_list_insert_tail(new_list, &item->obj)) {
+  while((status = vm_list_walker_next(&walker, &car)) == 1) {
+    if(!vm_objects_deep_equal(thread, car, &argv[0])) {
+      if(!vm_list_insert_tail(new_list, car)) {
         vm_gc_enable();
+        vm_list_destroy(new_list);
         vm_signal_error(thread, VM_ERROR_HEAP);
         return;
       }
@@ -647,6 +665,12 @@ VM_FUNCTION(remove)
   }
 
   vm_gc_enable();
+
+  if(status < 0) {
+    vm_list_destroy(new_list);
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
 
   VM_PUSH_LIST(new_list);
 }
@@ -868,21 +892,19 @@ VM_FUNCTION(assoc)
 
 VM_FUNCTION(list_enumerate)
 {
-  vm_list_t *input_list;
   vm_list_t *result_list;
   vm_list_t *pair;
-  vm_list_item_t *item;
+  vm_list_walker_t walker;
+  vm_obj_t *car;
   vm_obj_t index_obj;
   vm_obj_t pair_obj;
   vm_integer_t index;
+  int status;
 
-  /* Validate argument type */
-  if(argv[0].type != VM_TYPE_LIST) {
+  if(!vm_list_walker_init(&walker, &argv[0])) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
-
-  input_list = argv[0].value.list;
 
   /* Disable GC during list construction */
   vm_gc_disable();
@@ -895,41 +917,43 @@ VM_FUNCTION(list_enumerate)
     return;
   }
 
-  /* Iterate through input list, creating (index . element) pairs */
+  /* Iterate through input, creating (index . element) pairs. Each
+     resulting pair is still a VM_TYPE_LIST (PAIR-flagged length-2
+     list); migrating these to VM_TYPE_PAIR happens in a follow-up
+     when list-constructing primitives switch to a pair builder. */
   index = 0;
-  for(item = input_list->head; item != NULL; item = item->next) {
-    /* Create pair (cons index element) */
+  while((status = vm_list_walker_next(&walker, &car)) == 1) {
     pair = vm_list_create();
     if(pair == NULL) {
       vm_gc_enable();
+      vm_list_destroy(result_list);
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
 
-    /* Add index as first element */
     index_obj.type = VM_TYPE_INTEGER;
     index_obj.value.integer = index;
     if(!vm_list_insert_tail(pair, &index_obj)) {
       vm_gc_enable();
+      vm_list_destroy(result_list);
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
 
-    /* Add element as second element */
-    if(!vm_list_insert_tail(pair, &item->obj)) {
+    if(!vm_list_insert_tail(pair, car)) {
       vm_gc_enable();
+      vm_list_destroy(result_list);
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
 
-    /* Mark as pair */
     VM_SET_FLAG(pair->flags, VM_LIST_FLAG_PAIR);
 
-    /* Add pair to result list */
     pair_obj.type = VM_TYPE_LIST;
     pair_obj.value.list = pair;
     if(!vm_list_insert_tail(result_list, &pair_obj)) {
       vm_gc_enable();
+      vm_list_destroy(result_list);
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
@@ -938,30 +962,34 @@ VM_FUNCTION(list_enumerate)
   }
 
   vm_gc_enable();
+
+  if(status < 0) {
+    vm_list_destroy(result_list);
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+
   VM_PUSH_LIST(result_list);
 }
 
 VM_FUNCTION(list_zip)
 {
-  vm_list_t *list1, *list2;
   vm_list_t *result_list;
   vm_list_t *pair;
-  vm_list_item_t *item1, *item2;
+  vm_list_walker_t walker1, walker2;
+  vm_obj_t *car1, *car2;
   vm_obj_t pair_obj;
+  int status1, status2;
 
-  /* Validate argument types */
-  if(argv[0].type != VM_TYPE_LIST || argv[1].type != VM_TYPE_LIST) {
+  if(!vm_list_walker_init(&walker1, &argv[0]) ||
+     !vm_list_walker_init(&walker2, &argv[1])) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
 
-  list1 = argv[0].value.list;
-  list2 = argv[1].value.list;
-
   /* Disable GC during list construction */
   vm_gc_disable();
 
-  /* Create result list */
   result_list = vm_list_create();
   if(result_list == NULL) {
     vm_gc_enable();
@@ -969,46 +997,39 @@ VM_FUNCTION(list_zip)
     return;
   }
 
-  /* Iterate through both lists simultaneously, stop at shortest */
-  item1 = list1->head;
-  item2 = list2->head;
-  while(item1 != NULL && item2 != NULL) {
-    /* Create pair (cons elem1 elem2) */
+  /* Iterate both inputs in lockstep; stop at the shorter. Result
+     entries remain VM_TYPE_LIST PAIR-flagged pairs for now. */
+  for(;;) {
+    status1 = vm_list_walker_next(&walker1, &car1);
+    status2 = vm_list_walker_next(&walker2, &car2);
+    if(status1 != 1 || status2 != 1) {
+      break;
+    }
+
     pair = vm_list_create();
     if(pair == NULL) {
       vm_gc_enable();
+      vm_list_destroy(result_list);
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
-
-    /* Add first element */
-    if(!vm_list_insert_tail(pair, &item1->obj)) {
+    if(!vm_list_insert_tail(pair, car1) ||
+       !vm_list_insert_tail(pair, car2)) {
       vm_gc_enable();
+      vm_list_destroy(result_list);
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
-
-    /* Add second element */
-    if(!vm_list_insert_tail(pair, &item2->obj)) {
-      vm_gc_enable();
-      vm_signal_error(thread, VM_ERROR_HEAP);
-      return;
-    }
-
-    /* Mark as pair */
     VM_SET_FLAG(pair->flags, VM_LIST_FLAG_PAIR);
 
-    /* Add pair to result list */
     pair_obj.type = VM_TYPE_LIST;
     pair_obj.value.list = pair;
     if(!vm_list_insert_tail(result_list, &pair_obj)) {
       vm_gc_enable();
+      vm_list_destroy(result_list);
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
-
-    item1 = item1->next;
-    item2 = item2->next;
   }
 
   vm_gc_enable();
@@ -1017,31 +1038,26 @@ VM_FUNCTION(list_zip)
 
 VM_FUNCTION(list_index)
 {
-  vm_list_t *list;
-  vm_list_item_t *item;
+  vm_list_walker_t walker;
+  vm_obj_t *car;
   vm_obj_t *target;
   vm_integer_t index;
 
-  /* Validate argument types */
-  if(argv[1].type != VM_TYPE_LIST) {
+  if(!vm_list_walker_init(&walker, &argv[1])) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
 
   target = &argv[0];
-  list = argv[1].value.list;
-
-  /* Search for element in list */
   index = 0;
-  for(item = list->head; item != NULL; item = item->next) {
-    if(vm_objects_deep_equal(thread, target, &item->obj)) {
-      /* Found - return index */
+  while(vm_list_walker_next(&walker, &car) == 1) {
+    if(vm_objects_deep_equal(thread, target, car)) {
       VM_PUSH_INTEGER(index);
       return;
     }
     index++;
   }
 
-  /* Not found - return -1 */
+  /* Not found -- return -1 */
   VM_PUSH_INTEGER(-1);
 }
