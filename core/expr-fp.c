@@ -100,26 +100,92 @@ execute_synthetic_expr(vm_thread_t *thread, vm_expr_t *expr,
   expr->eval_completed = 0;
 }
 
+/* Advance argv[1] one step through the input list/pair, copying the
+   current car into *car_out. Returns 1 if a car was yielded, 0 if
+   end-of-input, -1 on improper termination or type error. */
+static int
+fp_step_input(vm_obj_t *input_slot, vm_obj_t *car_out)
+{
+  if(input_slot->type == VM_TYPE_NIL) {
+    return 0;
+  }
+  if(input_slot->type == VM_TYPE_PAIR) {
+    if(input_slot->value.pair == NULL) {
+      return 0;
+    }
+    *car_out = input_slot->value.pair->car;
+    *input_slot = input_slot->value.pair->cdr;
+    return 1;
+  }
+  if(input_slot->type == VM_TYPE_LIST) {
+    vm_list_t *list = input_slot->value.list;
+    vm_obj_t *obj;
+    if(list == NULL || list->length == 0) {
+      return 0;
+    }
+    obj = vm_list_car(list);
+    if(obj == NULL) {
+      return 0;
+    }
+    *car_out = *obj;
+    input_slot->value.list = vm_list_cdr(list, 1);
+    if(input_slot->value.list == NULL) {
+      input_slot->type = VM_TYPE_NIL;
+    }
+    return 1;
+  }
+  return -1;
+}
+
+/* Append a fresh pair (car = obj, cdr = nil) onto the chain whose
+   head is *head_slot and tail is *tail_slot. Both slots may start as
+   VM_TYPE_NIL (empty chain). Returns 0 on heap exhaustion. */
+static int
+fp_append_pair(vm_obj_t *head_slot, vm_obj_t *tail_slot,
+               const vm_obj_t *obj)
+{
+  vm_pair_t *p = vm_alloc(sizeof(vm_pair_t));
+  if(p == NULL) {
+    return 0;
+  }
+  p->car = *obj;
+  p->cdr.type = VM_TYPE_NIL;
+  if(tail_slot->type == VM_TYPE_NIL) {
+    head_slot->type = VM_TYPE_PAIR;
+    head_slot->value.pair = p;
+  } else {
+    tail_slot->value.pair->cdr.type = VM_TYPE_PAIR;
+    tail_slot->value.pair->cdr.value.pair = p;
+  }
+  tail_slot->type = VM_TYPE_PAIR;
+  tail_slot->value.pair = p;
+  return 1;
+}
+
 VM_FUNCTION(map)
 {
-  vm_list_t *list;
-  vm_list_t *result_list;
   vm_expr_t *current_expr;
   vm_expr_t *map_expr;
-  vm_obj_t *obj;
+  vm_obj_t next_car;
+  int step;
 
   if(needs_further_eval(thread, argc, argv)) {
     return;
   }
 
-  if(argv[1].type != VM_TYPE_LIST) {
+  if(argv[1].type != VM_TYPE_LIST && argv[1].type != VM_TYPE_PAIR &&
+     argv[1].type != VM_TYPE_NIL) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
 
-  list = argv[1].value.list;
   current_expr = thread->expr;
 
+  /* Iterative-scheduler state stored in argv:
+       argv[1]            input cursor (advances each iteration)
+       argv[argc-3]       result head pair (or NIL while empty)
+       argv[argc-2]       result tail pair (or NIL while empty)
+       argv[argc-1]       intermediate result of the procedure call */
   if(argc == 2) {
     /* Initiate the MAP operation. */
     map_expr = vm_thread_stack_alloc(thread);
@@ -129,42 +195,21 @@ VM_FUNCTION(map)
     map_expr->flags = VM_EXPR_HAVE_OBJECTS;
     map_expr->argc = 2;
 
-    /* Disable GC while creating list and updating argc/argv to prevent
-       GC from marking uninitialized argv slots */
     vm_gc_disable();
-
-    /* Create two new arguments that store the resulting list and the
-       intermediate result of the mapping on each element. */
-    current_expr->argc += 2;
-
-    result_list = vm_list_create();
-    if(result_list == NULL) {
-      vm_gc_enable();
-      vm_thread_stack_free(map_expr);
-      vm_signal_error(thread, VM_ERROR_HEAP);
-      return;
-    }
-    current_expr->argv[current_expr->argc - 2].type = VM_TYPE_LIST;
-    current_expr->argv[current_expr->argc - 2].value.list = result_list;
-
+    current_expr->argc += 3;
+    current_expr->argv[current_expr->argc - 3].type = VM_TYPE_NIL;
+    current_expr->argv[current_expr->argc - 2].type = VM_TYPE_NIL;
     vm_gc_enable();
-  } else if(argc >= 4) {
+  } else if(argc >= 5) {
     map_expr = thread->exprv[thread->exprc];
     if(map_expr == NULL) {
       vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
       return;
     }
 
-    if(argv[argc - 2].type != VM_TYPE_LIST) {
-      vm_thread_stack_free(map_expr);
-      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-      return;
-    }
-
-    /* Insert the mapped object into the result list. */
-    if(vm_list_insert_tail(argv[argc - 2].value.list,
-			   &argv[argc - 1]) == VM_FALSE) {
-      vm_list_destroy(argv[argc - 2].value.list);
+    /* Append the procedure result to the head/tail-tracked chain. */
+    if(!fp_append_pair(&argv[argc - 3], &argv[argc - 2],
+                       &argv[argc - 1])) {
       vm_thread_stack_free(map_expr);
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
@@ -174,39 +219,20 @@ VM_FUNCTION(map)
     return;
   }
 
-  if(list->length == 0) {
-    /* The list has been processed. Convert the internal vm_list_t
-       result to a pair chain so the value visible to user code is
-       VM_TYPE_PAIR / VM_TYPE_NIL (consistent with the rest of the
-       list-constructor surface). The vm_list_t scratch is left
-       dangling for the GC to collect. */
-    vm_list_t *legacy =
-      current_expr->argv[current_expr->argc - 2].value.list;
-    vm_list_item_t *it;
-    vm_pair_builder_t pb;
-
-    vm_pair_builder_init(&pb);
-    for(it = legacy->head; it != NULL; it = it->next) {
-      if(!vm_pair_builder_append(&pb, &it->obj)) {
-        vm_signal_error(thread, VM_ERROR_HEAP);
-        vm_thread_stack_free(map_expr);
-        return;
-      }
-    }
-    vm_pair_builder_result(&pb, &thread->result);
+  /* Try to advance the input cursor; on end, return the result head. */
+  step = fp_step_input(&argv[1], &next_car);
+  if(step <= 0) {
+    /* Result is whatever's in head; NIL if no elements were appended. */
+    thread->result = argv[current_expr->argc - 3];
     VM_EVAL_STOP(thread);
     vm_thread_stack_free(map_expr);
+    if(step < 0) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    }
     return;
   }
 
-  /* Process the next element in the list upon the next invocation of MAP. */
-  obj = vm_list_car(list);
-  if(obj != NULL) {
-    memcpy(&map_expr->argv[1], obj, sizeof(vm_obj_t));
-    argv[1].value.list = vm_list_cdr(list, 1);
-  } else {
-    map_expr->argc--;
-  }
+  memcpy(&map_expr->argv[1], &next_car, sizeof(vm_obj_t));
 
   /* Set the current expression to be the synthetic MAP expression. */
   execute_synthetic_expr(thread, map_expr, &argv[0], current_expr->argc - 1);
@@ -214,26 +240,28 @@ VM_FUNCTION(map)
 
 VM_FUNCTION(filter)
 {
-  vm_list_t *list;
-  vm_list_t *result_list;
   vm_expr_t *current_expr;
   vm_expr_t *filter_expr;
-  vm_obj_t *obj;
+  vm_obj_t next_car;
+  int step;
 
   if(needs_further_eval(thread, argc, argv)) {
     return;
   }
 
-  if(argv[1].type != VM_TYPE_LIST) {
+  if(argv[1].type != VM_TYPE_LIST && argv[1].type != VM_TYPE_PAIR &&
+     argv[1].type != VM_TYPE_NIL) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
 
-  list = argv[1].value.list;
   current_expr = thread->expr;
 
+  /* Same iterative-scheduler state layout as map (see comment there).
+     argv[argc-1] is the predicate's truth result, not a mapped value;
+     when truthy, we append the original element (saved in
+     filter_expr->argv[1]) to the result chain. */
   if(argc == 2) {
-    /* Initiate the FILTER operation. */
     filter_expr = vm_thread_stack_alloc(thread);
     if(filter_expr == NULL) {
       return;
@@ -241,40 +269,21 @@ VM_FUNCTION(filter)
     filter_expr->flags = VM_EXPR_HAVE_OBJECTS;
     filter_expr->argc = 2;
 
-    /* Disable GC while creating list and updating argc/argv to prevent
-       GC from marking uninitialized argv slots */
     vm_gc_disable();
-
-    /* Create two new arguments that store the resulting list and the
-       intermediate result of the mapping on each element. */
-    current_expr->argc += 2;
-
-    result_list = vm_list_create();
-    if(result_list == NULL) {
-      vm_gc_enable();
-      vm_thread_stack_free(filter_expr);
-      vm_signal_error(thread, VM_ERROR_HEAP);
-      return;
-    }
-    current_expr->argv[current_expr->argc - 2].type = VM_TYPE_LIST;
-    current_expr->argv[current_expr->argc - 2].value.list = result_list;
-
+    current_expr->argc += 3;
+    current_expr->argv[current_expr->argc - 3].type = VM_TYPE_NIL;
+    current_expr->argv[current_expr->argc - 2].type = VM_TYPE_NIL;
     vm_gc_enable();
-  } else if(argc >= 4) {
+  } else if(argc >= 5) {
     filter_expr = thread->exprv[thread->exprc];
-    if(argv[argc - 2].type != VM_TYPE_LIST) {
-      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-      return;
-    }
 
-    /* Insert the filtered object into the result list. */
-    if(argv[argc - 1].value.boolean == VM_TRUE &&
-       vm_list_insert_tail(argv[argc - 2].value.list,
-			   &filter_expr->argv[1]) == VM_FALSE) {
-      vm_list_destroy(argv[argc - 2].value.list);
-      vm_thread_stack_free(filter_expr);
-      vm_signal_error(thread, VM_ERROR_HEAP);
-      return;
+    if(argv[argc - 1].value.boolean == VM_TRUE) {
+      if(!fp_append_pair(&argv[argc - 3], &argv[argc - 2],
+                         &filter_expr->argv[1])) {
+        vm_thread_stack_free(filter_expr);
+        vm_signal_error(thread, VM_ERROR_HEAP);
+        return;
+      }
     }
   } else {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_COUNT);
@@ -283,36 +292,18 @@ VM_FUNCTION(filter)
 
   filter_expr->flags &= ~VM_EXPR_SAVE_FRAME;
 
-  if(list->length == 0) {
-    /* The list has been processed. Convert the internal vm_list_t
-       result to a pair chain (same approach as map). */
-    vm_list_t *legacy =
-      current_expr->argv[current_expr->argc - 2].value.list;
-    vm_list_item_t *it;
-    vm_pair_builder_t pb;
-
-    vm_pair_builder_init(&pb);
-    for(it = legacy->head; it != NULL; it = it->next) {
-      if(!vm_pair_builder_append(&pb, &it->obj)) {
-        vm_signal_error(thread, VM_ERROR_HEAP);
-        vm_thread_stack_free(filter_expr);
-        return;
-      }
-    }
-    vm_pair_builder_result(&pb, &thread->result);
+  step = fp_step_input(&argv[1], &next_car);
+  if(step <= 0) {
+    thread->result = argv[current_expr->argc - 3];
     VM_EVAL_STOP(thread);
     vm_thread_stack_free(filter_expr);
+    if(step < 0) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    }
     return;
   }
 
-  /* Process the next element in the list upon the next invocation of FILTER. */
-  obj = vm_list_car(list);
-  if(obj != NULL) {
-    memcpy(&filter_expr->argv[1], obj, sizeof(vm_obj_t));
-    argv[1].value.list = vm_list_cdr(list, 1);
-  } else {
-    filter_expr->argc--;
-  }
+  memcpy(&filter_expr->argv[1], &next_car, sizeof(vm_obj_t));
 
   /* Set the current expression to be the synthetic FILTER expression. */
   execute_synthetic_expr(thread, filter_expr,
