@@ -341,6 +341,40 @@ write_object_depth(vm_port_t *port, vm_obj_t *obj, int depth)
     vm_write(port, ")");
     nested_print = 0;
     break;
+  case VM_TYPE_PAIR: {
+    /* Walk the pair chain. Proper list: print car-elements space-
+       separated. Improper list: print car-elements then a "." before
+       the final non-pair-non-nil cdr. Cycle detection is deferred. */
+    vm_obj_t cur;
+    int first;
+
+    nested_print = 1;
+    vm_write(port, "(");
+    cur = *obj;
+    first = 1;
+    i = 0;
+    while(cur.type == VM_TYPE_PAIR && cur.value.pair != NULL) {
+      if(!first) {
+        vm_write(port, " ");
+      }
+      write_object_depth(port, &cur.value.pair->car, depth + 1);
+      first = 0;
+      i++;
+      if(i == VM_LIST_PRINT_LIMIT) {
+        vm_write(port, " <... omitted>");
+        break;
+      }
+      cur = cur.value.pair->cdr;
+    }
+    if(i < VM_LIST_PRINT_LIMIT &&
+       !(cur.type == VM_TYPE_LIST && cur.value.list->length == 0)) {
+      vm_write(port, " . ");
+      write_object_depth(port, &cur, depth + 1);
+    }
+    vm_write(port, ")");
+    nested_print = 0;
+    break;
+  }
   case VM_TYPE_VECTOR:
     if(VM_IS_SET(obj->value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
       output_raw = port != NULL &&
@@ -488,6 +522,11 @@ vm_objects_equal(vm_thread_t *thread, vm_obj_t *obj1, vm_obj_t *obj2)
   case VM_TYPE_LIST:
     return obj1->value.list == obj2->value.list ||
       (obj1->value.list->length == 0 && obj2->value.list->length == 0);
+  case VM_TYPE_PAIR:
+    /* R7RS eq?/eqv? on pairs: pointer identity. Two pairs are the
+       same iff they are the same allocation. NULL pair (defensive)
+       compares equal to NULL pair. */
+    return obj1->value.pair == obj2->value.pair;
   case VM_TYPE_VECTOR:
     return obj1->value.vector->length == obj2->value.vector->length &&
       obj1->value.vector->elements == obj2->value.vector->elements;
@@ -542,6 +581,18 @@ vm_objects_deep_equal(vm_thread_t *thread, vm_obj_t *obj1, vm_obj_t *obj2)
     }
 
     return 1;
+  } else if(obj1->type == VM_TYPE_PAIR) {
+    /* Structural equality on pair chains: car and cdr must each be
+       deeply equal. NULL pair is its own thing -- only equal to NULL.
+       Cycle detection is deferred to a follow-up; until set-cdr! is
+       used to create a cycle, this path is acyclic by construction. */
+    if(obj1->value.pair == NULL || obj2->value.pair == NULL) {
+      return obj1->value.pair == obj2->value.pair;
+    }
+    return vm_objects_deep_equal(thread, &obj1->value.pair->car,
+                                          &obj2->value.pair->car) &&
+           vm_objects_deep_equal(thread, &obj1->value.pair->cdr,
+                                          &obj2->value.pair->cdr);
   } else if(obj1->type == VM_TYPE_VECTOR) {
     vector1 = obj1->value.vector;
     vector2 = obj2->value.vector;
