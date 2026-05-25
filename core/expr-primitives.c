@@ -36,6 +36,7 @@
 #include "vm-list.h"
 #include "vm-log.h"
 #include "vm-native.h"
+#include "vm-pair.h"
 
 /* A predicate that shows whether an object is true or false, as
    defined in Scheme R5RS, section 6.3.1. */
@@ -352,37 +353,17 @@ VM_FUNCTION(bind_function_rest)
       }
       {
         vm_obj_t rest_obj;
-        vm_list_t *list = vm_alloc(sizeof(vm_list_t));
-        if(list == NULL) {
-          vm_signal_error(thread, VM_ERROR_HEAP);
-          return;
-        }
-        list->head = NULL;
-        list->tail = NULL;
-        list->length = 0;
+        vm_pair_builder_t b;
 
+        vm_pair_builder_init(&b);
         for(k = 0; k < actuals - fixed_formals; k++) {
-          vm_list_item_t *item = vm_alloc(sizeof(vm_list_item_t));
-          if(item == NULL) {
+          if(!vm_pair_builder_append(&b,
+                  &calling_expr->argv[1 + fixed_formals + k])) {
             vm_signal_error(thread, VM_ERROR_HEAP);
             return;
           }
-          memcpy(&item->obj,
-                 &calling_expr->argv[1 + fixed_formals + k],
-                 sizeof(vm_obj_t));
-          item->next = NULL;
-          if(list->head == NULL) {
-            list->head = item;
-            list->tail = item;
-          } else {
-            list->tail->next = item;
-            list->tail = item;
-          }
-          list->length++;
         }
-
-        rest_obj.type = VM_TYPE_LIST;
-        rest_obj.value.list = list;
+        vm_pair_builder_result(&b, &rest_obj);
         vm_symbol_bind(thread, &argv[argc - 2].value.symbol_ref,
                        &rest_obj);
         if(thread->status == VM_THREAD_ERROR) {

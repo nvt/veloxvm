@@ -70,29 +70,21 @@ find_member_in_list(vm_thread_t *thread, vm_integer_t argc, vm_obj_t *argv,
 
   for(item = list->head; item != NULL; item = item->next) {
     if(compare(thread, &argv[0], &item->obj)) {
-      /* Disable GC during list construction */
+      vm_pair_builder_t b;
+
       vm_gc_disable();
+      vm_pair_builder_init(&b);
 
-      result_list = vm_list_create();
-      if(result_list == NULL) {
-        vm_gc_enable();
-        vm_signal_error(thread, VM_ERROR_HEAP);
-        return;
-      }
-
-      /* Copy the remainder of the list argument into the
-         resulting list. */
       do {
-        if(!vm_list_insert_tail(result_list, &item->obj)) {
+        if(!vm_pair_builder_append(&b, &item->obj)) {
           vm_gc_enable();
-          vm_list_destroy(result_list);
           vm_signal_error(thread, VM_ERROR_HEAP);
           return;
         }
       } while((item = item->next) != NULL);
 
+      vm_pair_builder_result(&b, &thread->result);
       vm_gc_enable();
-      VM_PUSH_LIST(result_list);
       return;
     }
   }

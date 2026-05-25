@@ -37,6 +37,7 @@
 
 #include "vm-functions.h"
 #include "vm-list.h"
+#include "vm-pair.h"
 
 #define NUMBER_BITS (sizeof(long) * CHAR_BIT)
 #define NUMBER_STRING_LENGTH NUMBER_BITS
@@ -198,26 +199,21 @@ VM_FUNCTION(string_to_list)
 
   /* Disable GC during list construction */
   vm_gc_disable();
-
-  list = vm_list_create();
-  if(list == NULL) {
-    vm_gc_enable();
-    vm_signal_error(thread, VM_ERROR_HEAP);
-    return;
-  }
-
-  obj.type = VM_TYPE_CHARACTER;
-  for(i = 0; i < string->length; i++) {
-    obj.value.character = string->str[i];
-    if(!vm_list_insert_tail(list, &obj)) {
-      vm_gc_enable();
-      vm_signal_error(thread, VM_ERROR_HEAP);
-      return;
+  {
+    vm_pair_builder_t b;
+    vm_pair_builder_init(&b);
+    obj.type = VM_TYPE_CHARACTER;
+    for(i = 0; i < string->length; i++) {
+      obj.value.character = string->str[i];
+      if(!vm_pair_builder_append(&b, &obj)) {
+        vm_gc_enable();
+        vm_signal_error(thread, VM_ERROR_HEAP);
+        return;
+      }
     }
+    vm_pair_builder_result(&b, &thread->result);
   }
-
   vm_gc_enable();
-  VM_PUSH_LIST(list);
 }
 
 VM_FUNCTION(list_to_string)
@@ -444,38 +440,33 @@ VM_FUNCTION(string_split)
 
   /* Disable GC during list construction */
   vm_gc_disable();
+  {
+    vm_pair_builder_t b;
+    vm_pair_builder_init(&b);
+    obj.type = VM_TYPE_STRING;
 
-  list = vm_list_create();
-  if(list == NULL) {
-    vm_gc_enable();
-    vm_signal_error(thread, VM_ERROR_HEAP);
-    return;
-  }
+    p = string;
+    while(*p != '\0') {
+      size_t tok_len;
 
-  obj.type = VM_TYPE_STRING;
+      p += strspn(p, seps);
+      if(*p == '\0') {
+        break;
+      }
 
-  p = string;
-  while(*p != '\0') {
-    size_t tok_len;
+      tok_len = strcspn(p, seps);
 
-    p += strspn(p, seps);
-    if(*p == '\0') {
-      break;
+      if(vm_string_create(&obj, tok_len, p) == NULL ||
+         !vm_pair_builder_append(&b, &obj)) {
+        vm_gc_enable();
+        vm_signal_error(thread, VM_ERROR_HEAP);
+        return;
+      }
+      p += tok_len;
     }
-
-    tok_len = strcspn(p, seps);
-
-    if(vm_string_create(&obj, tok_len, p) == NULL ||
-       !vm_list_insert_tail(list, &obj)) {
-      vm_gc_enable();
-      vm_signal_error(thread, VM_ERROR_HEAP);
-      return;
-    }
-    p += tok_len;
+    vm_pair_builder_result(&b, &thread->result);
   }
-
   vm_gc_enable();
-  VM_PUSH_LIST(list);
 }
 
 VM_FUNCTION(string_join)
