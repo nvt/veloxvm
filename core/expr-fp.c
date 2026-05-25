@@ -219,11 +219,14 @@ VM_FUNCTION(map)
     return;
   }
 
-  /* Try to advance the input cursor; on end, return the result head. */
+  /* Try to advance the input cursor; on end, return the result head.
+     Head lives at argv[2] (stable index, set during init). At STOP
+     time current_expr->argc may have been grown by the scheduler
+     beyond its init value, so we can't use argc-relative addressing
+     here. */
   step = fp_step_input(&argv[1], &next_car);
   if(step <= 0) {
-    /* Result is whatever's in head; NIL if no elements were appended. */
-    thread->result = argv[current_expr->argc - 3];
+    thread->result = argv[2];
     VM_EVAL_STOP(thread);
     vm_thread_stack_free(map_expr);
     if(step < 0) {
@@ -294,7 +297,7 @@ VM_FUNCTION(filter)
 
   step = fp_step_input(&argv[1], &next_car);
   if(step <= 0) {
-    thread->result = argv[current_expr->argc - 3];
+    thread->result = argv[2];
     VM_EVAL_STOP(thread);
     vm_thread_stack_free(filter_expr);
     if(step < 0) {
@@ -312,25 +315,25 @@ VM_FUNCTION(filter)
 
 VM_FUNCTION(for_each)
 {
-  vm_list_t *list;
   vm_expr_t *current_expr;
   vm_expr_t *foreach_expr;
-  vm_obj_t *obj;
+  vm_obj_t next_car;
+  int step;
 
   if(needs_further_eval(thread, argc, argv)) {
     return;
   }
 
-  if(!vm_is_procedure(thread, &argv[0]) || argv[1].type != VM_TYPE_LIST) {
+  if(!vm_is_procedure(thread, &argv[0]) ||
+     (argv[1].type != VM_TYPE_PAIR && argv[1].type != VM_TYPE_NIL)) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
 
   current_expr = thread->expr;
-  list = argv[1].value.list;
 
   if(argc == 2) {
-    if(list->length == 0) {
+    if(argv[1].type == VM_TYPE_NIL) {
       /* Avoid processing empty lists further. */
       VM_EVAL_STOP(thread);
       return;
@@ -344,8 +347,8 @@ VM_FUNCTION(for_each)
     foreach_expr->flags = VM_EXPR_HAVE_OBJECTS;
     foreach_expr->argc = 2;
 
-    /* Create a new argument that stores the object
-       currently being processed. */
+    /* Create a new argument that stores the discarded synthetic
+       call result. */
     current_expr->argc++;
   } else {
     foreach_expr = thread->exprv[thread->exprc];
@@ -353,53 +356,42 @@ VM_FUNCTION(for_each)
 
   foreach_expr->flags &= ~VM_EXPR_SAVE_FRAME;
 
-  /* Process the next element in the list upon
-     the next invocation of FOR-EACH. */
-  obj = vm_list_car(list);
-  if(obj == NULL) {
-    /* The list has been processed. Stop the evaluation and
-       deallocate the synthetic expression. */
+  step = fp_step_input(&argv[1], &next_car);
+  if(step <= 0) {
     VM_EVAL_STOP(thread);
     vm_thread_stack_free(foreach_expr);
+    if(step < 0) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    }
     return;
   }
-  memcpy(&foreach_expr->argv[1], obj, sizeof(vm_obj_t));
-
-  /* Remove the processed object from the list. */
-  argv[1].value.list = vm_list_cdr(list, 1);
-  if(argv[1].value.list == NULL) {
-    vm_thread_stack_free(foreach_expr);
-    vm_signal_error(thread, VM_ERROR_HEAP);
-    return;
-  }
+  memcpy(&foreach_expr->argv[1], &next_car, sizeof(vm_obj_t));
 
   execute_synthetic_expr(thread, foreach_expr, &argv[0], current_expr->argc - 1);
 }
 
 VM_FUNCTION(reduce)
 {
-  vm_list_t *list;
   vm_expr_t *current_expr;
   vm_expr_t *reduce_expr;
-  vm_obj_t *obj;
-  int skip_first_element;
+  vm_obj_t next_car;
+  int step;
 
   if(needs_further_eval(thread, argc, argv)) {
     memset(&argv[argc], 0, sizeof(vm_obj_t));
     return;
   }
 
-  if(argv[1].type != VM_TYPE_LIST) {
+  if(argv[1].type != VM_TYPE_PAIR && argv[1].type != VM_TYPE_NIL) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
 
-  list = argv[1].value.list;
   current_expr = thread->expr;
-  skip_first_element = 0;
 
   if(argc == 2) {
-    /* Initiate the REDUCE operation without initial value. */
+    /* Initiate the 2-arg REDUCE: first element becomes the
+       accumulator, rest are reduced into it. */
     reduce_expr = vm_thread_stack_alloc(thread);
     if(reduce_expr == NULL) {
       return;
@@ -409,31 +401,24 @@ VM_FUNCTION(reduce)
 
     memcpy(&reduce_expr->argv[0], &argv[0], sizeof(vm_obj_t));
 
-    /* Create a new argument that stores the intermediate result of
-       the reduction. */
+    /* Add accumulator slot. */
     current_expr->argc++;
 
-    /* Use first element as initial value. */
-    obj = vm_list_car(list);
-    if(obj == NULL) {
+    /* Consume the first element as accumulator and advance input. */
+    step = fp_step_input(&argv[1], &next_car);
+    if(step <= 0) {
       current_expr->argv[current_expr->argc - 1].type = VM_TYPE_NONE;
     } else {
-      memcpy(&reduce_expr->argv[1], obj, sizeof(vm_obj_t));
-      /* Also mirror the initial accumulator into the result slot so
-       * that a single-element input terminates with the element
-       * rather than with the trimmed (empty) tail list. */
-      memcpy(&current_expr->argv[current_expr->argc - 1], obj,
+      memcpy(&reduce_expr->argv[1], &next_car, sizeof(vm_obj_t));
+      memcpy(&current_expr->argv[current_expr->argc - 1], &next_car,
              sizeof(vm_obj_t));
     }
     current_expr->eval_arg = current_expr->argc - 1;
-    skip_first_element = 1;  /* Skip the element we used as initial value */
   } else if(argc == 3) {
     reduce_expr = thread->exprv[thread->exprc];
 
-    /* Check if this is a continuation (reduce_expr exists and has SAVE_FRAME flag)
-       or a new call (reduce_expr is NULL or doesn't have SAVE_FRAME). */
     if(reduce_expr == NULL || !VM_IS_SET(reduce_expr->flags, VM_EXPR_SAVE_FRAME)) {
-      /* Initiate the REDUCE operation WITH initial value. */
+      /* Initiate the 3-arg REDUCE: explicit initial accumulator. */
       reduce_expr = vm_thread_stack_alloc(thread);
       if(reduce_expr == NULL) {
         return;
@@ -443,27 +428,24 @@ VM_FUNCTION(reduce)
 
       memcpy(&reduce_expr->argv[0], &argv[0], sizeof(vm_obj_t));
 
-      /* Create a new argument that stores the intermediate result. */
       current_expr->argc++;
-
-      /* Use provided initial value. */
       memcpy(&reduce_expr->argv[1], &argv[2], sizeof(vm_obj_t));
+      memcpy(&current_expr->argv[current_expr->argc - 1], &argv[2],
+             sizeof(vm_obj_t));
       current_expr->eval_arg = current_expr->argc - 1;
-      skip_first_element = 0;  /* Process from first element */
     } else {
-      /* Continue the REDUCE operation (2-arg version). */
+      /* Continue the 2-arg REDUCE: synthetic call returned the new
+         accumulator at argv[2]. */
       memcpy(&reduce_expr->argv[1], &argv[2], sizeof(vm_obj_t));
-      skip_first_element = 1;  /* Skip the processed element */
     }
   } else if(argc == 4) {
-    /* Continue the REDUCE operation (3-arg version). */
+    /* Continue the 3-arg REDUCE. */
     reduce_expr = thread->exprv[thread->exprc];
     if(reduce_expr == NULL) {
       vm_signal_error(thread, VM_ERROR_INTERNAL);
       return;
     }
     memcpy(&reduce_expr->argv[1], &argv[3], sizeof(vm_obj_t));
-    skip_first_element = 1;  /* Skip the processed element */
   } else {
     vm_signal_error(thread, VM_ERROR_INTERNAL);
     return;
@@ -471,64 +453,43 @@ VM_FUNCTION(reduce)
 
   reduce_expr->flags &= ~VM_EXPR_SAVE_FRAME;
 
-  if(list->length == 0) {
-    /* We have processed all objects in the list. */
-    VM_EVAL_STOP(thread);
-    /* Push the accumulated result. Use current_expr->argc, not the
-     * caller's argc: on the 2-arg init path argc is still 2 but the
-     * accumulator slot has already been appended at argc==3, so the
-     * stale value points one slot too low. */
-    VM_PUSH(&current_expr->argv[current_expr->argc - 1]);
-    vm_thread_stack_free(reduce_expr);
-    return;
-  }
-
-  /* Process the next element in the list upon the next
-     invocation of REDUCE. */
-  if(skip_first_element) {
-    list = argv[1].value.list = vm_list_cdr(list, 1);
-    if(list == NULL) {
-      vm_thread_stack_free(reduce_expr);
-      vm_signal_error(thread, VM_ERROR_HEAP);
-      return;
-    }
-  }
-
-  obj = vm_list_car(list);
-  if(obj != NULL) {
-    memcpy(&reduce_expr->argv[2], obj, sizeof(vm_obj_t));
-  } else {
-    /* We have processed all objects in the list. */
+  /* Try to pull the next element to feed into the reducer. End of
+     input -> push the accumulator and stop. */
+  step = fp_step_input(&argv[1], &next_car);
+  if(step <= 0) {
     VM_EVAL_STOP(thread);
     VM_PUSH(&current_expr->argv[current_expr->argc - 1]);
     vm_thread_stack_free(reduce_expr);
     return;
   }
+  memcpy(&reduce_expr->argv[2], &next_car, sizeof(vm_obj_t));
 
   execute_synthetic_expr(thread, reduce_expr, &argv[0], current_expr->argc - 1);
 }
 
 VM_FUNCTION(count)
 {
-  vm_list_t *list;
   vm_expr_t *current_expr;
   vm_expr_t *count_expr;
-  vm_obj_t *obj;
+  vm_obj_t next_car;
+  int step;
 
   if(needs_further_eval(thread, argc, argv)) {
     return;
   }
 
-  if(argv[1].type != VM_TYPE_LIST) {
+  if(argv[1].type != VM_TYPE_PAIR && argv[1].type != VM_TYPE_NIL) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
 
-  list = argv[1].value.list;
   current_expr = thread->expr;
 
   if(argc == 2) {
-    /* Initiate the COUNT operation. */
+    /* Initiate the COUNT operation. Stable slots:
+         argv[2] = running counter (INTEGER)
+         argv[argc-1] = synthetic predicate result (BOOLEAN, set
+                       by scheduler when synthetic returns). */
     count_expr = vm_thread_stack_alloc(thread);
     if(count_expr == NULL) {
       return;
@@ -536,19 +497,13 @@ VM_FUNCTION(count)
     count_expr->flags = VM_EXPR_HAVE_OBJECTS;
     count_expr->argc = 2;
 
-    /*
-     * Create two new arguments that store the count variable and the
-     * intermediate result of applying the predicate expression on
-     * each element.
-     */
     current_expr->argc += 2;
-
-    current_expr->argv[3].type = VM_TYPE_INTEGER;
-    current_expr->argv[3].value.integer = 0;
+    current_expr->argv[2].type = VM_TYPE_INTEGER;
+    current_expr->argv[2].value.integer = 0;
   } else if(argc >= 4) {
     count_expr = thread->exprv[thread->exprc];
 
-    if(argv[argc - 2].type != VM_TYPE_INTEGER ||
+    if(argv[2].type != VM_TYPE_INTEGER ||
        argv[argc - 1].type != VM_TYPE_BOOLEAN) {
       vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
       return;
@@ -557,7 +512,7 @@ VM_FUNCTION(count)
     /* The predicate holds for the last evaluated object,
        so we increase the count. */
     if(argv[argc - 1].value.boolean == VM_TRUE) {
-      argv[argc - 2].value.integer++;
+      argv[2].value.integer++;
     }
   } else {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_COUNT);
@@ -566,25 +521,20 @@ VM_FUNCTION(count)
 
   count_expr->flags &= ~VM_EXPR_SAVE_FRAME;
 
-  if(list->length == 0) {
-    /* The list has been processed. Stop the evaluation. */
-    VM_PUSH(&argv[argc - 2]);
+  step = fp_step_input(&argv[1], &next_car);
+  if(step <= 0) {
+    VM_PUSH(&argv[2]);
     VM_EVAL_STOP(thread);
     vm_thread_stack_free(count_expr);
+    if(step < 0) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    }
     return;
   }
-
-  /* Process the next element in the list upon the next invocation of COUNT. */
-  obj = vm_list_car(list);
-  if(obj != NULL) {
-    memcpy(&count_expr->argv[1], obj, sizeof(vm_obj_t));
-    argv[1].value.list = vm_list_cdr(list, 1);
-  } else {
-    count_expr->argc--;
-  }
+  memcpy(&count_expr->argv[1], &next_car, sizeof(vm_obj_t));
 
   /* Set the current expression to be the synthetic COUNT expression. */
-  execute_synthetic_expr(thread, count_expr, &argv[0], 4);
+  execute_synthetic_expr(thread, count_expr, &argv[0], current_expr->argc - 1);
 }
 
 /*

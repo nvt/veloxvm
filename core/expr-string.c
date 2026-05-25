@@ -482,15 +482,16 @@ VM_FUNCTION(string_split)
 VM_FUNCTION(string_join)
 {
   vm_string_t *separator;
-  vm_list_t *list;
-  vm_list_item_t *item;
   vm_string_t *result;
+  vm_list_walker_t walker;
+  vm_obj_t *car;
   vm_integer_t total_length;
+  vm_integer_t length;
   vm_integer_t num_separators;
   int offset;
+  int status;
 
-  /* Validate argument types */
-  if(argv[0].type != VM_TYPE_STRING || argv[1].type != VM_TYPE_LIST) {
+  if(argv[0].type != VM_TYPE_STRING) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
@@ -500,10 +501,12 @@ VM_FUNCTION(string_join)
     vm_signal_error(thread, VM_ERROR_STRING_ID);
     return;
   }
-  list = argv[1].value.list;
 
-  /* Empty list returns empty string */
-  if(list->length == 0) {
+  if(vm_list_length_walk(&argv[1], &length) < 0) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+  if(length == 0) {
     result = vm_string_create(&thread->result, 0, "");
     if(result == NULL) {
       vm_signal_error(thread, VM_ERROR_HEAP);
@@ -511,27 +514,30 @@ VM_FUNCTION(string_join)
     return;
   }
 
-  /* Calculate total length needed */
+  /* Calculate total length needed. */
   total_length = 0;
-  num_separators = list->length - 1;
+  num_separators = length - 1;
 
-  for(item = list->head; item != NULL; item = item->next) {
-    if(item->obj.type != VM_TYPE_STRING) {
+  if(!vm_list_walker_init(&walker, &argv[1])) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+  while((status = vm_list_walker_next(&walker, &car)) == 1) {
+    if(car->type != VM_TYPE_STRING) {
       vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
       return;
     }
-    if(vm_string_resolve(thread, item->obj.value.string) == NULL) {
+    if(vm_string_resolve(thread, car->value.string) == NULL) {
       vm_signal_error(thread, VM_ERROR_STRING_ID);
       return;
     }
-    if(item->obj.value.string->length > VM_STRING_MAX_LENGTH - total_length) {
+    if(car->value.string->length > VM_STRING_MAX_LENGTH - total_length) {
       vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
       return;
     }
-    total_length += item->obj.value.string->length;
+    total_length += car->value.string->length;
   }
 
-  /* Add separator lengths with overflow check. */
   if(separator->length != 0 &&
      num_separators > (VM_STRING_MAX_LENGTH - total_length) / separator->length) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
@@ -539,26 +545,29 @@ VM_FUNCTION(string_join)
   }
   total_length += num_separators * separator->length;
 
-  /* Create result string */
   result = vm_string_create(&thread->result, total_length, NULL);
   if(result == NULL) {
     vm_signal_error(thread, VM_ERROR_HEAP);
     return;
   }
 
-  /* Join strings with separator */
+  /* Second pass to fill. */
+  if(!vm_list_walker_init(&walker, &argv[1])) {
+    vm_signal_error(thread, VM_ERROR_INTERNAL);
+    return;
+  }
   offset = 0;
-  for(item = list->head; item != NULL; item = item->next) {
-    vm_string_t *str = item->obj.value.string;
-
-    /* Copy the string */
-    memcpy(result->str + offset, str->str, str->length);
-    offset += str->length;
-
-    /* Add separator if not the last item */
-    if(item->next != NULL) {
-      memcpy(result->str + offset, separator->str, separator->length);
-      offset += separator->length;
+  {
+    vm_integer_t i = 0;
+    while((status = vm_list_walker_next(&walker, &car)) == 1) {
+      vm_string_t *str = car->value.string;
+      memcpy(result->str + offset, str->str, str->length);
+      offset += str->length;
+      if(i < num_separators) {
+        memcpy(result->str + offset, separator->str, separator->length);
+        offset += separator->length;
+      }
+      i++;
     }
   }
 
