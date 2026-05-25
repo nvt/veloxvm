@@ -136,4 +136,36 @@ int vm_obj_is_null(const vm_obj_t *obj);
    follow-up; until set-cdr! is used to build a cycle this is safe. */
 int vm_obj_is_proper_list(const vm_obj_t *obj);
 
+/*
+ * Pair builder -- C-local helper for primitives that incrementally
+ * construct a pair-based list left-to-right.
+ *
+ * Usage:
+ *   vm_pair_builder_t b;
+ *   vm_pair_builder_init(&b);
+ *   for(...) {
+ *     if(!vm_pair_builder_append(&b, &some_obj)) {
+ *       // allocation failed; the partially-built chain becomes
+ *       // unreferenced garbage at the next GC.
+ *       vm_signal_error(thread, VM_ERROR_HEAP);
+ *       return;
+ *     }
+ *   }
+ *   vm_pair_builder_result(&b, &thread->result);
+ *
+ * The builder keeps the head and tail pair pointers on the C stack
+ * so the tail-cache is not paid for in the resulting list's
+ * lifetime. Each append is O(1). An empty builder yields the empty
+ * list as a VM_TYPE_LIST of length 0 (so existing primitives that
+ * test (null? ...) on the result continue to work).
+ */
+typedef struct vm_pair_builder {
+  vm_pair_t *head;
+  vm_pair_t *tail;
+} vm_pair_builder_t;
+
+void vm_pair_builder_init(vm_pair_builder_t *b);
+int  vm_pair_builder_append(vm_pair_builder_t *b, const vm_obj_t *obj);
+void vm_pair_builder_result(const vm_pair_builder_t *b, vm_obj_t *out);
+
 #endif /* !VM_PAIR_H */

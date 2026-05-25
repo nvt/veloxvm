@@ -175,29 +175,24 @@ find_member_in_assoc_list(vm_thread_t *thread,
 
 VM_FUNCTION(list)
 {
-  vm_list_t *list;
+  vm_pair_builder_t b;
   vm_integer_t i;
 
-  /* Disable GC during list construction */
+  /* (list a b c) constructs a fresh pair chain (a . (b . (c . ()))).
+     Uses the C-local pair builder so allocation is O(N) with N=argc
+     and the result is a VM_TYPE_PAIR chain rather than the legacy
+     VM_TYPE_LIST wrapper. */
   vm_gc_disable();
-
-  list = vm_list_create();
-  if(list == NULL) {
-    vm_gc_enable();
-    vm_signal_error(thread, VM_ERROR_HEAP);
-  } else {
-    for(i = argc - 1; i >= 0; i--) {
-      if(!vm_list_insert_head(list, &argv[i])) {
-	vm_gc_enable();
-	vm_signal_error(thread, VM_ERROR_HEAP);
-	return;
-      }
+  vm_pair_builder_init(&b);
+  for(i = 0; i < argc; i++) {
+    if(!vm_pair_builder_append(&b, &argv[i])) {
+      vm_gc_enable();
+      vm_signal_error(thread, VM_ERROR_HEAP);
+      return;
     }
-
-    vm_gc_enable();
-    thread->result.type = VM_TYPE_LIST;
-    thread->result.value.list = list;
   }
+  vm_pair_builder_result(&b, &thread->result);
+  vm_gc_enable();
 }
 
 VM_FUNCTION(cons)

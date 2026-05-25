@@ -29,6 +29,7 @@
  */
 
 #include "vm.h"
+#include "vm-list.h"
 #include "vm-pair.h"
 
 int
@@ -196,4 +197,54 @@ vm_obj_is_proper_list(const vm_obj_t *obj)
     /* iterate to terminator */
   }
   return status == 0;
+}
+
+void
+vm_pair_builder_init(vm_pair_builder_t *b)
+{
+  b->head = NULL;
+  b->tail = NULL;
+}
+
+int
+vm_pair_builder_append(vm_pair_builder_t *b, const vm_obj_t *obj)
+{
+  vm_pair_t *p;
+
+  p = vm_alloc(sizeof(vm_pair_t));
+  if(p == NULL) {
+    return 0;
+  }
+  p->car = *obj;
+  /* New pair becomes the new tail; its cdr is the empty list until
+     another append extends the chain. */
+  p->cdr.type = VM_TYPE_LIST;
+  p->cdr.value.list = vm_list_create();
+  if(p->cdr.value.list == NULL) {
+    /* The fresh pair becomes garbage at the next GC. */
+    return 0;
+  }
+
+  if(b->head == NULL) {
+    b->head = p;
+  } else {
+    b->tail->cdr.type = VM_TYPE_PAIR;
+    b->tail->cdr.value.pair = p;
+  }
+  b->tail = p;
+  return 1;
+}
+
+void
+vm_pair_builder_result(const vm_pair_builder_t *b, vm_obj_t *out)
+{
+  if(b->head == NULL) {
+    out->type = VM_TYPE_LIST;
+    out->value.list = vm_list_create();
+    /* Caller is responsible for checking for NULL if heap pressure
+       is a concern; the empty-list path is not the hot one. */
+    return;
+  }
+  out->type = VM_TYPE_PAIR;
+  out->value.pair = b->head;
 }
