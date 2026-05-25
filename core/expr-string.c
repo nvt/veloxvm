@@ -218,26 +218,36 @@ VM_FUNCTION(string_to_list)
 
 VM_FUNCTION(list_to_string)
 {
-  vm_list_t *list;
   vm_string_t *string;
+  vm_list_walker_t walker;
+  vm_obj_t *car;
+  vm_integer_t length;
   vm_integer_t i;
-  vm_list_item_t *item;
+  int status;
 
-  list = argv[0].value.list;
-  string = vm_string_create(&thread->result, list->length, NULL);
+  if(vm_list_length_walk(&argv[0], &length) < 0) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+  string = vm_string_create(&thread->result, length, NULL);
   if(string == NULL) {
     vm_signal_error(thread, VM_ERROR_HEAP);
     return;
   }
 
-  for(i = 0, item = list->head; item != NULL; i++, item = item->next) {
-    if(item->obj.type != VM_TYPE_CHARACTER) {
+  if(!vm_list_walker_init(&walker, &argv[0])) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+  i = 0;
+  while((status = vm_list_walker_next(&walker, &car)) == 1) {
+    if(car->type != VM_TYPE_CHARACTER) {
       vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
       return;
     }
-    string->str[i] = item->obj.value.character;
+    string->str[i++] = car->value.character;
   }
-  string->str[string->length] = '\0';
+  string->str[length] = '\0';
 }
 
 VM_FUNCTION(vector_to_string)

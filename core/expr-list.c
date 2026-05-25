@@ -39,54 +39,27 @@ static void
 find_member_in_list(vm_thread_t *thread, vm_integer_t argc, vm_obj_t *argv,
 	    int (*compare)(vm_thread_t *, vm_obj_t *, vm_obj_t *))
 {
-  vm_list_t *list;
-  vm_list_item_t *item;
-  vm_list_t *result_list;
   vm_obj_t cur;
 
-  /* VM_TYPE_PAIR path: walk the cdr chain. memq/memv/member return
-     the suffix of the input list starting at the matching pair, so
-     when we hit a match we just return the current pair value -- no
-     new list construction needed. */
-  if(argv[1].type == VM_TYPE_PAIR) {
-    cur = argv[1];
-    while(cur.type == VM_TYPE_PAIR && cur.value.pair != NULL) {
-      if(compare(thread, &argv[0], &cur.value.pair->car)) {
-        thread->result = cur;
-        return;
-      }
-      cur = cur.value.pair->cdr;
-    }
+  if(argv[1].type == VM_TYPE_NIL) {
     VM_PUSH_BOOLEAN(VM_FALSE);
     return;
   }
-
-  if(argv[1].type != VM_TYPE_LIST) {
+  if(argv[1].type != VM_TYPE_PAIR) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
 
-  list = argv[1].value.list;
-
-  for(item = list->head; item != NULL; item = item->next) {
-    if(compare(thread, &argv[0], &item->obj)) {
-      vm_pair_builder_t b;
-
-      vm_gc_disable();
-      vm_pair_builder_init(&b);
-
-      do {
-        if(!vm_pair_builder_append(&b, &item->obj)) {
-          vm_gc_enable();
-          vm_signal_error(thread, VM_ERROR_HEAP);
-          return;
-        }
-      } while((item = item->next) != NULL);
-
-      vm_pair_builder_result(&b, &thread->result);
-      vm_gc_enable();
+  /* memq/memv/member return the suffix of the input list starting
+     at the matching pair (R5RS §6.3.2). The pair's identity is
+     preserved -- we return the current pair value directly. */
+  cur = argv[1];
+  while(cur.type == VM_TYPE_PAIR && cur.value.pair != NULL) {
+    if(compare(thread, &argv[0], &cur.value.pair->car)) {
+      thread->result = cur;
       return;
     }
+    cur = cur.value.pair->cdr;
   }
 
   VM_PUSH_BOOLEAN(VM_FALSE);
@@ -97,89 +70,35 @@ find_member_in_assoc_list(vm_thread_t *thread,
             vm_integer_t argc, vm_obj_t *argv,
 	    int (*compare)(vm_thread_t *, vm_obj_t *, vm_obj_t *))
 {
-  vm_list_t *list;
-  vm_list_item_t *item;
-  vm_list_t *assoc_pair;
   vm_obj_t *entry;
   vm_obj_t cur;
 
-  /* VM_TYPE_PAIR path: walk the cdr chain. Each entry is itself a
-     pair (key . value). On match, return the entry (the matched
-     pair object), preserving the R7RS contract that mutation
-     through the returned value is visible in the alist. */
-  if(argv[1].type == VM_TYPE_PAIR) {
-    cur = argv[1];
-    while(cur.type == VM_TYPE_PAIR && cur.value.pair != NULL) {
-      entry = &cur.value.pair->car;
-      if(entry->type == VM_TYPE_PAIR && entry->value.pair != NULL) {
-        if(compare(thread, &argv[0], &entry->value.pair->car)) {
-          thread->result = *entry;
-          return;
-        }
-      } else if(entry->type == VM_TYPE_LIST &&
-                entry->value.list->length > 0) {
-        if(compare(thread, &argv[0], &entry->value.list->head->obj)) {
-          thread->result = *entry;
-          return;
-        }
-      } else {
-        vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-        return;
-      }
-      cur = cur.value.pair->cdr;
-    }
+  if(argv[1].type == VM_TYPE_NIL) {
     VM_PUSH_BOOLEAN(VM_FALSE);
     return;
   }
-
-  if(argv[1].type != VM_TYPE_LIST) {
+  if(argv[1].type != VM_TYPE_PAIR) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
 
-  list = argv[1].value.list;
-
-  for(item = list->head; item != NULL; item = item->next) {
-    /* Each entry may now be a VM_TYPE_PAIR (built via cons) or a
-       VM_TYPE_LIST (built via list). Match the key regardless. */
-    if(item->obj.type == VM_TYPE_PAIR && item->obj.value.pair != NULL) {
-      if(compare(thread, &argv[0], &item->obj.value.pair->car)) {
-        thread->result = item->obj;
-        return;
-      }
-      continue;
-    }
-    if(item->obj.type != VM_TYPE_LIST) {
+  /* Walk the cdr chain. Each entry is itself a pair (key . value).
+     On match, return the entry (the matched pair object),
+     preserving the R5RS/R7RS contract that mutation through the
+     returned value is visible in the alist. */
+  cur = argv[1];
+  while(cur.type == VM_TYPE_PAIR && cur.value.pair != NULL) {
+    entry = &cur.value.pair->car;
+    if(entry->type != VM_TYPE_PAIR || entry->value.pair == NULL) {
       vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
       return;
     }
-
-    assoc_pair = item->obj.value.list;
-
-    if(compare(thread, &argv[0], &assoc_pair->head->obj)) {
-      /* Convert the matched legacy vm_list_t entry to a fresh
-         vm_pair_t so the caller sees a pair-typed result. R5RS
-         assq/assoc identity semantics are preserved in the
-         pair-input fast path above; for VM_TYPE_LIST input the
-         entry was created by literal-list expansion and the
-         identity guarantee was already weak. */
-      vm_pair_t *new_pair = vm_alloc(sizeof(vm_pair_t));
-      if(new_pair == NULL) {
-        vm_signal_error(thread, VM_ERROR_HEAP);
-        return;
-      }
-      new_pair->car = assoc_pair->head->obj;
-      if(assoc_pair->head->next != NULL) {
-        new_pair->cdr = assoc_pair->head->next->obj;
-      } else {
-        new_pair->cdr.type = VM_TYPE_NIL;
-      }
-      thread->result.type = VM_TYPE_PAIR;
-      thread->result.value.pair = new_pair;
+    if(compare(thread, &argv[0], &entry->value.pair->car)) {
+      thread->result = *entry;
       return;
     }
+    cur = cur.value.pair->cdr;
   }
-
   VM_PUSH_BOOLEAN(VM_FALSE);
 }
 
@@ -255,57 +174,22 @@ VM_FUNCTION(pop)
 
 VM_FUNCTION(car)
 {
-  vm_obj_t *obj;
-
-  if(argv[0].type == VM_TYPE_PAIR) {
-    if(argv[0].value.pair == NULL) {
-      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-      return;
-    }
-    VM_PUSH(&argv[0].value.pair->car);
+  if(argv[0].type != VM_TYPE_PAIR || argv[0].value.pair == NULL) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
-
-  obj = vm_list_car(argv[0].value.list);
-  if(obj == NULL) {
-    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-  } else {
-    VM_PUSH(obj);
-  }
+  VM_PUSH(&argv[0].value.pair->car);
 }
 
 VM_FUNCTION(cdr)
 {
-  vm_list_t *list;
-
-  if(argv[0].type == VM_TYPE_PAIR) {
-    if(argv[0].value.pair == NULL) {
-      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-      return;
-    }
-    /* R7RS pair cdr: return the cdr field's value directly, preserving
-       identity. (eq? p (cdr (cons a p))) -> #t under this path. */
-    VM_PUSH(&argv[0].value.pair->cdr);
-    return;
-  }
-
-  list = argv->value.list;
-  /* Dotted pair (a . b): cdr is the second element directly, regardless
-     of its type. Only fires for a 2-element PAIR-flagged list -- a
-     longer improper list like (1 2 . 3) has length 3 and the cdr is
-     itself a list (2 . 3), which the vm_list_cdr path produces. */
-  if(VM_IS_SET(list->flags, VM_LIST_FLAG_PAIR) && list->length == 2) {
-    VM_PUSH(&list->head->next->obj);
-    return;
-  }
-
-  list = vm_list_cdr(argv->value.list, 1);
-  if(list == NULL) {
+  if(argv[0].type != VM_TYPE_PAIR || argv[0].value.pair == NULL) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-  } else {
-    thread->result.type = VM_TYPE_LIST;
-    thread->result.value.list = list;
+    return;
   }
+  /* R7RS pair cdr: return the cdr field's value directly, preserving
+     identity. (eq? p (cdr (cons a p))) -> #t. */
+  VM_PUSH(&argv[0].value.pair->cdr);
 }
 
 VM_FUNCTION(list_ref)
@@ -341,11 +225,8 @@ VM_FUNCTION(list_ref)
 
 VM_FUNCTION(list_tail)
 {
-  vm_list_t *list;
-  vm_list_item_t *item;
   vm_integer_t k;
-  vm_obj_t result;
-  vm_obj_t suffix;
+  vm_obj_t cur;
 
   if(argv[1].type != VM_TYPE_INTEGER) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
@@ -358,63 +239,20 @@ VM_FUNCTION(list_tail)
     return;
   }
 
-  /* VM_TYPE_PAIR fast path: walk the cdr chain k times; the kth cdr
-     is the tail. R5RS preserves identity for (list-tail lst 0) == lst,
-     which falls out naturally because we return the current pair
-     value directly. */
-  if(argv[0].type == VM_TYPE_PAIR) {
-    vm_obj_t cur = argv[0];
-    while(k > 0) {
-      if(cur.type != VM_TYPE_PAIR || cur.value.pair == NULL) {
-        vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-        vm_set_error_object(thread, &argv[1]);
-        return;
-      }
-      cur = cur.value.pair->cdr;
-      k--;
-    }
-    suffix = cur;
-    VM_PUSH(&suffix);
-    return;
-  }
-
-  if(argv[0].type == VM_TYPE_NIL) {
-    if(k == 0) {
-      thread->result.type = VM_TYPE_NIL;
+  /* Walk the cdr chain k times; the kth cdr is the tail. R5RS
+     preserves identity for (list-tail lst 0) == lst, which falls
+     out naturally because we return the current value directly. */
+  cur = argv[0];
+  while(k > 0) {
+    if(cur.type != VM_TYPE_PAIR || cur.value.pair == NULL) {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+      vm_set_error_object(thread, &argv[1]);
       return;
     }
-    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-    vm_set_error_object(thread, &argv[1]);
-    return;
+    cur = cur.value.pair->cdr;
+    k--;
   }
-  if(argv[0].type != VM_TYPE_LIST) {
-    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-    return;
-  }
-
-  list = argv[0].value.list;
-  if(list->length < k) {
-    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-    vm_set_error_object(thread, &argv[1]);
-    return;
-  }
-
-  /* Walk k positions into the input then copy the remaining items
-     into a fresh pair chain (no longer share via vm_list_t header). */
-  for(item = list->head; k > 0; k--, item = item->next);
-
-  {
-    vm_pair_builder_t b;
-    vm_pair_builder_init(&b);
-    for(; item != NULL; item = item->next) {
-      if(!vm_pair_builder_append(&b, &item->obj)) {
-        vm_signal_error(thread, VM_ERROR_HEAP);
-        return;
-      }
-    }
-    vm_pair_builder_result(&b, &result);
-    VM_PUSH(&result);
-  }
+  thread->result = cur;
 }
 
 /* Python-style normalisation: negative indices count from the end,
@@ -698,10 +536,6 @@ VM_FUNCTION(length)
     VM_PUSH_INTEGER(0);
     return;
   }
-  if(argv[0].type == VM_TYPE_LIST) {
-    VM_PUSH_INTEGER(argv[0].value.list->length);
-    return;
-  }
   if(argv[0].type == VM_TYPE_STRING) {
     VM_PUSH_INTEGER(argv[0].value.string->length);
     return;
@@ -713,8 +547,7 @@ VM_FUNCTION(length)
       n++;
       obj = obj.value.pair->cdr;
     }
-    if(obj.type == VM_TYPE_NIL ||
-       (obj.type == VM_TYPE_LIST && obj.value.list->length == 0)) {
+    if(obj.type == VM_TYPE_NIL) {
       VM_PUSH_INTEGER(n);
       return;
     }
@@ -726,12 +559,7 @@ VM_FUNCTION(length)
 
 VM_FUNCTION(nullp)
 {
-  /* The empty list is VM_TYPE_NIL after Phase 4, or a length-0
-     VM_TYPE_LIST under the legacy representation (still produced by
-     a few code paths during the transition). */
-  VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_NIL ||
-                  (argv[0].type == VM_TYPE_LIST &&
-                   argv[0].value.list->length == 0));
+  VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_NIL);
 }
 
 VM_FUNCTION(listp)
@@ -745,10 +573,6 @@ VM_FUNCTION(listp)
     VM_PUSH_BOOLEAN(VM_TRUE);
     return;
   }
-  if(argv[0].type == VM_TYPE_LIST) {
-    VM_PUSH_BOOLEAN(VM_IS_CLEAR(argv[0].value.list->flags, VM_LIST_FLAG_PAIR));
-    return;
-  }
   if(argv[0].type != VM_TYPE_PAIR) {
     VM_PUSH_BOOLEAN(VM_FALSE);
     return;
@@ -757,71 +581,33 @@ VM_FUNCTION(listp)
   while(obj.type == VM_TYPE_PAIR && obj.value.pair != NULL) {
     obj = obj.value.pair->cdr;
   }
-  VM_PUSH_BOOLEAN(obj.type == VM_TYPE_NIL ||
-                  (obj.type == VM_TYPE_LIST &&
-                   obj.value.list->length == 0));
+  VM_PUSH_BOOLEAN(obj.type == VM_TYPE_NIL);
 }
 
 VM_FUNCTION(pairp)
 {
-  /* R5RS: pair? returns #t for any cons cell (non-empty list structure).
-     This includes both proper lists like '(1 2 3) and improper pairs like (cons 1 2).
-     Only the empty list '() is not a pair. */
-  VM_PUSH_BOOLEAN((argv[0].type == VM_TYPE_PAIR &&
-                   argv[0].value.pair != NULL) ||
-                  (argv[0].type == VM_TYPE_LIST &&
-                   argv[0].value.list->length > 0));
+  VM_PUSH_BOOLEAN(argv[0].type == VM_TYPE_PAIR &&
+                  argv[0].value.pair != NULL);
 }
 
 VM_FUNCTION(set_car)
 {
-  vm_list_t *list;
-
-  if(argv[0].type == VM_TYPE_PAIR) {
-    if(argv[0].value.pair == NULL) {
-      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-      return;
-    }
-    argv[0].value.pair->car = argv[1];
-    return;
-  }
-
-  if(argv[0].type != VM_TYPE_LIST) {
+  if(argv[0].type != VM_TYPE_PAIR || argv[0].value.pair == NULL) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
-
-  list = argv[0].value.list;
-  if(list->length == 0) {
-    if(vm_list_insert_head(list, &argv[1]) == VM_FALSE) {
-      vm_signal_error(thread, VM_ERROR_HEAP);
-    }
-  } else {
-    memcpy(&list->head->obj, &argv[1], sizeof(vm_obj_t));
-  }
+  argv[0].value.pair->car = argv[1];
 }
 
 VM_FUNCTION(set_cdr)
 {
-  if(argv[0].type == VM_TYPE_PAIR) {
-    if(argv[0].value.pair == NULL) {
-      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-      return;
-    }
-    /* R7RS set-cdr! semantics: assign directly to the pair's cdr field.
-       Any other reference to this pair sees the mutation. */
-    argv[0].value.pair->cdr = argv[1];
-    return;
-  }
-
-  if(argv[0].type != VM_TYPE_LIST) {
+  if(argv[0].type != VM_TYPE_PAIR || argv[0].value.pair == NULL) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
-
-  if(!vm_list_set_cdr(argv[0].value.list, &argv[1])) {
-    vm_signal_error(thread, VM_ERROR_HEAP);
-  }
+  /* R7RS set-cdr! semantics: assign directly to the pair's cdr field.
+     Any other reference to this pair sees the mutation. */
+  argv[0].value.pair->cdr = argv[1];
 }
 
 VM_FUNCTION(memq)

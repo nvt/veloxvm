@@ -204,16 +204,6 @@ mark_object(vm_obj_t *obj)
   case VM_TYPE_RATIONAL:
      mark_memory(obj->value.rational);
      break;
-  case VM_TYPE_LIST:
-    if(obj->value.list != NULL && !memory_is_marked(obj->value.list)) {
-      mark_memory(obj->value.list);
-      /* TODO: Avoid recursion. */
-      for(item = obj->value.list->head; item != NULL; item = item->next) {
-        mark_memory(item);
-        mark_object(&item->obj);
-      }
-    }
-    break;
   case VM_TYPE_PAIR:
     if(obj->value.pair != NULL && !memory_is_marked(obj->value.pair)) {
       mark_memory(obj->value.pair);
