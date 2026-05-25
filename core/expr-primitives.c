@@ -33,7 +33,6 @@
 #include <limits.h>
 
 #include "vm-functions.h"
-#include "vm-list.h"
 #include "vm-log.h"
 #include "vm-native.h"
 #include "vm-pair.h"

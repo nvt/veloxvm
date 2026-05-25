@@ -262,7 +262,6 @@ write_object_depth(vm_port_t *port, vm_obj_t *obj, int depth)
   vm_thread_t *thread;
   const char *symbol_name;
   const char *str;
-  vm_list_item_t *item;
   int i;
   vm_boolean_t output_raw;
 
@@ -344,7 +343,11 @@ write_object_depth(vm_port_t *port, vm_obj_t *obj, int depth)
       }
       cur = cur.value.pair->cdr;
     }
-    if(i < VM_LIST_PRINT_LIMIT && cur.type != VM_TYPE_NIL) {
+    /* A NULL pair acts as a proper-list terminator too (defensive
+       against half-built pairs); only print " . <improper>" when
+       the terminator is some non-list value. */
+    if(i < VM_LIST_PRINT_LIMIT && cur.type != VM_TYPE_NIL &&
+       !(cur.type == VM_TYPE_PAIR && cur.value.pair == NULL)) {
       vm_write(port, " . ");
       write_object_depth(port, &cur, depth + 1);
     }

@@ -31,7 +31,6 @@
  */
 
 #include "vm-functions.h"
-#include "vm-list.h"
 #include "vm-log.h"
 
 /*

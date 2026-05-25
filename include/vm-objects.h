@@ -45,7 +45,10 @@ typedef enum vm_obj_type {
   VM_TYPE_SYMBOL    =  5,
   VM_TYPE_CHARACTER =  6,
   VM_TYPE_FORM      =  7,
-  VM_TYPE_LIST      =  8,
+  /* Tag 8 was VM_TYPE_LIST (legacy wrapper representation), retired
+     in favor of VM_TYPE_PAIR (R7RS cons pairs). The tag value is
+     left unused to preserve the numbering of types serialized in
+     compiled bytecode and policy specs. */
   VM_TYPE_VECTOR    =  9,
   VM_TYPE_PORT      = 10,
   VM_TYPE_COMPLEX   = 11,
@@ -169,18 +172,6 @@ typedef struct vm_port {
   vm_character_t peek_char;
 } vm_port_t;
 
-/* VM_TYPE_LIST representation. */
-#define VM_LIST_FLAG_ORIGINAL 0x1
-#define VM_LIST_FLAG_PAIR     0x2
-
-struct vm_list_item;
-typedef struct vm_list {
-  struct vm_list_item *head;
-  struct vm_list_item *tail;
-  vm_integer_t length;
-  uint8_t flags;
-} vm_list_t;
-
 /* VM_TYPE_VECTOR representation. */
 typedef enum vm_vector_flags {
   VM_VECTOR_FLAG_REGULAR = 0x1,
@@ -256,7 +247,6 @@ typedef union vm_obj_value {
   vm_symbol_ref_t symbol_ref;
   vm_form_t form;
   vm_character_t character;
-  vm_list_t *list;
   vm_vector_t *vector;
   vm_port_t *port;
   const struct vm_procedure *procedure;
@@ -273,19 +263,10 @@ typedef struct vm_obj {
   vm_obj_type_t type;
 } vm_obj_t;
 
-/* Part of the VM_TYPE_LIST representations, but this is defined after
-   vm_obj_t because list items contain full VM objects. */
-typedef struct vm_list_item {
-  struct vm_obj obj;
-  struct vm_list_item *next;
-} vm_list_item_t;
-
 /* VM_TYPE_PAIR storage. A pair holds car and cdr inline as full
-   vm_obj_t values; sizeof(vm_pair_t) is therefore 2 * sizeof(vm_obj_t)
-   (32 B on 64-bit POSIX). This is larger than the current
-   VM_POOL_ELEMENT_SIZE = sizeof(vm_list_item_t) = 24 B, so pair
-   allocations spill to the heap-tracked path until
-   VM_POOL_ELEMENT_SIZE is bumped to accommodate vm_pair_t. */
+   vm_obj_t values; sizeof(vm_pair_t) is 2 * sizeof(vm_obj_t)
+   (32 B on 64-bit POSIX). VM_POOL_ELEMENT_SIZE is sized for this
+   so cons allocations stay in the object pool. */
 struct vm_pair {
   vm_obj_t car;
   vm_obj_t cdr;

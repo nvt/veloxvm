@@ -118,12 +118,6 @@
                   thread->result.value.real = (x); \
                 } while (0)
 
-#define VM_PUSH_LIST(x) \
-                do { \
-                  thread->result.type = VM_TYPE_LIST; \
-                  thread->result.value.list = (x); \
-                } while (0)
-
 #define VM_PUSH_PAIR(x) \
                 do { \
                   thread->result.type = VM_TYPE_PAIR; \

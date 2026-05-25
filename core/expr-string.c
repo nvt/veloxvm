@@ -36,7 +36,6 @@
 #include <string.h>
 
 #include "vm-functions.h"
-#include "vm-list.h"
 #include "vm-pair.h"
 
 #define NUMBER_BITS (sizeof(long) * CHAR_BIT)
@@ -187,7 +186,6 @@ VM_FUNCTION(string_set)
 VM_FUNCTION(string_to_list)
 {
   vm_string_t *string;
-  vm_list_t *list;
   vm_integer_t i;
   vm_obj_t obj;
 
@@ -432,7 +430,6 @@ VM_FUNCTION(string_split)
   const char *string;
   const char *seps;
   const char *p;
-  vm_list_t *list;
   vm_obj_t obj;
 
   if(vm_string_resolve(thread, argv[0].value.string) == NULL ||

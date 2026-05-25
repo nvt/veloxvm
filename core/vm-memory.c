@@ -197,7 +197,6 @@ static void
 mark_object(vm_obj_t *obj)
 {
   int k;
-  vm_list_item_t *item;
 
   /* We need to mark only the object types that involve heap memory. */
   switch(obj->type) {

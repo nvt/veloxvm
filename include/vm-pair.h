@@ -60,22 +60,13 @@
  */
 
 typedef struct vm_list_walker {
-  /* For VM_TYPE_LIST walks: the underlying list and the current item.
-     list_item == NULL means we've stepped past the end. */
-  vm_list_t *list_root;
-  vm_list_item_t *list_item;
-
-  /* For VM_TYPE_PAIR walks: the current pair-or-terminator object.
-     pair_cur.type != VM_TYPE_PAIR means we've stepped past the end;
-     pair_cur is then the terminator (empty list for proper, anything
-     else for improper). */
+  /* The current pair-or-terminator object. pair_cur.type != VM_TYPE_PAIR
+     means we've stepped past the end; pair_cur is then the terminator
+     (VM_TYPE_NIL for proper, anything else for improper). */
   vm_obj_t pair_cur;
 
-  /* Which representation we're walking. */
-  vm_obj_type_t kind;
-
-  /* Set after walker_next yields a value so walker_current_pair can
-     return the suffix-from-here for memq-style return semantics. */
+  /* Set after walker_next yields a value so walker_current can return
+     the suffix-from-here for memq-style return semantics. */
   vm_obj_t suffix_obj;
 } vm_list_walker_t;
 

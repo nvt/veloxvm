@@ -29,7 +29,6 @@
  */
 
 #include "vm.h"
-#include "vm-list.h"
 #include "vm-pair.h"
 
 int

@@ -32,7 +32,6 @@
 
 #include "vm-functions.h"
 #include "vm-log.h"
-#include "vm-list.h"
 #include "vm-pair.h"
 
 static void
