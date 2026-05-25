@@ -188,27 +188,20 @@ VM_FUNCTION(vector_set)
 VM_FUNCTION(vector_to_list)
 {
   vm_vector_t *vector;
-  vm_list_t *list;
+  vm_pair_builder_t b;
   vm_integer_t i;
   vm_obj_t ch;
 
   vector = argv[0].value.vector;
 
-  /* Disable GC during list construction */
   vm_gc_disable();
-
-  list = vm_list_create();
-  if(list == NULL) {
-    vm_gc_enable();
-    vm_signal_error(thread, VM_ERROR_HEAP);
-    return;
-  }
+  vm_pair_builder_init(&b);
 
   if(VM_IS_SET(vector->flags, VM_VECTOR_FLAG_BUFFER)) {
     ch.type = VM_TYPE_CHARACTER;
     for(i = 0; i < vector->length; i++) {
       ch.value.character = vector->bytes[i];
-      if(!vm_list_insert_tail(list, &ch)) {
+      if(!vm_pair_builder_append(&b, &ch)) {
         vm_gc_enable();
         vm_signal_error(thread, VM_ERROR_HEAP);
         return;
@@ -216,7 +209,7 @@ VM_FUNCTION(vector_to_list)
     }
   } else {
     for(i = 0; i < vector->length; i++) {
-      if(!vm_list_insert_tail(list, vector->elements + i)) {
+      if(!vm_pair_builder_append(&b, vector->elements + i)) {
         vm_gc_enable();
         vm_signal_error(thread, VM_ERROR_HEAP);
         return;
@@ -224,8 +217,8 @@ VM_FUNCTION(vector_to_list)
     }
   }
 
+  vm_pair_builder_result(&b, &thread->result);
   vm_gc_enable();
-  VM_PUSH_LIST(list);
 }
 
 VM_FUNCTION(list_to_vector)
