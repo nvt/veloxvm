@@ -34,8 +34,8 @@
 
 #include "vm.h"
 #include "vm-lib.h"
-#include "vm-list.h"
 #include "vm-log.h"
+#include "vm-pair.h"
 
 #if !CONTIKI_TARGET_NATIVE
 #include "lib/sensors.h"
@@ -93,15 +93,7 @@ unload(vm_program_t *program)
 
 VM_FUNCTION(get_sensors)
 {
-  vm_list_t *list;
-
-  list = vm_list_create();
-  if(list == NULL) {
-    vm_signal_error(thread, VM_ERROR_HEAP);
-    return;
-  }
-  thread->result.type = VM_TYPE_LIST;
-  thread->result.value.list = list;
+  thread->result.type = VM_TYPE_NIL;
 }
 
 VM_FUNCTION(sensor_value)
@@ -114,17 +106,11 @@ VM_FUNCTION(sensor_value)
 VM_FUNCTION(get_sensors)
 {
   const struct sensors_sensor *sensor;
-  vm_list_t *list;
+  vm_pair_builder_t builder;
   vm_obj_t elem;
 
   vm_gc_disable();
-
-  list = vm_list_create();
-  if(list == NULL) {
-    vm_gc_enable();
-    vm_signal_error(thread, VM_ERROR_HEAP);
-    return;
-  }
+  vm_pair_builder_init(&builder);
 
   for(sensor = sensors_first(); sensor != NULL; sensor = sensors_next(sensor)) {
     /* Skip entries without a read function (pure actuators such as
@@ -138,7 +124,7 @@ VM_FUNCTION(get_sensors)
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
-    if(!vm_list_insert_tail(list, &elem)) {
+    if(!vm_pair_builder_append(&builder, &elem)) {
       vm_gc_enable();
       vm_signal_error(thread, VM_ERROR_HEAP);
       return;
@@ -146,8 +132,7 @@ VM_FUNCTION(get_sensors)
   }
 
   vm_gc_enable();
-  thread->result.type = VM_TYPE_LIST;
-  thread->result.value.list = list;
+  vm_pair_builder_result(&builder, &thread->result);
 }
 
 VM_FUNCTION(sensor_value)

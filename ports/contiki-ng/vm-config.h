@@ -156,8 +156,8 @@
  *   - Native: hosted Linux/macOS process; generous so the GC and
  *     frame pool do not become the bottleneck for non-trivial test
  *     programs. Smaller than the POSIX port so the GC's allocation
- *     hash table (sized by VM_HEAP_SIZE / sizeof(vm_list_item_t))
- *     does not balloon.
+ *     hash table (sized by VM_HEAP_SIZE / sizeof(vm_pair_t)) does
+ *     not balloon.
  *   - Other targets: a middle tier sized for modern IoT MCUs with
  *     ~256 kB RAM (nRF52840, cc1352, etc.) — the historic
  *     non-Zoul defaults.
