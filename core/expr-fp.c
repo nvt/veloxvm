@@ -51,6 +51,7 @@
 #include "vm-functions.h"
 #include "vm-log.h"
 #include "vm-list.h"
+#include "vm-pair.h"
 
 static int
 needs_further_eval(vm_thread_t *thread, vm_integer_t argc, vm_obj_t *argv)
@@ -174,8 +175,25 @@ VM_FUNCTION(map)
   }
 
   if(list->length == 0) {
-    /* The list has been processed. Stop the evaluation. */
-    VM_PUSH(&current_expr->argv[current_expr->argc - 2]);
+    /* The list has been processed. Convert the internal vm_list_t
+       result to a pair chain so the value visible to user code is
+       VM_TYPE_PAIR / VM_TYPE_NIL (consistent with the rest of the
+       list-constructor surface). The vm_list_t scratch is left
+       dangling for the GC to collect. */
+    vm_list_t *legacy =
+      current_expr->argv[current_expr->argc - 2].value.list;
+    vm_list_item_t *it;
+    vm_pair_builder_t pb;
+
+    vm_pair_builder_init(&pb);
+    for(it = legacy->head; it != NULL; it = it->next) {
+      if(!vm_pair_builder_append(&pb, &it->obj)) {
+        vm_signal_error(thread, VM_ERROR_HEAP);
+        vm_thread_stack_free(map_expr);
+        return;
+      }
+    }
+    vm_pair_builder_result(&pb, &thread->result);
     VM_EVAL_STOP(thread);
     vm_thread_stack_free(map_expr);
     return;
@@ -266,11 +284,22 @@ VM_FUNCTION(filter)
   filter_expr->flags &= ~VM_EXPR_SAVE_FRAME;
 
   if(list->length == 0) {
-    /* The list has been processed. Stop the evaluation.
-     * Use current_expr->argc (post-init) so that filtering an empty
-     * list returns the accumulator rather than the predicate; the
-     * caller's argc parameter is still the pre-init value. */
-    VM_PUSH(&current_expr->argv[current_expr->argc - 2]);
+    /* The list has been processed. Convert the internal vm_list_t
+       result to a pair chain (same approach as map). */
+    vm_list_t *legacy =
+      current_expr->argv[current_expr->argc - 2].value.list;
+    vm_list_item_t *it;
+    vm_pair_builder_t pb;
+
+    vm_pair_builder_init(&pb);
+    for(it = legacy->head; it != NULL; it = it->next) {
+      if(!vm_pair_builder_append(&pb, &it->obj)) {
+        vm_signal_error(thread, VM_ERROR_HEAP);
+        vm_thread_stack_free(filter_expr);
+        return;
+      }
+    }
+    vm_pair_builder_result(&pb, &thread->result);
     VM_EVAL_STOP(thread);
     vm_thread_stack_free(filter_expr);
     return;

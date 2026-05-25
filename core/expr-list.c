@@ -157,7 +157,25 @@ find_member_in_assoc_list(vm_thread_t *thread,
     assoc_pair = item->obj.value.list;
 
     if(compare(thread, &argv[0], &assoc_pair->head->obj)) {
-      VM_PUSH_LIST(assoc_pair);
+      /* Convert the matched legacy vm_list_t entry to a fresh
+         vm_pair_t so the caller sees a pair-typed result. R5RS
+         assq/assoc identity semantics are preserved in the
+         pair-input fast path above; for VM_TYPE_LIST input the
+         entry was created by literal-list expansion and the
+         identity guarantee was already weak. */
+      vm_pair_t *new_pair = vm_alloc(sizeof(vm_pair_t));
+      if(new_pair == NULL) {
+        vm_signal_error(thread, VM_ERROR_HEAP);
+        return;
+      }
+      new_pair->car = assoc_pair->head->obj;
+      if(assoc_pair->head->next != NULL) {
+        new_pair->cdr = assoc_pair->head->next->obj;
+      } else {
+        new_pair->cdr.type = VM_TYPE_NIL;
+      }
+      thread->result.type = VM_TYPE_PAIR;
+      thread->result.value.pair = new_pair;
       return;
     }
   }
@@ -360,6 +378,15 @@ VM_FUNCTION(list_tail)
     return;
   }
 
+  if(argv[0].type == VM_TYPE_NIL) {
+    if(k == 0) {
+      thread->result.type = VM_TYPE_NIL;
+      return;
+    }
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    vm_set_error_object(thread, &argv[1]);
+    return;
+  }
   if(argv[0].type != VM_TYPE_LIST) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
@@ -372,34 +399,20 @@ VM_FUNCTION(list_tail)
     return;
   }
 
-  /* Save k before the loop modifies it */
-  vm_integer_t orig_k = k;
-
+  /* Walk k positions into the input then copy the remaining items
+     into a fresh pair chain (no longer share via vm_list_t header). */
   for(item = list->head; k > 0; k--, item = item->next);
 
-  list = vm_list_create();
-  if(list == NULL) {
-    vm_signal_error(thread, VM_ERROR_HEAP);
-  } else {
-    vm_list_item_t *tail_item;
-
-    list->head = item;
-    list->length = argv[0].value.list->length - orig_k;  /* Use saved k value */
-    list->flags = 0;
-
-    /* Find and set the tail pointer */
-    if(item != NULL) {
-      tail_item = item;
-      while(tail_item->next != NULL) {
-        tail_item = tail_item->next;
+  {
+    vm_pair_builder_t b;
+    vm_pair_builder_init(&b);
+    for(; item != NULL; item = item->next) {
+      if(!vm_pair_builder_append(&b, &item->obj)) {
+        vm_signal_error(thread, VM_ERROR_HEAP);
+        return;
       }
-      list->tail = tail_item;
-    } else {
-      list->tail = NULL;
     }
-
-    result.type = VM_TYPE_LIST;
-    result.value.list = list;
+    vm_pair_builder_result(&b, &result);
     VM_PUSH(&result);
   }
 }
@@ -651,13 +664,7 @@ VM_FUNCTION(reverse)
   }
 
   vm_gc_disable();
-  result.type = VM_TYPE_LIST;
-  result.value.list = vm_list_create();
-  if(result.value.list == NULL) {
-    vm_gc_enable();
-    vm_signal_error(thread, VM_ERROR_HEAP);
-    return;
-  }
+  result.type = VM_TYPE_NIL;
 
   while((status = vm_list_walker_next(&walker, &car)) == 1) {
     p = vm_alloc(sizeof(vm_pair_t));
