@@ -117,23 +117,6 @@ fp_step_input(vm_obj_t *input_slot, vm_obj_t *car_out)
     *input_slot = input_slot->value.pair->cdr;
     return 1;
   }
-  if(input_slot->type == VM_TYPE_LIST) {
-    vm_list_t *list = input_slot->value.list;
-    vm_obj_t *obj;
-    if(list == NULL || list->length == 0) {
-      return 0;
-    }
-    obj = vm_list_car(list);
-    if(obj == NULL) {
-      return 0;
-    }
-    *car_out = *obj;
-    input_slot->value.list = vm_list_cdr(list, 1);
-    if(input_slot->value.list == NULL) {
-      input_slot->type = VM_TYPE_NIL;
-    }
-    return 1;
-  }
   return -1;
 }
 
@@ -173,8 +156,7 @@ VM_FUNCTION(map)
     return;
   }
 
-  if(argv[1].type != VM_TYPE_LIST && argv[1].type != VM_TYPE_PAIR &&
-     argv[1].type != VM_TYPE_NIL) {
+  if(argv[1].type != VM_TYPE_PAIR && argv[1].type != VM_TYPE_NIL) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
@@ -252,8 +234,7 @@ VM_FUNCTION(filter)
     return;
   }
 
-  if(argv[1].type != VM_TYPE_LIST && argv[1].type != VM_TYPE_PAIR &&
-     argv[1].type != VM_TYPE_NIL) {
+  if(argv[1].type != VM_TYPE_PAIR && argv[1].type != VM_TYPE_NIL) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }

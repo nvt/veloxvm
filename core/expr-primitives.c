@@ -642,45 +642,51 @@ VM_FUNCTION(or)
 
 VM_FUNCTION(apply)
 {
-  vm_list_t *list;
-  vm_list_item_t *item;
+  vm_list_walker_t walker;
+  vm_obj_t *car;
+  vm_integer_t length;
   vm_obj_t *argp;
+  int status;
 
   if(!VM_EVAL_ARG_DONE(thread, 1)) {
     VM_EVAL_ARG(thread, 1);
     return;
   }
 
-  if(argv[1].type != VM_TYPE_LIST) {
+  if(argv[1].type != VM_TYPE_PAIR && argv[1].type != VM_TYPE_NIL) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+
+  if(vm_list_length_walk(&argv[1], &length) < 0) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+
+  if(1 + length > VM_OBJECT_STACK_SIZE) {
+    vm_signal_error(thread, VM_ERROR_HEAP);
     return;
   }
 
   /* Replace the current expression with the operator and the arguments
      specified by the APPLY expression. */
-
   memcpy(&thread->expr->argv[0], &argv[0], sizeof(vm_obj_t));
-  list = argv[1].value.list;
 
-  if(1 + list->length > VM_OBJECT_STACK_SIZE) {
-    vm_signal_error(thread, VM_ERROR_HEAP);
+  if(!vm_list_walker_init(&walker, &argv[1])) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
-
-  for(argp = &thread->expr->argv[1], item = list->head;
-      item != NULL;
-      argp++, item = item->next) {
-    memcpy(argp, &item->obj, sizeof(vm_obj_t));
+  argp = &thread->expr->argv[1];
+  while((status = vm_list_walker_next(&walker, &car)) == 1) {
+    memcpy(argp++, car, sizeof(vm_obj_t));
   }
 
-  thread->expr->argc = 1 + list->length;
+  thread->expr->argc = 1 + length;
   thread->expr->eval_requested = 1;
   thread->expr->eval_completed = 0;
   /* Tell cut_tail_call_frames to re-execute the call site so apply
      re-runs and re-spreads, rather than preserve the rewritten argv. */
   VM_SET_FLAG(thread->expr->flags, VM_EXPR_REWRITTEN_BY_APPLY);
-
-  vm_list_destroy(list);
 }
 
 VM_FUNCTION(quote)

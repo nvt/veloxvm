@@ -140,24 +140,27 @@ static void encode_value(encbuf_t *e, vm_program_t *program,
    constructed by VeloxVM, but the encoder would handle them by
    walking until the dotted tail. */
 static void
-encode_list(encbuf_t *e, vm_program_t *program,
-            const vm_list_t *list, unsigned depth)
+encode_pair_chain(encbuf_t *e, vm_program_t *program,
+                  const vm_obj_t *obj, unsigned depth)
 {
-  vm_list_item_t *item;
+  vm_obj_t cur;
   unsigned count;
 
-  if(VM_IS_SET(list->flags, VM_LIST_FLAG_PAIR) &&
-     list->head != NULL && list->head->next != NULL &&
-     list->head->next->next == NULL) {
-    /* Improper 2-element pair: emit as PAIR(car, cdr). */
-    emit_byte(e, TAG_PAIR);
-    encode_value(e, program, &list->head->obj, depth + 1);
-    encode_value(e, program, &list->head->next->obj, depth + 1);
-    return;
+  /* Improper pair (a . b) where b is not pair-or-nil: emit as
+     PAIR(car, cdr). */
+  if(obj->type == VM_TYPE_PAIR && obj->value.pair != NULL) {
+    vm_obj_t cdr = obj->value.pair->cdr;
+    if(cdr.type != VM_TYPE_PAIR && cdr.type != VM_TYPE_NIL) {
+      emit_byte(e, TAG_PAIR);
+      encode_value(e, program, &obj->value.pair->car, depth + 1);
+      encode_value(e, program, &cdr, depth + 1);
+      return;
+    }
   }
 
   count = 0;
-  for(item = list->head; item != NULL; item = item->next) {
+  for(cur = *obj; cur.type == VM_TYPE_PAIR && cur.value.pair != NULL;
+      cur = cur.value.pair->cdr) {
     count++;
   }
   if(count > UINT16_MAX) {
@@ -166,8 +169,10 @@ encode_list(encbuf_t *e, vm_program_t *program,
 
   emit_byte(e, TAG_LIST);
   emit_u16_be(e, (uint16_t)count);
-  for(item = list->head; item != NULL && count > 0; item = item->next) {
-    encode_value(e, program, &item->obj, depth + 1);
+  cur = *obj;
+  while(count > 0 && cur.type == VM_TYPE_PAIR && cur.value.pair != NULL) {
+    encode_value(e, program, &cur.value.pair->car, depth + 1);
+    cur = cur.value.pair->cdr;
     count--;
   }
 }
@@ -315,12 +320,16 @@ encode_value(encbuf_t *e, vm_program_t *program,
     }
     break;
   }
-  case VM_TYPE_LIST:
-    if(obj->value.list == NULL) {
+  case VM_TYPE_NIL:
+    emit_byte(e, TAG_LIST);
+    emit_u16_be(e, 0);
+    break;
+  case VM_TYPE_PAIR:
+    if(obj->value.pair == NULL) {
       emit_byte(e, TAG_LIST);
       emit_u16_be(e, 0);
     } else {
-      encode_list(e, program, obj->value.list, depth);
+      encode_pair_chain(e, program, obj, depth);
     }
     break;
   case VM_TYPE_VECTOR:

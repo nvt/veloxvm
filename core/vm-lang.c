@@ -344,8 +344,7 @@ write_object_depth(vm_port_t *port, vm_obj_t *obj, int depth)
       }
       cur = cur.value.pair->cdr;
     }
-    if(i < VM_LIST_PRINT_LIMIT &&
-       !(cur.type == VM_TYPE_LIST && cur.value.list->length == 0)) {
+    if(i < VM_LIST_PRINT_LIMIT && cur.type != VM_TYPE_NIL) {
       vm_write(port, " . ");
       write_object_depth(port, &cur, depth + 1);
     }
@@ -537,15 +536,13 @@ vm_objects_deep_equal(vm_thread_t *thread, vm_obj_t *obj1, vm_obj_t *obj2)
   vm_vector_t *vector1, *vector2;
   int i;
 
-  /* Cross-type list/pair equality. During the cons-quadratic
-     migration, '(1 2 3) (VM_TYPE_LIST), (cons 1 (cons 2 (cons 3
-     '()))) (VM_TYPE_PAIR chain), and VM_TYPE_NIL (empty list) are
-     all structurally compatible and must compare equal? under
-     R5RS/R7RS. Walk both with the unified iterator. */
-  if((obj1->type == VM_TYPE_LIST || obj1->type == VM_TYPE_PAIR ||
-      obj1->type == VM_TYPE_NIL) &&
-     (obj2->type == VM_TYPE_LIST || obj2->type == VM_TYPE_PAIR ||
-      obj2->type == VM_TYPE_NIL)) {
+  /* Pair / nil equality is a walk over both inputs. Proper lists
+     are pair chains terminated by NIL; the walker handles the
+     transition uniformly. Cycle detection deferred -- until
+     set-cdr! is used to construct one, all pair structures are
+     acyclic. */
+  if((obj1->type == VM_TYPE_PAIR || obj1->type == VM_TYPE_NIL) &&
+     (obj2->type == VM_TYPE_PAIR || obj2->type == VM_TYPE_NIL)) {
     vm_list_walker_t w1, w2;
     vm_obj_t *car1, *car2;
     vm_obj_t term1, term2;
@@ -635,8 +632,8 @@ vm_object_deep_copy(vm_obj_t *old, vm_obj_t *new)
   memcpy(new, old, sizeof(vm_obj_t));
 
   switch(old->type) {
-  case VM_TYPE_LIST:
-    break;
+  case VM_TYPE_PAIR:
+  case VM_TYPE_NIL:
   case VM_TYPE_VECTOR:
     break;
   case VM_TYPE_EXTERNAL:

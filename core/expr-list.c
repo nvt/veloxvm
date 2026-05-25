@@ -148,28 +148,18 @@ VM_FUNCTION(cons)
 
 VM_FUNCTION(push)
 {
-  if(argv[1].type != VM_TYPE_LIST) {
-    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
-  } else {
-    if(vm_list_insert_head(argv[1].value.list, &argv[0]) == VM_FALSE) {
-      vm_signal_error(thread, VM_ERROR_HEAP);
-    }
-  }
+  /* push operated on the legacy VM_TYPE_LIST wrapper representation,
+     mutating its head pointer in place. With pair-based lists, the
+     idiomatic equivalent is (set! var (cons new var)) at the Scheme
+     level. The primitive is preserved as a stub so the primitive-ID
+     numbering stays stable across the compiler tables. */
+  vm_signal_error(thread, VM_ERROR_UNIMPLEMENTED);
 }
 
 VM_FUNCTION(pop)
 {
-  vm_list_t *stack;
-
-  stack = argv[0].value.list;
-  if(stack->length == 0) {
-    vm_signal_error(thread, VM_ERROR_STACK_UNDERFLOW);
-    return;
-  }
-
-  VM_PUSH(&stack->head->obj);
-  stack->length--;
-  stack->head = stack->head->next;
+  /* See note on push. */
+  vm_signal_error(thread, VM_ERROR_UNIMPLEMENTED);
 }
 
 VM_FUNCTION(car)
@@ -318,8 +308,8 @@ VM_FUNCTION(slice)
     memcpy(result_string->str, string->str + start, end - start);
     result_string->str[result_string->length] = '\0';
     return;
-  } else if(argv[0].type == VM_TYPE_LIST ||
-            argv[0].type == VM_TYPE_PAIR) {
+  } else if(argv[0].type == VM_TYPE_PAIR ||
+            argv[0].type == VM_TYPE_NIL) {
     /* List/pair slicing. Walks the input uniformly via the walker
        and constructs the result as a pair chain via the builder. */
     vm_pair_builder_t b;
