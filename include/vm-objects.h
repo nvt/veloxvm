@@ -58,7 +58,12 @@ typedef enum vm_obj_type {
      payload is unused. eof-object? tests this tag, eof-object
      constructs a value of this type, and read-char / read /
      peek-char return one on real end-of-stream (not on poll-block). */
-  VM_TYPE_EOF       = 17
+  VM_TYPE_EOF       = 17,
+  /* R7RS-conformant cons-pair representation: a vm_pair_t holding
+     car and cdr inline. The tag is appended to the end of the enum
+     to avoid shifting existing tag values that may be embedded in
+     compiled bytecode or policy specs. */
+  VM_TYPE_PAIR      = 18
 } vm_obj_type_t;
 
 /* Definitions for denoting multiple object types; e.g., in specifications
@@ -212,6 +217,13 @@ typedef struct vm_box vm_box_t;
    vm_obj_t, below. */
 typedef struct vm_closure vm_closure_t;
 
+/* VM_TYPE_PAIR representation. A pair holds two vm_obj_t inline
+   (car and cdr), implementing the standard Scheme cons-pair model.
+   The struct contains vm_obj_t fields and so must be defined after
+   vm_obj_t -- the forward typedef here lets vm_obj_value_t reference
+   it by pointer. */
+typedef struct vm_pair vm_pair_t;
+
 typedef uint16_t vm_ext_type_id_t;
 
 struct vm_ext_type;
@@ -248,6 +260,7 @@ typedef union vm_obj_value {
   struct vm_ext_object *ext_object;
   vm_box_t *box;
   vm_closure_t *closure;
+  vm_pair_t *pair;
 } vm_obj_value_t;
 
 /* VM objects consist of a type specifier and its corresponding
@@ -263,6 +276,17 @@ typedef struct vm_list_item {
   struct vm_obj obj;
   struct vm_list_item *next;
 } vm_list_item_t;
+
+/* VM_TYPE_PAIR storage. A pair holds car and cdr inline as full
+   vm_obj_t values; sizeof(vm_pair_t) is therefore 2 * sizeof(vm_obj_t)
+   (32 B on 64-bit POSIX). This is larger than the current
+   VM_POOL_ELEMENT_SIZE = sizeof(vm_list_item_t) = 24 B, so pair
+   allocations spill to the heap-tracked path until
+   VM_POOL_ELEMENT_SIZE is bumped to accommodate vm_pair_t. */
+struct vm_pair {
+  vm_obj_t car;
+  vm_obj_t cdr;
+};
 
 /* VM_TYPE_BOX storage. Defined here (rather than alongside the other
    value-representation structs) because the box holds a vm_obj inline

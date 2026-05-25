@@ -211,6 +211,13 @@ mark_object(vm_obj_t *obj)
       }
     }
     break;
+  case VM_TYPE_PAIR:
+    if(obj->value.pair != NULL && !memory_is_marked(obj->value.pair)) {
+      mark_memory(obj->value.pair);
+      mark_object(&obj->value.pair->car);
+      mark_object(&obj->value.pair->cdr);
+    }
+    break;
   case VM_TYPE_PORT:
     if(!memory_is_marked(obj->value.port)) {
       mark_memory(obj->value.port);

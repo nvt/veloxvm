@@ -124,6 +124,12 @@
                   thread->result.value.list = (x); \
                 } while (0)
 
+#define VM_PUSH_PAIR(x) \
+                do { \
+                  thread->result.type = VM_TYPE_PAIR; \
+                  thread->result.value.pair = (x); \
+                } while (0)
+
 #define VM_PUSH_CHARACTER(x) \
                 do { \
                   thread->result.type = VM_TYPE_CHARACTER; \
