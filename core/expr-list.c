@@ -33,6 +33,7 @@
 #include "vm-functions.h"
 #include "vm-log.h"
 #include "vm-list.h"
+#include "vm-pair.h"
 
 static void
 find_member_in_list(vm_thread_t *thread, vm_integer_t argc, vm_obj_t *argv,
@@ -201,42 +202,24 @@ VM_FUNCTION(list)
 
 VM_FUNCTION(cons)
 {
-  vm_list_t *list;
+  vm_pair_t *p;
 
-  /* Disable GC during list construction */
-  vm_gc_disable();
-
-  if(argv[1].type == VM_TYPE_LIST) {
-    list = vm_list_copy(argv[1].value.list);
-    if(list == NULL) {
-      vm_gc_enable();
-      vm_signal_error(thread, VM_ERROR_HEAP);
-      return;
-    }
-  } else {
-    list = vm_list_create();
-    if(list == NULL) {
-      vm_gc_enable();
-      vm_signal_error(thread, VM_ERROR_HEAP);
-      return;
-    }
-
-    VM_SET_FLAG(list->flags, VM_LIST_FLAG_PAIR);
-    if(!vm_list_insert_head(list, &argv[1])) {
-      vm_gc_enable();
-      vm_signal_error(thread, VM_ERROR_HEAP);
-      return;
-    }
-  }
-
-  if(!vm_list_insert_head(list, &argv[0])) {
-    vm_gc_enable();
+  /* R7RS cons: O(1) pair allocation. The previous VM_TYPE_LIST
+     implementation deep-copied the tail (vm_list_copy) to avoid
+     aliasing with the source, producing O(N) cost per cons of an
+     N-element tail and O(N^2) for N consecutive cons calls building
+     a list. The pair representation shares the cdr by reference;
+     set-car!/set-cdr! mutation is observable through every reference
+     to the pair, which is the standard Scheme semantics that the
+     wrapper representation could not satisfy. */
+  p = vm_alloc(sizeof(vm_pair_t));
+  if(p == NULL) {
     vm_signal_error(thread, VM_ERROR_HEAP);
     return;
   }
-
-  vm_gc_enable();
-  VM_PUSH_LIST(list);
+  p->car = argv[0];
+  p->cdr = argv[1];
+  VM_PUSH_PAIR(p);
 }
 
 VM_FUNCTION(push)
@@ -322,25 +305,33 @@ VM_FUNCTION(cdr)
 
 VM_FUNCTION(list_ref)
 {
-  vm_list_t *list;
+  vm_list_walker_t walker;
+  vm_obj_t *car;
   vm_integer_t k;
-  vm_obj_t *obj;
+  vm_integer_t i;
+  int status;
 
-  if(argv[0].type != VM_TYPE_LIST || argv[1].type != VM_TYPE_INTEGER) {
+  if(argv[1].type != VM_TYPE_INTEGER) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+  k = argv[1].value.integer;
+
+  if(!vm_list_walker_init(&walker, &argv[0])) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
 
-  list = argv[0].value.list;
-  k = argv[1].value.integer;
-
-  obj = vm_list_nth(list, k);
-  if(obj == NULL) {
-    vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
-    vm_set_error_object(thread, &argv[1]);
-  } else {
-    VM_PUSH(obj);
+  for(i = 0; i <= k; i++) {
+    status = vm_list_walker_next(&walker, &car);
+    if(status != 1) {
+      /* Hit the terminator before reaching index k -- out of range. */
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
+      vm_set_error_object(thread, &argv[1]);
+      return;
+    }
   }
+  VM_PUSH(car);
 }
 
 VM_FUNCTION(list_tail)
@@ -349,16 +340,46 @@ VM_FUNCTION(list_tail)
   vm_list_item_t *item;
   vm_integer_t k;
   vm_obj_t result;
+  vm_obj_t suffix;
 
-  if(argv[0].type != VM_TYPE_LIST || argv[1].type != VM_TYPE_INTEGER) {
+  if(argv[1].type != VM_TYPE_INTEGER) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+  k = argv[1].value.integer;
+  if(k < 0) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    vm_set_error_object(thread, &argv[1]);
+    return;
+  }
+
+  /* VM_TYPE_PAIR fast path: walk the cdr chain k times; the kth cdr
+     is the tail. R5RS preserves identity for (list-tail lst 0) == lst,
+     which falls out naturally because we return the current pair
+     value directly. */
+  if(argv[0].type == VM_TYPE_PAIR) {
+    vm_obj_t cur = argv[0];
+    while(k > 0) {
+      if(cur.type != VM_TYPE_PAIR || cur.value.pair == NULL) {
+        vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+        vm_set_error_object(thread, &argv[1]);
+        return;
+      }
+      cur = cur.value.pair->cdr;
+      k--;
+    }
+    suffix = cur;
+    VM_PUSH(&suffix);
+    return;
+  }
+
+  if(argv[0].type != VM_TYPE_LIST) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     return;
   }
 
   list = argv[0].value.list;
-  k = argv[1].value.integer;
-
-  if(k < 0 || list->length < k) {
+  if(list->length < k) {
     vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
     vm_set_error_object(thread, &argv[1]);
     return;
@@ -542,59 +563,51 @@ VM_FUNCTION(slice)
 
 VM_FUNCTION(append)
 {
-  vm_list_t *list, *new_list;
-  vm_obj_t *obj;
+  vm_list_t *result;
+  vm_list_walker_t walker;
+  vm_obj_t *car;
+  vm_integer_t i;
+  int status;
 
-  /* TODO: Fix the bug with arguments that are empty lists. */
-  if(argc == 2) {
-    /* Initiate the APPEND operation. */
-    argv[3].type = VM_TYPE_LIST;
-    new_list = argv[3].value.list = vm_list_copy(argv[0].value.list);
-    if(new_list == NULL) {
-      vm_signal_error(thread, VM_ERROR_HEAP);
+  /* Concatenate every input list/pair into a freshly-allocated
+     VM_TYPE_LIST. Inputs may be either VM_TYPE_LIST or VM_TYPE_PAIR.
+     Currently always copies every input (including the last), which
+     is conservative vs. R5RS's allow-sharing-of-last semantics but
+     simpler under the dual-representation transition. */
+  vm_gc_disable();
+  result = vm_list_create();
+  if(result == NULL) {
+    vm_gc_enable();
+    vm_signal_error(thread, VM_ERROR_HEAP);
+    return;
+  }
+
+  for(i = 0; i < argc; i++) {
+    if(!vm_list_walker_init(&walker, &argv[i])) {
+      vm_list_destroy(result);
+      vm_gc_enable();
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
       return;
     }
-
-    /* Create a new argument that stores the processed list and the result. */
-    thread->expr->argc = 4;
-    argv[2].type = VM_TYPE_LIST;
-    argv[2].value.list = argv[1].value.list;
-  } else {
-    new_list = argv[3].value.list;
+    while((status = vm_list_walker_next(&walker, &car)) == 1) {
+      if(!vm_list_insert_tail(result, car)) {
+        vm_list_destroy(result);
+        vm_gc_enable();
+        vm_signal_error(thread, VM_ERROR_HEAP);
+        return;
+      }
+    }
+    if(status < 0 && i < argc - 1) {
+      /* Improper-list terminator in any non-last argument is an
+         error (R5RS): all but the last input must be proper lists. */
+      vm_list_destroy(result);
+      vm_gc_enable();
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+      return;
+    }
   }
-
-  list = argv[2].value.list;
-  if(list->length == 0) {
-    /* The list has been processed. Stop the evaluation. */
-    memcpy(&thread->result, &argv[3], sizeof(vm_obj_t));
-    thread->expr->argc = 2;
-    return;
-  }
-
-  obj = vm_list_car(list);
-  if(obj == NULL) {
-    vm_signal_error(thread, VM_ERROR_INTERNAL);
-    return;
-  }
-
-  if(!vm_list_insert_tail(new_list, obj)) {
-    vm_signal_error(thread, VM_ERROR_HEAP);
-    return;
-  }
-
-  /* Continue the APPEND operation. The cdr must be non-destructive
-     (copy = 1) -- a destructive cdr here would shrink and free items
-     out of argv[1], which is the user's second-argument list. R5RS
-     specifies that append allocates a new list and shares structure
-     only with its last argument. */
-  list = vm_list_cdr(list, 1);
-  if(list == NULL) {
-    vm_signal_error(thread, VM_ERROR_HEAP);
-  } else {
-    argv[2].value.list = list;
-    VM_EVAL_SET_REQUESTED(thread, 0);
-    thread->expr->eval_completed = 0;
-  }
+  vm_gc_enable();
+  VM_PUSH_LIST(result);
 }
 
 VM_FUNCTION(remove)
@@ -641,12 +654,19 @@ VM_FUNCTION(remove)
 VM_FUNCTION(reverse)
 {
   vm_list_t *list;
-  vm_list_item_t *item;
+  vm_list_walker_t walker;
+  vm_obj_t *car;
+  int status;
 
-  /* Disable GC during list construction to prevent premature collection
-   * of the partially-built list and its contents */
+  /* Walks via vm_list_walker_t so the input may be either VM_TYPE_LIST
+     or VM_TYPE_PAIR; result is currently still emitted as VM_TYPE_LIST.
+     Migration to pair-based output happens in a later phase. */
+  if(!vm_list_walker_init(&walker, &argv[0])) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+
   vm_gc_disable();
-
   list = vm_list_create();
   if(list == NULL) {
     vm_gc_enable();
@@ -654,17 +674,23 @@ VM_FUNCTION(reverse)
     return;
   }
 
-  for(item = argv[0].value.list->head; item != NULL; item = item->next) {
-    if(!vm_list_insert_head(list, &item->obj)) {
+  while((status = vm_list_walker_next(&walker, &car)) == 1) {
+    if(!vm_list_insert_head(list, car)) {
       vm_gc_enable();
-      vm_signal_error(thread, VM_ERROR_HEAP);
       vm_list_destroy(list);
+      vm_signal_error(thread, VM_ERROR_HEAP);
       return;
     }
   }
-
-  /* Re-enable GC before returning */
   vm_gc_enable();
+
+  if(status < 0) {
+    /* Improper list: reverse is undefined on these per R5RS. */
+    vm_list_destroy(list);
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+
   VM_PUSH_LIST(list);
 }
 

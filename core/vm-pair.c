@@ -57,45 +57,52 @@ vm_list_walker_init(vm_list_walker_t *w, const vm_obj_t *obj)
 int
 vm_list_walker_next(vm_list_walker_t *w, vm_obj_t **car_out)
 {
-  if(w->kind == VM_TYPE_LIST) {
-    /* Reached the end of the item chain. The terminator is the empty
-       list for proper lists. PAIR-flagged improper lists (e.g.,
-       (cons 1 2) -> length-2 list with VM_LIST_FLAG_PAIR) need
-       special handling: the last item is the cdr value, not a car.
-       The "proper iteration" interpretation here returns ALL items
-       as cars (matching the existing reverse/append/length behavior
-       on PAIR-flagged lists), and primitives that need to honor the
-       improper-list shape continue to check VM_LIST_FLAG_PAIR
-       themselves. */
-    if(w->list_item == NULL) {
-      return 0;
+  /* Pair walk may transition into a list walk when a pair's cdr is
+     a non-empty VM_TYPE_LIST (typical of (cons x '(a b c))): we
+     finish walking the list section to satisfy the structural
+     definition of a list, regardless of how it was internally
+     built. The reverse transition (LIST → PAIR) is not currently
+     possible because vm_list_item_t chains never embed pairs. */
+  if(w->kind == VM_TYPE_PAIR) {
+    if(w->pair_cur.type == VM_TYPE_PAIR && w->pair_cur.value.pair != NULL) {
+      w->suffix_obj = w->pair_cur;
+      *car_out = &w->pair_cur.value.pair->car;
+      w->pair_cur = w->pair_cur.value.pair->cdr;
+      return 1;
     }
-    w->suffix_obj.type = VM_TYPE_LIST;
-    w->suffix_obj.value.list = w->list_root;
-    *car_out = &w->list_item->obj;
-    w->list_item = w->list_item->next;
-    return 1;
-  }
-
-  /* VM_TYPE_PAIR walk. */
-  if(w->pair_cur.type != VM_TYPE_PAIR || w->pair_cur.value.pair == NULL) {
-    /* Terminator. Proper if it's an empty list; improper otherwise. */
+    /* pair_cur is the terminator. If it's a non-empty VM_TYPE_LIST,
+       continue the walk through that list. */
     if(w->pair_cur.type == VM_TYPE_LIST &&
        w->pair_cur.value.list != NULL &&
-       w->pair_cur.value.list->length == 0) {
-      return 0;
+       w->pair_cur.value.list->length > 0) {
+      w->kind = VM_TYPE_LIST;
+      w->list_root = w->pair_cur.value.list;
+      w->list_item = w->list_root->head;
+      /* Fall through to the LIST handling below. */
+    } else {
+      /* Genuine terminator. Proper if empty list or NULL pair. */
+      if(w->pair_cur.type == VM_TYPE_LIST &&
+         w->pair_cur.value.list != NULL &&
+         w->pair_cur.value.list->length == 0) {
+        return 0;
+      }
+      if(w->pair_cur.type == VM_TYPE_PAIR &&
+         w->pair_cur.value.pair == NULL) {
+        return 0;
+      }
+      return -1;
     }
-    /* NULL pair (defensive) is treated as end-of-list. */
-    if(w->pair_cur.type == VM_TYPE_PAIR &&
-       w->pair_cur.value.pair == NULL) {
-      return 0;
-    }
-    return -1;
   }
 
-  w->suffix_obj = w->pair_cur;
-  *car_out = &w->pair_cur.value.pair->car;
-  w->pair_cur = w->pair_cur.value.pair->cdr;
+  /* VM_TYPE_LIST walk. Reached the end of the item chain when
+     list_item == NULL; terminator is the empty list (proper). */
+  if(w->list_item == NULL) {
+    return 0;
+  }
+  w->suffix_obj.type = VM_TYPE_LIST;
+  w->suffix_obj.value.list = w->list_root;
+  *car_out = &w->list_item->obj;
+  w->list_item = w->list_item->next;
   return 1;
 }
 

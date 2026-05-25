@@ -35,6 +35,7 @@
 
 #include "vm-functions.h"
 #include "vm-log.h"
+#include "vm-pair.h"
 
 static int
 raise_exception(vm_thread_t *thread, vm_error_type_t error_type)
@@ -557,6 +558,46 @@ vm_objects_deep_equal(vm_thread_t *thread, vm_obj_t *obj1, vm_obj_t *obj2)
   vm_list_item_t *item1, *item2;
   vm_vector_t *vector1, *vector2;
   int i;
+
+  /* Cross-type list/pair equality. During the cons-quadratic
+     migration, '(1 2 3) (VM_TYPE_LIST) and (cons 1 (cons 2 (cons 3
+     '()))) (VM_TYPE_PAIR chain) are structurally identical and must
+     compare equal? under R5RS/R7RS. Walk both with the unified
+     iterator. */
+  if((obj1->type == VM_TYPE_LIST || obj1->type == VM_TYPE_PAIR) &&
+     (obj2->type == VM_TYPE_LIST || obj2->type == VM_TYPE_PAIR)) {
+    vm_list_walker_t w1, w2;
+    vm_obj_t *car1, *car2;
+    vm_obj_t term1, term2;
+    int s1, s2;
+
+    if(!vm_list_walker_init(&w1, obj1) ||
+       !vm_list_walker_init(&w2, obj2)) {
+      return 0;
+    }
+    for(;;) {
+      s1 = vm_list_walker_next(&w1, &car1);
+      s2 = vm_list_walker_next(&w2, &car2);
+      if(s1 != s2) {
+        return 0;
+      }
+      if(s1 == 1) {
+        if(!vm_objects_deep_equal(thread, car1, car2)) {
+          return 0;
+        }
+        continue;
+      }
+      /* Both walkers terminated. For proper-proper or improper-
+         improper we compare the terminator if applicable. */
+      if(s1 == 0) {
+        return 1;
+      }
+      /* s1 == -1: improper-list terminators must compare equal. */
+      vm_list_walker_terminator(&w1, &term1);
+      vm_list_walker_terminator(&w2, &term2);
+      return vm_objects_deep_equal(thread, &term1, &term2);
+    }
+  }
 
   if(obj1->type != obj2->type) {
     return 0;
