@@ -95,7 +95,10 @@ pause_bucket(uint64_t ns)
 }
 #endif
 
-#define VM_POOL_ELEMENT_SIZE    sizeof(vm_list_item_t)
+/* Pool slot size must accommodate every type that the small-allocation
+   path forwards through it. vm_pair_t (32 B on 64-bit) is the largest;
+   vm_list_item_t (24 B) and smaller types pay padding per slot. */
+#define VM_POOL_ELEMENT_SIZE    sizeof(vm_pair_t)
 #define VM_MAX_POOL_ALLOCATIONS (VM_OBJECT_POOL_SIZE / VM_POOL_ELEMENT_SIZE)
 #define VM_MAX_HEAP_ALLOCATIONS (VM_HEAP_SIZE / VM_POOL_ELEMENT_SIZE)
 
