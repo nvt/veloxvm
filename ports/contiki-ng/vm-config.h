@@ -79,6 +79,12 @@
 #define VM_PERFMON_ENABLE 0
 #endif
 
+/* Period (in seconds) between successive VPM/SPM emissions when
+   VM_PERFMON_ENABLE is on. Ignored when VM_PERFMON_ENABLE = 0. */
+#ifndef VM_PERF_MONITOR_INTERVAL
+#define VM_PERF_MONITOR_INTERVAL 5
+#endif
+
 /* Emit periodic memory-pool utilisation lines from the performance monitor.
    Counters read are maintained on the hot path anyway, so the only cost is
    a few extra prints per monitor tick. */
