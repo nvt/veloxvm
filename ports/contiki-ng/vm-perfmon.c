@@ -35,6 +35,8 @@
 #include "vm.h"
 #include "vm-native.h"
 
+#if VM_PERFMON_ENABLE
+
 PROCESS(vm_perfmon_process, VM_NAME" Monitor");
 
 static void
@@ -186,3 +188,5 @@ PROCESS_THREAD(vm_perfmon_process, ev, data)
 
   PROCESS_END();
 }
+
+#endif /* VM_PERFMON_ENABLE */
