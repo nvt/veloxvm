@@ -141,6 +141,41 @@
 (thread-sleep! 1)
 (assert-equal 1 1 "(thread-sleep! 1) succeeds")
 
+(test-suite "make-thread / thread-start! / thread-name")
+
+;; make-thread creates a thread that is not yet runnable. thread-start!
+;; flips it to RUNNABLE. The pair is observable: a make-thread'd
+;; thread that is never started will not run its thunk.
+(assert-equal 'unstarted
+              (let ((flag 'unstarted))
+                (let ((t (make-thread (lambda () (set! flag 'ran)))))
+                  (thread? t)
+                  (thread-sleep! 30)  ;; t would have run by now if started
+                  flag))
+              "make-thread without thread-start! does not run the thunk")
+
+;; thread-start! makes the thunk run; join surfaces its result.
+(assert-equal 'done
+              (thread-join!
+                (thread-start! (make-thread (lambda () 'done))))
+              "thread-start! makes a make-thread thunk runnable")
+
+;; thread-name round-trips the optional second argument.
+(assert-equal "worker-1"
+              (thread-name (make-thread (lambda () #f) "worker-1"))
+              "thread-name returns the name supplied to make-thread")
+
+;; thread-name on a make-thread without a name returns #f (defined
+;; sentinel; SRFI 18 leaves the value unspecified).
+(assert-equal #f
+              (thread-name (make-thread (lambda () #f)))
+              "thread-name returns #f when no name was supplied")
+
+;; Names can be any value, not just strings.
+(assert-equal 'symbol-name
+              (thread-name (make-thread (lambda () #f) 'symbol-name))
+              "thread-name round-trips a symbol")
+
 (test-suite "thread-specific")
 
 ;; Round-trip a value through thread-specific. Wrapped in a let so

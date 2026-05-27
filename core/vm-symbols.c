@@ -212,7 +212,10 @@ static vm_symbol_t symbol_map[] = {
   SYM("abandoned-mutex-exception?"),
   SYM("terminated-thread-exception?"),
   SYM("uncaught-exception?"),
-  SYM("uncaught-exception-reason")
+  SYM("uncaught-exception-reason"),
+
+  /* SRFI-18 thread lifecycle. */
+  SYM("make-thread"), SYM("thread-start!"), SYM("thread-name")
 };
 
 #define CORE_SYMBOL_COUNT VM_ARRAY_SIZE(symbol_map)

@@ -51,8 +51,14 @@ with the divergences noted below. Full ID table is `doc/primitives.md`.
 
 ### Threads
 - `(thread-create! thunk)` — spawn and start a new thread running
-  `thunk`; returns a thread object. (Combines SRFI 18's `make-thread`
-  + `thread-start!`.)
+  `thunk`; returns a thread object. Convenience for the common
+  `make-thread` + `thread-start!` two-step.
+- `(make-thread thunk [name])` — create a thread in a
+  not-yet-runnable state; `thread-start!` flips it to runnable.
+- `(thread-start! t)` — start a `make-thread`-created thread;
+  returns the thread.
+- `(thread-name t)` — return the name supplied to `make-thread`,
+  or `#f` if none.
 - `(thread? obj)`, `(current-thread)`
 - `(thread-join! t [timeout-ms [timeout-val]])` — block until `t`
   finishes; returns its thunk's result. With `timeout-ms` (integer
@@ -136,13 +142,15 @@ code dispatches inside `guard`:
 
 ### What is missing relative to SRFI 18
 
-- `make-thread` / `thread-start!` (combined into `thread-create!`)
-- `thread-name`
-- `current-exception-handler` / `with-exception-handler` (we have
+- `current-exception-handler` / `with-exception-handler` — we have
   R6RS-style `guard` and `raise` instead, plus the four SRFI 18
-  typed exceptions above).
+  typed exceptions above. A proper SRFI-18 handler chain would
+  require restructuring the existing raise/guard machinery and is
+  redundant for the use cases `guard` already covers.
 - Three of four `mutex-state` return symbols; only the locked/owned
-  case returns a useful value today (the thread object).
+  case returns a useful value today (the thread object). Wiring
+  the other three requires exposing core-scope symbols to
+  programs, a piece of broader R7RS work that is out of scope.
 - Integer-vs-time-object timeout semantics: VeloxVM keeps integers
   as ms-relative for back-compat; SRFI 18 reads them as absolute
   seconds since epoch. Use time objects for portable absolute

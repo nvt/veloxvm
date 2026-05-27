@@ -211,6 +211,10 @@ typedef struct vm_thread {
   vm_expr_t *exprv[VM_CONTEXT_STACK_SIZE];
   vm_obj_t result;
   vm_obj_t specific_obj;
+  /* SRFI 18 thread name; whatever was passed to make-thread (any
+     vm_obj_t type) or VM_TYPE_NONE if not supplied. thread-name
+     returns this as-is; the GC walks it via mark_thread_references. */
+  vm_obj_t name;
   vm_expr_t *expr;
   vm_program_t *program;
   vm_error_t error;
@@ -433,6 +437,11 @@ vm_thread_t *vm_thread_create_parked(vm_program_t *);
 #endif
 void vm_thread_destroy(vm_thread_t *);
 vm_thread_t *vm_thread_spawn(vm_thread_t *, vm_obj_t *);
+/* Like vm_thread_spawn but leaves the child in VM_THREAD_NEW until
+   thread-start! flips it to RUNNABLE. `name` is the SRFI 18 name
+   (may be NULL to leave the name slot at VM_TYPE_NONE). */
+vm_thread_t *vm_thread_make(vm_thread_t *parent, vm_obj_t *thunk,
+                            const vm_obj_t *name);
 int vm_thread_kill(vm_id_t);
 vm_thread_t *vm_thread_get(vm_id_t);
 /* Resolve a thread external object (as returned by thread-create! /

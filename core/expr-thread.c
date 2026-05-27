@@ -48,6 +48,59 @@ VM_FUNCTION(thread_create)
   }
 }
 
+VM_FUNCTION(make_thread)
+{
+  vm_thread_t *new_thread;
+  const vm_obj_t *name;
+
+  if(argv[0].type != VM_TYPE_FORM && argv[0].type != VM_TYPE_CLOSURE) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+  name = (argc >= 2) ? &argv[1] : NULL;
+  new_thread = vm_thread_make(thread, &argv[0], name);
+  if(new_thread == NULL) {
+    vm_signal_error(thread, VM_ERROR_THREAD);
+  } else {
+    thread_obj_create(&thread->result, new_thread);
+  }
+}
+
+VM_FUNCTION(thread_start)
+{
+  vm_thread_t *target;
+
+  target = vm_thread_from_object(&argv[0]);
+  if(target == NULL) {
+    vm_signal_error(thread, VM_ERROR_THREAD);
+    return;
+  }
+  if(target->status == VM_THREAD_NEW) {
+    target->status = VM_THREAD_RUNNABLE;
+  }
+  /* SRFI 18 returns the thread; mirror that so chained patterns like
+     (thread-start! (make-thread thunk)) hand back the handle. */
+  thread_obj_create(&thread->result, target);
+}
+
+VM_FUNCTION(thread_name)
+{
+  vm_thread_t *target;
+
+  target = vm_thread_from_object(&argv[0]);
+  if(target == NULL) {
+    vm_signal_error(thread, VM_ERROR_THREAD);
+    return;
+  }
+  if(target->name.type == VM_TYPE_NONE) {
+    /* SRFI 18 leaves the value unspecified when no name was given to
+       make-thread; we return #f as a defined sentinel. */
+    VM_PUSH_BOOLEAN(VM_FALSE);
+  } else {
+    VM_PUSH(&target->name);
+  }
+}
+
 VM_FUNCTION(thread_fork)
 {
   /* thread-fork! is retired. The previous implementation copied the

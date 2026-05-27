@@ -177,6 +177,9 @@ VM_PRIMITIVES = [
     'join_timeout_exceptionp', 'abandoned_mutex_exceptionp',
     'terminated_thread_exceptionp', 'uncaught_exceptionp',
     'uncaught_exception_reason',
+
+    # SRFI-18 thread lifecycle
+    'make_thread', 'thread_start', 'thread_name',
 ]
 
 # Create reverse lookup dictionary (name -> ID)
@@ -299,6 +302,9 @@ SCHEME_ALIASES = {
     'terminated-thread-exception?': 'terminated_thread_exceptionp',
     'uncaught-exception?': 'uncaught_exceptionp',
     'uncaught-exception-reason': 'uncaught_exception_reason',
+    'make-thread': 'make_thread',
+    'thread-start!': 'thread_start',
+    'thread-name': 'thread_name',
     'current-input-port': 'current_input_port',
     'current-output-port': 'current_output_port',
     'open-input-file': 'open_input_file',
@@ -369,7 +375,7 @@ def get_primitive_id(name: str) -> int:
         name: The primitive name (e.g., 'add', '+', 'list-ref')
 
     Returns:
-        The symbol ID (0-246) or None if not a primitive
+        The symbol ID (0-249) or None if not a primitive
     """
     # Check if it's a Scheme alias
     if name in SCHEME_ALIASES:
@@ -396,7 +402,7 @@ def get_primitive_name(symbol_id: int) -> str:
     Get the primitive name for a given symbol ID.
 
     Args:
-        symbol_id: The symbol ID (0-246)
+        symbol_id: The symbol ID (0-249)
 
     Returns:
         The primitive name or None if invalid ID
@@ -407,4 +413,4 @@ def get_primitive_name(symbol_id: int) -> str:
 
 
 # The primitive count must match core/vm-procedures.c exactly.
-assert len(VM_PRIMITIVES) == 245, f"Expected 245 primitives, got {len(VM_PRIMITIVES)}"
+assert len(VM_PRIMITIVES) == 248, f"Expected 248 primitives, got {len(VM_PRIMITIVES)}"

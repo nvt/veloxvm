@@ -109,7 +109,8 @@
     current-time time? time->seconds seconds->time
     join-timeout-exception? abandoned-mutex-exception?
     terminated-thread-exception? uncaught-exception?
-    uncaught-exception-reason))
+    uncaught-exception-reason
+    make-thread thread-start! thread-name))
 
 ;; Check if symbol is a VM primitive
 (define (vm-primitive? sym)

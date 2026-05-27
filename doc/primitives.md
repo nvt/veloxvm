@@ -260,3 +260,6 @@ code writes.
 | 242 | `terminated_thread_exceptionp` | `terminated-thread-exception?` |
 | 243 | `uncaught_exceptionp` | `uncaught-exception?` |
 | 244 | `uncaught_exception_reason` | `uncaught-exception-reason` |
+| 245 | `make_thread` | `make-thread` |
+| 246 | `thread_start` | `thread-start!` |
+| 247 | `thread_name` | `thread-name` |

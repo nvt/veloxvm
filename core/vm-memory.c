@@ -538,11 +538,13 @@ mark_thread_references(vm_thread_t *thread)
   mark_root(&thread->result);
   /* error.error_obj holds the most recent thrown/raised value, populated
      by vm_set_error_string / vm_set_error_object; specific_obj is the
-     SRFI-18-style thread-local cell read by (thread-specific). Both can
+     SRFI-18-style thread-local cell read by (thread-specific); name is
+     the SRFI-18 thread name returned by thread-name. All three can
      point at heap-allocated strings or vectors that no other root
      references. */
   mark_root(&thread->error.error_obj);
   mark_root(&thread->specific_obj);
+  mark_root(&thread->name);
 }
 
 /*
@@ -914,7 +916,7 @@ void
 vm_gc_mark_object(vm_obj_t *obj)
 {
   if(obj != NULL) {
-    mark_object(obj);
+    mark_root(obj);
   }
 }
 

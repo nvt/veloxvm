@@ -67,8 +67,12 @@ typedef enum vm_thread_status {
      thread, so it is parked rather than destroyed. The next REPL
      turn redirects ip/end to the next entry expression and marks
      the thread RUNNABLE again. */
-  VM_THREAD_PARKED        = 5
+  VM_THREAD_PARKED        = 5,
 #endif
+  /* SRFI 18 make-thread creates a thread in this state. The
+     scheduler treats it as non-runnable; thread-start! flips it to
+     RUNNABLE. */
+  VM_THREAD_NEW           = 6
 } vm_thread_status_t;
 
 /* Various statistics for individual threads. */

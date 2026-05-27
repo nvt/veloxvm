@@ -196,6 +196,10 @@ create_thread(vm_thread_t *parent)
   child->wait_outcome = VM_WAIT_OUTCOME_NONE;
   child->wait_cancel = NULL;
   child->wait_object = NULL;
+  /* SRFI 18 name slot; vm_thread_make populates it, vm_thread_spawn
+     leaves it at VM_TYPE_NONE so thread-name returns #f for threads
+     created without a name. */
+  child->name.type = VM_TYPE_NONE;
 
   VM_DEBUG(VM_DEBUG_MEDIUM, "Create a thread with index %u and ID %ld",
            (unsigned)index, (long)child->id);
@@ -304,8 +308,14 @@ vm_thread_print(vm_thread_t *thread)
   VM_PRINTF("*** Thread %u END ***\n", (unsigned)thread->id);
 }
 
-vm_thread_t *
-vm_thread_spawn(vm_thread_t *parent, vm_obj_t *obj)
+/* Shared setup for vm_thread_spawn and vm_thread_make: allocates the
+   thread, pushes its first frame, points it at the thunk's entry
+   form, and binds any closure captures into the initial frame's
+   bindv. Returns the new thread with status inherited from
+   create_thread (which copies parent's status, typically RUNNABLE);
+   callers adjust status to RUNNABLE / VM_THREAD_NEW as appropriate. */
+static vm_thread_t *
+setup_child_thread(vm_thread_t *parent, vm_obj_t *obj)
 {
   vm_thread_t *child;
   vm_expr_id_t entry_form_id;
@@ -331,17 +341,14 @@ vm_thread_spawn(vm_thread_t *parent, vm_obj_t *obj)
     return NULL;
   }
 
-  /* Set up the thread stack so that the top level expression is
-     the form contained in the obj argument. */
   vm_thread_stack_push(child);
   vm_thread_set_expr(child, entry_form_id);
 
   /* If the thunk is a closure, bind its captured free variables into
      the initial frame's bindv so the body's references resolve. The
-     pattern mirrors bind_function's closure-binding path (see
-     core/expr-primitives.c). Without this, free-variable resolution
-     in the worker body would fall off the bindv chain and raise
-     "undefined symbol" against the parent's lexical scope. */
+     pattern mirrors bind_function's closure-binding path. Without
+     this, free-variable resolution in the worker body would fall off
+     the bindv chain and raise "undefined symbol". */
   if(closure != NULL &&
      closure->capture_count > 0 &&
      parent->program->captures != NULL &&
@@ -361,6 +368,34 @@ vm_thread_spawn(vm_thread_t *parent, vm_obj_t *obj)
     }
   }
 
+  return child;
+}
+
+vm_thread_t *
+vm_thread_spawn(vm_thread_t *parent, vm_obj_t *obj)
+{
+  /* thread-create! semantics: create and immediately start. The
+     child inherits RUNNABLE from create_thread's memcpy of parent. */
+  return setup_child_thread(parent, obj);
+}
+
+vm_thread_t *
+vm_thread_make(vm_thread_t *parent, vm_obj_t *thunk, const vm_obj_t *name)
+{
+  vm_thread_t *child;
+
+  child = setup_child_thread(parent, thunk);
+  if(child == NULL) {
+    return NULL;
+  }
+  /* SRFI 18 make-thread: not runnable until thread-start! flips it.
+     The scheduler skips VM_THREAD_NEW threads (status check in
+     vm_run only runs RUNNABLE), so the child sits in threads[]
+     consuming a slot but not executing. */
+  child->status = VM_THREAD_NEW;
+  if(name != NULL) {
+    memcpy(&child->name, name, sizeof(vm_obj_t));
+  }
   return child;
 }
 
@@ -448,6 +483,7 @@ vm_thread_create(vm_program_t *program)
     thread->wait_outcome = VM_WAIT_OUTCOME_NONE;
     thread->wait_cancel = NULL;
     thread->wait_object = NULL;
+    thread->name.type = VM_TYPE_NONE;
 
     /* Initialize the first expr of the thread. */
     vm_thread_stack_push(thread);
@@ -496,6 +532,7 @@ vm_thread_create_parked(vm_program_t *program)
   thread->wait_outcome = VM_WAIT_OUTCOME_NONE;
   thread->wait_cancel = NULL;
   thread->wait_object = NULL;
+  thread->name.type = VM_TYPE_NONE;
   thread->repl_main = 1;
 
   /* Push a top frame but leave its ip/end unset; vm_repl_run will

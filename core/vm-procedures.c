@@ -582,6 +582,19 @@ static const vm_procedure_t operators[] = {
               VM_PROCEDURE_EVAL_ARGS, 1, 1),
   VM_OPERATOR(uncaught_exception_reason, VM_TYPE_FLAG_ANY,
               VM_PROCEDURE_EVAL_ARGS, 1, 1),
+
+  /* SRFI 18 thread lifecycle: make-thread creates without starting,
+     thread-start! flips a VM_THREAD_NEW into RUNNABLE, thread-name
+     returns the name (#f if none). thread-create! stays as the
+     create-and-start convenience. The thunk may be a form or
+     closure; the optional name argument can be any vm_obj_t, so
+     valid_types is ANY and the body validates argv[0] directly. */
+  VM_OPERATOR(make_thread, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 1, 2),
+  VM_OPERATOR(thread_start, VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(thread_name, VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
 };
 
 #define MAX_COMMON_SYMBOL_ID 127
