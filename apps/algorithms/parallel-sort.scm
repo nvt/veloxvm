@@ -1,4 +1,4 @@
-;; Parallel mergesort demo for VeloxVM threading.
+;; Fork-join mergesort demo for VeloxVM threading.
 ;;
 ;; Splits a deterministic pseudo-random list into N chunks, spawns one
 ;; worker thread per chunk to mergesort it, then joins each worker to
@@ -7,12 +7,14 @@
 ;; outputs are compared element-by-element to verify the concurrent
 ;; path produced the right answer.
 ;;
-;; VeloxVM's scheduler is preemptive but single-core, so the parallel
-;; path does not beat the sequential one on wall-clock -- it pays
-;; thread setup and join overhead with no real parallelism. The point
-;; is to exercise thread-create! + thread-join! with a meaningful
-;; workload that self-validates: fork-join via thread-join!'s return
-;; value, no shared mutable state, no mutex or condition variable.
+;; This is a concurrency demo, not a parallelism demo. VeloxVM threads
+;; multiplex onto a single OS thread (see doc/threading.md), so this
+;; fork-join path does not beat the sequential one on wall-clock --
+;; it actually pays a small thread setup + join overhead. The point
+;; is to exercise thread-create! + thread-join!'s return-value
+;; plumbing with a workload that self-validates: fork-join through
+;; thread-join!'s return value, no shared mutable state, no mutex or
+;; condition variable.
 
 (define list-size 400)
 (define num-workers 4)
