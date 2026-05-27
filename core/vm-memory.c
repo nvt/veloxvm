@@ -436,9 +436,17 @@ mark_expand(vm_obj_t *obj)
     break;
   case VM_TYPE_EXTERNAL:
     /* The ext_object box is heap-allocated; mark it so the sweep
-       phase does not free it while the parent obj is still live. */
+       phase does not free it while the parent obj is still live.
+       The type's optional mark hook is responsible for marking
+       opaque_data and anything it transitively references; without
+       it, vm_alloc-owned storage hanging off the box would be
+       reclaimed by the sweep. */
     if(obj->value.ext_object != NULL) {
       mark_memory(obj->value.ext_object);
+      if(obj->value.ext_object->type != NULL &&
+         obj->value.ext_object->type->mark != NULL) {
+        obj->value.ext_object->type->mark(obj);
+      }
     }
     break;
   case VM_TYPE_BOX:
@@ -891,6 +899,23 @@ void
 vm_gc_force(void)
 {
   do_gc(1);
+}
+
+void
+vm_gc_mark_pointer(void *ptr)
+{
+  if(ptr == NULL || memory_is_marked(ptr)) {
+    return;
+  }
+  mark_memory(ptr);
+}
+
+void
+vm_gc_mark_object(vm_obj_t *obj)
+{
+  if(obj != NULL) {
+    mark_object(obj);
+  }
 }
 
 #if VM_ATTRIBUTION_ENABLE

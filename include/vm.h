@@ -180,6 +180,14 @@ typedef struct vm_error {
    string when error messages are disabled in the selected port. */
 const char *vm_error_message(vm_error_type_t error_type);
 
+/* Linked-list entry for threads waiting in thread-join! on another
+   thread's completion. Allocated by op_thread_join, drained when the
+   joinee transitions to VM_THREAD_FINISHED. */
+typedef struct vm_thread_joiner {
+  struct vm_thread_joiner *next;
+  vm_id_t joiner_id;
+} vm_thread_joiner_t;
+
 typedef struct vm_thread {
   vm_expr_t *exprv[VM_CONTEXT_STACK_SIZE];
   vm_obj_t result;
@@ -188,9 +196,22 @@ typedef struct vm_thread {
   vm_program_t *program;
   vm_error_t error;
   vm_thread_stats_t stats;
+  vm_thread_joiner_t *joiners;
   vm_thread_status_t status;
   vm_id_t id;
   uint8_t exprc;
+  /* Set by thread-yield! to ask the scheduler to break out of its
+     per-invocation instruction-quota loop after the current step,
+     giving the next runnable thread a turn. Cleared by the
+     scheduler on observation. */
+  uint8_t yield_requested;
+  /* Count of live ext_object handles wrapping this thread. The
+     scheduler defers destruction of a FINISHED thread while this is
+     non-zero so a delayed thread-join! can still retrieve its
+     result. Bumped by thread_obj_create, decremented by
+     thread_obj_deallocate; the deallocate hook destroys the thread
+     when it drops to zero on an already-FINISHED thread. */
+  uint8_t handle_count;
 #ifdef VM_REPL_ENABLE
   /* When set, the scheduler parks this thread (instead of destroying
      it) once its top frame's bytecode runs out. Set only on the
@@ -331,6 +352,13 @@ void vm_gc(void);
 void vm_gc_force(void);
 void vm_gc_disable(void);
 void vm_gc_enable(void);
+/* GC mark helpers, intended for use from vm_ext_type_t::mark callbacks.
+   vm_gc_mark_pointer marks an allocation as live; vm_gc_mark_object
+   marks the object's referent (heap-allocated string buffer, ext_object
+   box, etc.) and is a no-op for unboxed types. Calling these outside
+   the mark phase is harmless but pointless. */
+void vm_gc_mark_pointer(void *);
+void vm_gc_mark_object(vm_obj_t *);
 void vm_memory_get_stats(vm_memory_stats_t *);
 int vm_memory_init(void);
 const vm_mempool_t *vm_object_pool(void);
@@ -365,15 +393,24 @@ vm_thread_t *vm_thread_create_parked(vm_program_t *);
 #endif
 void vm_thread_destroy(vm_thread_t *);
 vm_thread_t *vm_thread_spawn(vm_thread_t *, vm_obj_t *);
-vm_thread_t *vm_thread_fork(vm_thread_t *);
 int vm_thread_kill(vm_id_t);
 vm_thread_t *vm_thread_get(vm_id_t);
+/* Resolve a thread external object (as returned by thread-create! /
+   current-thread) to its vm_thread_t *. Returns NULL if obj is not a
+   thread external, or if the underlying thread has terminated since
+   the handle was created. */
+vm_thread_t *vm_thread_from_object(vm_obj_t *);
 vm_thread_t *vm_thread_get_by_index(unsigned);
 vm_id_index_t vm_thread_get_index(vm_thread_t *);
 unsigned vm_thread_running(void);
 void vm_thread_print(vm_thread_t *);
 void vm_thread_print_form(vm_thread_t *, vm_expr_t *);
 void vm_thread_print_ip(vm_thread_t *, vm_expr_t *);
+/* Drain a finishing thread's joiner list: each joiner's result is set
+   to the joinee's result and its status flipped from VM_THREAD_WAITING
+   to VM_THREAD_RUNNABLE. Called by the scheduler before destroying a
+   VM_THREAD_FINISHED thread so joiners observe the thunk's value. */
+void vm_thread_finalize_joiners(vm_thread_t *);
 
 /* Thread stack functions. (vm-thread-stack.c) */
 int vm_thread_stack_create(void);
@@ -383,7 +420,6 @@ void vm_thread_stack_pop(vm_thread_t *);
 vm_expr_t *vm_thread_stack_alloc(vm_thread_t *);
 void vm_thread_stack_free(vm_expr_t *);
 void vm_thread_stack_print_frame(vm_thread_t *, vm_expr_t *);
-int vm_thread_stack_copy(vm_thread_t *, vm_thread_t *);
 const vm_mempool_t *vm_frame_pool(void);
 
 /* Object utilities. (vm-objects.c) */

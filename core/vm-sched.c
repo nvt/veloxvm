@@ -599,6 +599,14 @@ vm_run(void)
       vm_native_accounting_start(thread);
       do {
         vm_sched_thread(thread);
+        /* thread-yield! sets this so cooperative yielders can hand
+           the rest of their per-invocation quota to the next thread
+           without changing status. Cleared on observation so the
+           thread runs normally on its next visit. */
+        if(thread->yield_requested) {
+          thread->yield_requested = 0;
+          break;
+        }
       } while(--j > 0 && thread->status == VM_THREAD_RUNNABLE);
       vm_native_accounting_stop(thread);
     }
@@ -636,19 +644,44 @@ vm_run(void)
       }
 #endif
       vm_print_error(thread);
-      vm_thread_destroy(thread);
-      if(program->nthreads == 0) {
-        vm_unload_program(program);
+      /* An errored thread cannot return a value to its joiners; wake
+         them anyway so they do not wait forever. Their result slot
+         keeps whatever the thread had set last (often VM_TYPE_NONE);
+         a richer SRFI-18-style "uncaught-exception" payload would
+         require thread-join! to inspect thread->error before this
+         point. */
+      vm_thread_finalize_joiners(thread);
+      if(thread->handle_count == 0) {
+        vm_thread_destroy(thread);
+        if(program->nthreads == 0) {
+          vm_unload_program(program);
+        }
       }
+      /* Else: a thread-create! caller still holds an ext_object
+         handle. The deallocate hook will reap the struct when the
+         last handle is GC'd, so a delayed thread-join! can still
+         observe the failure. */
       break;
     case VM_THREAD_EXITING:
       vm_unload_program(program);
       break;
     case VM_THREAD_FINISHED:
-      vm_thread_destroy(thread);
-      if(program->nthreads == 0) {
-        vm_unload_program(program);
+      /* Hand the thunk's return value to anything waiting in
+         thread-join! before we tear down the thread's storage. */
+      vm_thread_finalize_joiners(thread);
+      if(thread->handle_count == 0) {
+        /* No external handle wraps this thread, so no future
+           thread-join! can reach it. Reclaim immediately. */
+        vm_thread_destroy(thread);
+        if(program->nthreads == 0) {
+          vm_unload_program(program);
+        }
       }
+      /* Else: keep the thread struct alive (status stays FINISHED)
+         so a delayed thread-join! can observe ->result. The
+         scheduler will not pick it up again (status != RUNNABLE);
+         the deallocate hook destroys it when the last ext_object
+         handle is reclaimed. */
       break;
 #ifdef VM_REPL_ENABLE
     case VM_THREAD_PARKED:

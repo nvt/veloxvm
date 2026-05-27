@@ -101,7 +101,8 @@
     open-input-bytevector open-output-bytevector get-output-bytevector
     read-u8 peek-u8 write-u8
     read-bytevector read-bytevector! write-bytevector
-    read-string write-string read-line))
+    read-string write-string read-line
+    thread? current-thread))
 
 ;; Check if symbol is a VM primitive
 (define (vm-primitive? sym)

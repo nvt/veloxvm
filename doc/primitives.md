@@ -242,3 +242,5 @@ code writes.
 | 224 | `read_string` | `read-string` |
 | 225 | `write_string` | `write-string` |
 | 226 | `read_line` | `read-line` |
+| 227 | `threadp` | `thread?` |
+| 228 | `current_thread` | `current-thread` |

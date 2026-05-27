@@ -242,19 +242,30 @@ static const vm_procedure_t operators[] = {
   VM_OPERATOR(raise, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 1, 1),
 
   /* Thread functions. */
-  VM_OPERATOR(thread_create, VM_TYPE_FLAG(VM_TYPE_FORM),
+  VM_OPERATOR(thread_create,
+              VM_TYPE_FLAG(VM_TYPE_FORM) | VM_TYPE_FLAG(VM_TYPE_CLOSURE),
               VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  /* thread_fork is retired; the operator body raises an error. The
+     slot is preserved so subsequent primitive IDs (and therefore all
+     existing compiled bytecode) stay stable. */
   VM_OPERATOR(thread_fork, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 0, 0),
   VM_OPERATOR(thread_id, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 0, 0),
-  VM_OPERATOR(thread_join, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 0, 0),
+  VM_OPERATOR(thread_join, VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
   VM_OPERATOR(thread_sleep, VM_TYPE_FLAG_NUMBER,
 	      VM_PROCEDURE_EVAL_ARGS, 1, 1),
-  VM_OPERATOR(thread_specific, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(thread_specific, VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  /* thread-specific-set! takes (thread value); the value arg may be
+     any type, so the operator's valid_types must accept everything
+     and the body validates the thread arg explicitly. */
   VM_OPERATOR(thread_specific_set, VM_TYPE_FLAG_ANY,
 	      VM_PROCEDURE_EVAL_ARGS, 2, 2),
-  VM_OPERATOR(thread_terminate, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 0, 0),
+  VM_OPERATOR(thread_terminate, VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
   VM_OPERATOR(thread_yield, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 0, 0),
-  VM_OPERATOR(thread_stats, VM_TYPE_FLAG_ANY, 0, 0, 0),
+  VM_OPERATOR(thread_stats, VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
+              VM_PROCEDURE_EVAL_ARGS, 0, 1),
 
   /* Mutex functions. */
   VM_OPERATOR(mutexp, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 1, 1),
@@ -265,7 +276,7 @@ static const vm_procedure_t operators[] = {
   VM_OPERATOR(mutex_specific, VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
 	      VM_PROCEDURE_EVAL_ARGS, 1, 1),
   VM_OPERATOR(mutex_specific_set, VM_TYPE_FLAG_ANY,
-	      VM_PROCEDURE_EVAL_ARGS, 1, 1),
+	      VM_PROCEDURE_EVAL_ARGS, 2, 2),
   VM_OPERATOR(mutex_state, VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
 	      VM_PROCEDURE_EVAL_ARGS, 1, 1),
   VM_OPERATOR(mutex_lock, VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
@@ -498,6 +509,14 @@ static const vm_procedure_t operators[] = {
               VM_PROCEDURE_EVAL_ARGS, 1, 4),
   VM_OPERATOR(read_line, VM_TYPE_FLAG(VM_TYPE_PORT),
               VM_PROCEDURE_EVAL_ARGS, 0, 1),
+
+  /* SRFI-18-style thread identity primitives. threadp returns #t iff
+     the argument is the external-object form returned by
+     thread-create! / current-thread; current_thread materializes the
+     current thread as that same external form. */
+  VM_OPERATOR(threadp, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(current_thread, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 0, 0),
 };
 
 #define MAX_COMMON_SYMBOL_ID 127

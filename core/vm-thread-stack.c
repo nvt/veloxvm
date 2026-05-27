@@ -129,25 +129,3 @@ vm_thread_stack_free(vm_expr_t *frame)
   }
   vm_mempool_free(&frame_pool, frame);
 }
-
-int
-vm_thread_stack_copy(vm_thread_t *dst, vm_thread_t *src)
-{
-  int i;
-
-  for(i = 0; i < src->exprc; i++) {
-    dst->exprv[i] = vm_mempool_alloc(&frame_pool);
-    if(dst->exprv[i] == NULL) {
-      /* If an allocation failed, all previous allocations should be undone. */
-      while(--i >= 0) {
-        vm_mempool_free(&frame_pool, dst->exprv[i]);
-      }
-      return 0;
-    }
-    memcpy(dst->exprv[i], src->exprv[i], sizeof(vm_expr_t));
-  }
-
-  dst->expr = dst->exprv[0];
-
-  return 1;
-}

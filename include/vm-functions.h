@@ -240,6 +240,8 @@ VM_DECLARE_FUNCTION(thread_specific_set);
 VM_DECLARE_FUNCTION(thread_terminate);
 VM_DECLARE_FUNCTION(thread_yield);
 VM_DECLARE_FUNCTION(thread_stats);
+VM_DECLARE_FUNCTION(threadp);
+VM_DECLARE_FUNCTION(current_thread);
 
 /* Mutex functions. */
 VM_DECLARE_FUNCTION(mutexp);

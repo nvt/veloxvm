@@ -59,9 +59,15 @@ typedef struct wait_thread {
 } wait_thread_t;
 
 typedef struct vm_mutex {
-  const char *name;
+  /* Heap copy of the mutex name, owned by this struct. The caller's
+     argument may be a string loaded from the program's string table
+     (which the GC can sweep), so we cannot borrow its buffer. */
+  char *name;
   wait_thread_t *wait_list;
-  vm_obj_t *obj;
+  /* Inline specific value. type == VM_TYPE_NONE means "unset"; the
+     GC mark hook walks this slot so heap objects stashed via
+     mutex-specific-set! stay live as long as the mutex does. */
+  vm_obj_t specific;
   vm_id_t owner_id;
   uint8_t state;
 } vm_mutex_t;
@@ -70,11 +76,13 @@ static void mutex_create(vm_obj_t *, const char *);
 static void mutex_copy(vm_obj_t *, vm_obj_t *);
 static void mutex_deallocate(vm_obj_t *);
 static void mutex_write(vm_port_t *, vm_obj_t *);
+static void mutex_mark(vm_obj_t *);
 
 static vm_ext_type_t ext_type_mutex = {
   .copy = mutex_copy,
   .deallocate = mutex_deallocate,
-  .write = mutex_write
+  .write = mutex_write,
+  .mark = mutex_mark
 };
 
 #define VM_PUSH_MUTEX(name) \
@@ -90,6 +98,24 @@ static vm_ext_type_t ext_type_mutex = {
     (target_var) = obj.value.ext_object->opaque_data;        \
   } while(0)
 
+static char *
+mutex_strdup(const char *src)
+{
+  size_t len;
+  char *dst;
+
+  if(src == NULL) {
+    src = "";
+  }
+  len = strlen(src);
+  dst = VM_MALLOC(len + 1);
+  if(dst == NULL) {
+    return NULL;
+  }
+  memcpy(dst, src, len + 1);
+  return dst;
+}
+
 static void
 mutex_create(vm_obj_t *dst, const char *name)
 {
@@ -101,22 +127,31 @@ mutex_create(vm_obj_t *dst, const char *name)
     dst->type = VM_TYPE_NONE;
     return;
   }
-  if(vm_ext_object_create(dst, &ext_type_mutex, mutex) == NULL) {
+  mutex->name = mutex_strdup(name);
+  if(mutex->name == NULL) {
     VM_FREE(mutex);
+    memset(dst, 0, sizeof(vm_obj_t));
+    dst->type = VM_TYPE_NONE;
     return;
   }
-  mutex->name = name;
   mutex->state = 0;
   mutex->owner_id = VM_ID_INVALID;
-  mutex->obj = NULL;
+  mutex->specific.type = VM_TYPE_NONE;
   mutex->wait_list = NULL;
+
+  if(vm_ext_object_create(dst, &ext_type_mutex, mutex) == NULL) {
+    VM_FREE(mutex->name);
+    VM_FREE(mutex);
+  }
 }
 
 static void
 mutex_copy(vm_obj_t *dst, vm_obj_t *src)
 {
+  /* Mutexes are reference types: copying the vm_obj_t shares the box
+     and its underlying state by design. The wait list is part of
+     that shared state and must not be duplicated. */
   memcpy(dst, src, sizeof(vm_obj_t));
-  /* TO DO: Copy the wait list. */
 }
 
 static void
@@ -134,7 +169,25 @@ mutex_deallocate(vm_obj_t *obj)
     mutex->wait_list = wt;
   }
 
+  VM_FREE(mutex->name);
   VM_FREE(mutex);
+}
+
+static void
+mutex_mark(vm_obj_t *obj)
+{
+  vm_mutex_t *mutex;
+
+  mutex = obj->value.ext_object->opaque_data;
+  /* Keep the mutex struct itself live; without this the heap sweep
+     frees it while the ext_object box still references it. */
+  vm_gc_mark_pointer(mutex);
+  if(mutex->name != NULL) {
+    vm_gc_mark_pointer(mutex->name);
+  }
+  /* Mark anything reachable via mutex-specific (heap strings,
+     vectors, pairs, ...) so it survives as long as the mutex does. */
+  vm_gc_mark_object(&mutex->specific);
 }
 
 static void
@@ -172,9 +225,7 @@ VM_FUNCTION(mutex_specific)
   vm_mutex_t *mutex;
 
   EXTRACT_MUTEX(thread, argv[0], mutex);
-  if(mutex->obj != NULL) {
-    VM_PUSH(mutex->obj);
-  }
+  VM_PUSH(&mutex->specific);
 }
 
 VM_FUNCTION(mutex_specific_set)
@@ -182,12 +233,7 @@ VM_FUNCTION(mutex_specific_set)
   vm_mutex_t *mutex;
 
   EXTRACT_MUTEX(thread, argv[0], mutex);
-  mutex->obj = VM_MALLOC(sizeof(vm_obj_t));
-  if(mutex->obj == NULL) {
-    vm_signal_error(thread, VM_ERROR_HEAP);
-  } else {
-    memcpy(mutex->obj, &argv[1], sizeof(vm_obj_t));
-  }
+  memcpy(&mutex->specific, &argv[1], sizeof(vm_obj_t));
 }
 
 VM_FUNCTION(mutex_state)

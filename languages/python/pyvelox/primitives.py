@@ -160,6 +160,9 @@ VM_PRIMITIVES = [
     'read_u8', 'peek_u8', 'write_u8',
     'read_bytevector', 'read_bytevector_into', 'write_bytevector',
     'read_string', 'write_string', 'read_line',
+
+    # SRFI-18-style thread identity primitives
+    'threadp', 'current_thread',
 ]
 
 # Create reverse lookup dictionary (name -> ID)
@@ -256,7 +259,7 @@ SCHEME_ALIASES = {
     'mutex-lock!': 'mutex_lock',
     'mutex-unlock!': 'mutex_unlock',
     'thread-create!': 'thread_create',
-    'thread-fork': 'thread_fork',
+    'thread-fork!': 'thread_fork',
     'thread-id': 'thread_id',
     'thread-join!': 'thread_join',
     'thread-sleep!': 'thread_sleep',
@@ -265,6 +268,8 @@ SCHEME_ALIASES = {
     'thread-terminate!': 'thread_terminate',
     'thread-yield!': 'thread_yield',
     'thread-stats': 'thread_stats',
+    'thread?': 'threadp',
+    'current-thread': 'current_thread',
     'current-input-port': 'current_input_port',
     'current-output-port': 'current_output_port',
     'open-input-file': 'open_input_file',
@@ -335,7 +340,7 @@ def get_primitive_id(name: str) -> int:
         name: The primitive name (e.g., 'add', '+', 'list-ref')
 
     Returns:
-        The symbol ID (0-228) or None if not a primitive
+        The symbol ID (0-230) or None if not a primitive
     """
     # Check if it's a Scheme alias
     if name in SCHEME_ALIASES:
@@ -362,7 +367,7 @@ def get_primitive_name(symbol_id: int) -> str:
     Get the primitive name for a given symbol ID.
 
     Args:
-        symbol_id: The symbol ID (0-228)
+        symbol_id: The symbol ID (0-230)
 
     Returns:
         The primitive name or None if invalid ID
@@ -373,4 +378,4 @@ def get_primitive_name(symbol_id: int) -> str:
 
 
 # The primitive count must match core/vm-procedures.c exactly.
-assert len(VM_PRIMITIVES) == 227, f"Expected 227 primitives, got {len(VM_PRIMITIVES)}"
+assert len(VM_PRIMITIVES) == 229, f"Expected 229 primitives, got {len(VM_PRIMITIVES)}"

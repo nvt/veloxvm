@@ -45,6 +45,13 @@
 static vm_id_gen_t thread_idg;
 static vm_thread_t *threads[VM_THREAD_AMOUNT];
 
+/* Encode/decode a vm_id_t into the void *opaque_data slot of the thread
+   ext_object. Storing the id (rather than the vm_thread_t *) lets the
+   handle outlive vm_thread_destroy: the lookup returns NULL once the
+   id's slot has been reused, instead of dereferencing freed memory. */
+#define THREAD_ID_TO_OPAQUE(id)   ((void *)(uintptr_t)(uint32_t)(id))
+#define OPAQUE_TO_THREAD_ID(p)    ((vm_id_t)(uintptr_t)(p))
+
 static void
 thread_obj_copy(vm_obj_t *dst, vm_obj_t *src)
 {
@@ -54,22 +61,63 @@ thread_obj_copy(vm_obj_t *dst, vm_obj_t *src)
 static void
 thread_obj_deallocate(vm_obj_t *obj)
 {
+  vm_id_t id;
+  vm_thread_t *target;
+
+  id = OPAQUE_TO_THREAD_ID(obj->value.ext_object->opaque_data);
+  target = vm_thread_get(id);
+  if(target == NULL) {
+    /* The thread was already destroyed via another path (e.g. it
+       finished with no live handles and the sched-FINISHED path
+       reclaimed it). Nothing to release here. */
+    return;
+  }
+  if(target->handle_count > 0) {
+    target->handle_count--;
+  }
+  /* Don't destroy the thread here even if handle_count just dropped
+     to zero on an already-FINISHED thread: we're running inside the
+     GC, and vm_thread_destroy / vm_unload_program touch program
+     data structures that the GC is still walking. The scheduler's
+     VM_THREAD_FINISHED case revisits zombies every vm_run iteration
+     and reaps any whose handle_count has reached zero. */
 }
 
 static void
 thread_obj_write(vm_port_t *port, vm_obj_t *obj)
 {
-  vm_thread_t *thread;
+  vm_id_t id;
+  vm_thread_t *target;
 
-  thread = obj->value.ext_object->opaque_data;
-  vm_write(port, "#<thread %ld>", (long)thread->id);
+  id = OPAQUE_TO_THREAD_ID(obj->value.ext_object->opaque_data);
+  target = vm_thread_get(id);
+  if(target == NULL) {
+    vm_write(port, "#<thread %ld terminated>", (long)id);
+  } else {
+    vm_write(port, "#<thread %ld>", (long)target->id);
+  }
 }
 
 static vm_ext_type_t ext_type_thread = {
   .copy = thread_obj_copy,
   .deallocate = thread_obj_deallocate,
-  .write = thread_obj_write
+  .write = thread_obj_write,
+  .mark = NULL
 };
+
+vm_thread_t *
+vm_thread_from_object(vm_obj_t *obj)
+{
+  vm_id_t id;
+
+  if(obj->type != VM_TYPE_EXTERNAL ||
+     obj->value.ext_object == NULL ||
+     obj->value.ext_object->type != &ext_type_thread) {
+    return NULL;
+  }
+  id = OPAQUE_TO_THREAD_ID(obj->value.ext_object->opaque_data);
+  return vm_thread_get(id);
+}
 
 static int
 allocate_thread_id(void)
@@ -111,6 +159,9 @@ create_thread(vm_thread_t *parent)
   memcpy(child, parent, sizeof(vm_thread_t));
   child->exprc = 0;
   child->id = id;
+  child->joiners = NULL;
+  child->yield_requested = 0;
+  child->handle_count = 0;
 
   VM_DEBUG(VM_DEBUG_MEDIUM, "Create a thread with index %u and ID %ld",
            (unsigned)index, (long)child->id);
@@ -131,10 +182,22 @@ vm_thread_init(void)
 void
 thread_obj_create(vm_obj_t *obj, vm_thread_t *thread)
 {
-  /* No callers propagate a failure code; vm_ext_object_create sets the
-     dst to VM_TYPE_NONE on allocation failure, leaving the object well
-     formed. */
-  vm_ext_object_create(obj, &ext_type_thread, thread);
+  /* Store the thread's id (not the vm_thread_t *) so the handle stays
+     well formed after the underlying thread is destroyed: lookups
+     resolve to NULL once the slot is freed/reused, instead of
+     dereferencing freed memory. No callers propagate a failure code;
+     vm_ext_object_create sets the dst to VM_TYPE_NONE on allocation
+     failure, leaving the object well formed. */
+  if(vm_ext_object_create(obj, &ext_type_thread,
+                          THREAD_ID_TO_OPAQUE(thread->id)) != NULL) {
+    /* Account for this handle so the scheduler keeps the thread
+       struct alive after it finishes, allowing a delayed
+       thread-join! to retrieve its result. The deallocate hook
+       decrements the count when the ext_object is reclaimed. */
+    if(thread->handle_count < 255) {
+      thread->handle_count++;
+    }
+  }
 }
 
 void
@@ -211,9 +274,22 @@ vm_thread_t *
 vm_thread_spawn(vm_thread_t *parent, vm_obj_t *obj)
 {
   vm_thread_t *child;
+  vm_expr_id_t entry_form_id;
+  vm_closure_t *closure;
+  vm_captures_t *cap;
+  vm_expr_t *frame;
+  uint8_t k;
 
   if(!vm_policy_check_threads(parent)) {
     return NULL;
+  }
+
+  closure = NULL;
+  if(obj->type == VM_TYPE_CLOSURE) {
+    closure = obj->value.closure;
+    entry_form_id = closure->form_id;
+  } else {
+    entry_form_id = obj->value.form.id;
   }
 
   child = create_thread(parent);
@@ -224,35 +300,31 @@ vm_thread_spawn(vm_thread_t *parent, vm_obj_t *obj)
   /* Set up the thread stack so that the top level expression is
      the form contained in the obj argument. */
   vm_thread_stack_push(child);
-  vm_thread_set_expr(child, obj->value.form.id);
+  vm_thread_set_expr(child, entry_form_id);
 
-  return child;
-}
-
-vm_thread_t *
-vm_thread_fork(vm_thread_t *parent)
-{
-  vm_thread_t *child;
-  vm_id_index_t index;
-
-  if(!vm_policy_check_threads(parent)) {
-    return NULL;
-  }
-
-  child = create_thread(parent);
-  if(child == NULL) {
-    return NULL;
-  }
-
-  if(!vm_thread_stack_copy(child, parent)) {
-    parent->program->nthreads--;
-
-    index = vm_id_index(&thread_idg, child->id);
-    if(index != VM_ID_INDEX_INVALID) {
-      threads[index] = NULL;
+  /* If the thunk is a closure, bind its captured free variables into
+     the initial frame's bindv so the body's references resolve. The
+     pattern mirrors bind_function's closure-binding path (see
+     core/expr-primitives.c). Without this, free-variable resolution
+     in the worker body would fall off the bindv chain and raise
+     "undefined symbol" against the parent's lexical scope. */
+  if(closure != NULL &&
+     closure->capture_count > 0 &&
+     parent->program->captures != NULL &&
+     entry_form_id < parent->program->captures_size &&
+     parent->program->captures[entry_form_id] != NULL) {
+    cap = parent->program->captures[entry_form_id];
+    frame = child->expr;
+    frame->bindv =
+      VM_MALLOC(sizeof(vm_symbol_bind_t) * closure->capture_count);
+    if(frame->bindv != NULL) {
+      for(k = 0; k < cap->count && k < closure->capture_count; k++) {
+        memcpy(&frame->bindv[k].obj, &closure->captures[k],
+               sizeof(vm_obj_t));
+        frame->bindv[k].symbol_id = cap->symbols[k];
+      }
+      frame->bindc = k;
     }
-    VM_FREE(child);
-    return NULL;
   }
 
   return child;
@@ -333,6 +405,9 @@ vm_thread_create(vm_program_t *program)
     thread->status = VM_THREAD_RUNNABLE;
     thread->error.error_obj.type = VM_TYPE_NONE;
     thread->specific_obj.type = VM_TYPE_NONE;
+    thread->joiners = NULL;
+    thread->yield_requested = 0;
+    thread->handle_count = 0;
 
     /* Initialize the first expr of the thread. */
     vm_thread_stack_push(thread);
@@ -373,6 +448,9 @@ vm_thread_create_parked(vm_program_t *program)
   thread->status = VM_THREAD_PARKED;
   thread->error.error_obj.type = VM_TYPE_NONE;
   thread->specific_obj.type = VM_TYPE_NONE;
+  thread->joiners = NULL;
+  thread->yield_requested = 0;
+  thread->handle_count = 0;
   thread->repl_main = 1;
 
   /* Push a top frame but leave its ip/end unset; vm_repl_run will
@@ -389,10 +467,50 @@ vm_thread_create_parked(vm_program_t *program)
 #endif
 
 void
+vm_thread_finalize_joiners(vm_thread_t *thread)
+{
+  vm_thread_joiner_t *waiter;
+  vm_thread_joiner_t *next;
+  vm_thread_t *joiner_thread;
+  vm_expr_t *parent_frame;
+
+  for(waiter = thread->joiners; waiter != NULL; waiter = next) {
+    next = waiter->next;
+    joiner_thread = vm_thread_get(waiter->joiner_id);
+    if(joiner_thread != NULL) {
+      /* When op_thread_join set the joiner WAITING, the scheduler had
+         already popped the join's own frame and written VM_TYPE_NONE
+         into the parent's argv[eval_arg] slot (see "Replace the
+         evaluated object with the result of the evaluation" in
+         vm_sched_thread). To make (thread-join! t) actually return
+         the joinee's result, we overwrite that same slot now, while
+         the joiner is still parked and its frame stack is exactly
+         where the pop left it. The result is also placed in
+         joiner_thread->result for symmetry with other operators. */
+      memcpy(&joiner_thread->result, &thread->result, sizeof(vm_obj_t));
+      if(joiner_thread->exprc > 0) {
+        parent_frame = joiner_thread->expr;
+        if(parent_frame != NULL && parent_frame->eval_arg < parent_frame->argc) {
+          memcpy(&parent_frame->argv[parent_frame->eval_arg],
+                 &thread->result, sizeof(vm_obj_t));
+        }
+      }
+      if(joiner_thread->status == VM_THREAD_WAITING) {
+        joiner_thread->status = VM_THREAD_RUNNABLE;
+      }
+    }
+    VM_FREE(waiter);
+  }
+  thread->joiners = NULL;
+}
+
+void
 vm_thread_destroy(vm_thread_t *thread)
 {
   int i;
   vm_id_index_t index;
+  vm_thread_joiner_t *waiter;
+  vm_thread_joiner_t *next;
 
   VM_DEBUG(VM_DEBUG_MEDIUM, "Thread %u exited", (unsigned)thread->id);
 
@@ -402,6 +520,17 @@ vm_thread_destroy(vm_thread_t *thread)
              (unsigned long)thread->id, (unsigned)index);
     return;
   }
+
+  /* If a thread is killed or errored out without going through the
+     scheduler's finalize-then-destroy path (vm_thread_kill, error
+     teardown), drain any pending joiners here so we do not leak
+     them. Joiners observe the thread's last result value, which may
+     be VM_TYPE_NONE for a killed thread that never produced one. */
+  for(waiter = thread->joiners; waiter != NULL; waiter = next) {
+    next = waiter->next;
+    VM_FREE(waiter);
+  }
+  thread->joiners = NULL;
 
   thread->program->nthreads--;
   threads[index] = NULL;

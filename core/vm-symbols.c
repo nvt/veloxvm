@@ -190,7 +190,10 @@ static vm_symbol_t symbol_map[] = {
   /* R7RS §6.13 binary I/O and block read/write. */
   SYM("read-u8"), SYM("peek-u8"), SYM("write-u8"),
   SYM("read-bytevector"), SYM("read-bytevector!"), SYM("write-bytevector"),
-  SYM("read-string"), SYM("write-string"), SYM("read-line")
+  SYM("read-string"), SYM("write-string"), SYM("read-line"),
+
+  /* SRFI-18-style thread identity primitives. */
+  SYM("thread?"), SYM("current-thread")
 };
 
 #define CORE_SYMBOL_COUNT VM_ARRAY_SIZE(symbol_map)

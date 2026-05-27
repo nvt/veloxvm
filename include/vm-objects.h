@@ -317,6 +317,14 @@ typedef struct vm_ext_type {
   void (*copy)(vm_obj_t *, vm_obj_t *);
   void (*deallocate)(vm_obj_t *);
   void (*write)(vm_port_t *port, vm_obj_t *);
+  /* Optional GC mark hook. Invoked during the mark phase whenever an
+     ext_object of this type is reached as a live reference. Hook is
+     responsible for marking the box's opaque_data (and anything it
+     transitively references) via vm_gc_mark_pointer / vm_gc_mark_object;
+     the box itself is already marked by the caller. NULL means the
+     opaque_data is either static or has no transitive references that
+     vm_alloc owns. */
+  void (*mark)(vm_obj_t *);
   vm_ext_type_id_t type_id;
 } vm_ext_type_t;
 
