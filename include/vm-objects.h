@@ -45,7 +45,10 @@ typedef enum vm_obj_type {
   VM_TYPE_SYMBOL    =  5,
   VM_TYPE_CHARACTER =  6,
   VM_TYPE_FORM      =  7,
-  VM_TYPE_LIST      =  8,
+  /* Tag 8 was VM_TYPE_LIST (legacy wrapper representation), retired
+     in favor of VM_TYPE_PAIR (R7RS cons pairs). The tag value is
+     left unused to preserve the numbering of types serialized in
+     compiled bytecode and policy specs. */
   VM_TYPE_VECTOR    =  9,
   VM_TYPE_PORT      = 10,
   VM_TYPE_COMPLEX   = 11,
@@ -58,7 +61,15 @@ typedef enum vm_obj_type {
      payload is unused. eof-object? tests this tag, eof-object
      constructs a value of this type, and read-char / read /
      peek-char return one on real end-of-stream (not on poll-block). */
-  VM_TYPE_EOF       = 17
+  VM_TYPE_EOF       = 17,
+  /* R7RS-conformant cons-pair representation: a vm_pair_t holding
+     car and cdr inline. The tag is appended to the end of the enum
+     to avoid shifting existing tag values that may be embedded in
+     compiled bytecode or policy specs. */
+  VM_TYPE_PAIR      = 18,
+  /* R7RS-style empty-list singleton. The tag is the value -- the
+     union payload is unused. */
+  VM_TYPE_NIL       = 19
 } vm_obj_type_t;
 
 /* Definitions for denoting multiple object types; e.g., in specifications
@@ -161,18 +172,6 @@ typedef struct vm_port {
   vm_character_t peek_char;
 } vm_port_t;
 
-/* VM_TYPE_LIST representation. */
-#define VM_LIST_FLAG_ORIGINAL 0x1
-#define VM_LIST_FLAG_PAIR     0x2
-
-struct vm_list_item;
-typedef struct vm_list {
-  struct vm_list_item *head;
-  struct vm_list_item *tail;
-  vm_integer_t length;
-  uint8_t flags;
-} vm_list_t;
-
 /* VM_TYPE_VECTOR representation. */
 typedef enum vm_vector_flags {
   VM_VECTOR_FLAG_REGULAR = 0x1,
@@ -212,6 +211,13 @@ typedef struct vm_box vm_box_t;
    vm_obj_t, below. */
 typedef struct vm_closure vm_closure_t;
 
+/* VM_TYPE_PAIR representation. A pair holds two vm_obj_t inline
+   (car and cdr), implementing the standard Scheme cons-pair model.
+   The struct contains vm_obj_t fields and so must be defined after
+   vm_obj_t -- the forward typedef here lets vm_obj_value_t reference
+   it by pointer. */
+typedef struct vm_pair vm_pair_t;
+
 typedef uint16_t vm_ext_type_id_t;
 
 struct vm_ext_type;
@@ -241,13 +247,13 @@ typedef union vm_obj_value {
   vm_symbol_ref_t symbol_ref;
   vm_form_t form;
   vm_character_t character;
-  vm_list_t *list;
   vm_vector_t *vector;
   vm_port_t *port;
   const struct vm_procedure *procedure;
   struct vm_ext_object *ext_object;
   vm_box_t *box;
   vm_closure_t *closure;
+  vm_pair_t *pair;
 } vm_obj_value_t;
 
 /* VM objects consist of a type specifier and its corresponding
@@ -257,12 +263,14 @@ typedef struct vm_obj {
   vm_obj_type_t type;
 } vm_obj_t;
 
-/* Part of the VM_TYPE_LIST representations, but this is defined after
-   vm_obj_t because list items contain full VM objects. */
-typedef struct vm_list_item {
-  struct vm_obj obj;
-  struct vm_list_item *next;
-} vm_list_item_t;
+/* VM_TYPE_PAIR storage. A pair holds car and cdr inline as full
+   vm_obj_t values; sizeof(vm_pair_t) is 2 * sizeof(vm_obj_t)
+   (32 B on 64-bit POSIX). VM_POOL_ELEMENT_SIZE is sized for this
+   so cons allocations stay in the object pool. */
+struct vm_pair {
+  vm_obj_t car;
+  vm_obj_t cdr;
+};
 
 /* VM_TYPE_BOX storage. Defined here (rather than alongside the other
    value-representation structs) because the box holds a vm_obj inline

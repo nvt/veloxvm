@@ -35,6 +35,7 @@
 
 #include "vm-functions.h"
 #include "vm-log.h"
+#include "vm-pair.h"
 
 static int
 raise_exception(vm_thread_t *thread, vm_error_type_t error_type)
@@ -261,7 +262,6 @@ write_object_depth(vm_port_t *port, vm_obj_t *obj, int depth)
   vm_thread_t *thread;
   const char *symbol_name;
   const char *str;
-  vm_list_item_t *item;
   int i;
   vm_boolean_t output_raw;
 
@@ -318,28 +318,45 @@ write_object_depth(vm_port_t *port, vm_obj_t *obj, int depth)
     vm_write(port, "%f", (float)obj->value.real);
     break;
 #endif /* VM_ENABLED_REALS */
-  case VM_TYPE_LIST:
+  case VM_TYPE_PAIR: {
+    /* Walk the pair chain. Proper list: print car-elements space-
+       separated. Improper list: print car-elements then a "." before
+       the final non-pair-non-nil cdr. Cycle detection is deferred. */
+    vm_obj_t cur;
+    int first;
+
     nested_print = 1;
     vm_write(port, "(");
-    for(i = 0, item = obj->value.list->head; item != NULL; i++) {
-      if(item->next == NULL &&
-         VM_IS_SET(obj->value.list->flags, VM_LIST_FLAG_PAIR)) {
-        vm_write(port, ". ");
-      }
-      write_object_depth(port, (vm_obj_t *)&item->obj, depth + 1);
-      item = item->next;
-
-      if(item != NULL) {
+    cur = *obj;
+    first = 1;
+    i = 0;
+    while(cur.type == VM_TYPE_PAIR && cur.value.pair != NULL) {
+      if(!first) {
         vm_write(port, " ");
-        if(i + 1 == VM_LIST_PRINT_LIMIT) {
-          vm_write(port, "<%u items omitted>",
-		   (unsigned)(obj->value.list->length - i - 1));
-          break;
-        }
       }
+      write_object_depth(port, &cur.value.pair->car, depth + 1);
+      first = 0;
+      i++;
+      if(i == VM_LIST_PRINT_LIMIT) {
+        vm_write(port, " <... omitted>");
+        break;
+      }
+      cur = cur.value.pair->cdr;
+    }
+    /* A NULL pair acts as a proper-list terminator too (defensive
+       against half-built pairs); only print " . <improper>" when
+       the terminator is some non-list value. */
+    if(i < VM_LIST_PRINT_LIMIT && cur.type != VM_TYPE_NIL &&
+       !(cur.type == VM_TYPE_PAIR && cur.value.pair == NULL)) {
+      vm_write(port, " . ");
+      write_object_depth(port, &cur, depth + 1);
     }
     vm_write(port, ")");
     nested_print = 0;
+    break;
+  }
+  case VM_TYPE_NIL:
+    vm_write(port, "()");
     break;
   case VM_TYPE_VECTOR:
     if(VM_IS_SET(obj->value.vector->flags, VM_VECTOR_FLAG_BUFFER)) {
@@ -485,9 +502,14 @@ vm_objects_equal(vm_thread_t *thread, vm_obj_t *obj1, vm_obj_t *obj2)
   case VM_TYPE_REAL:
     return obj1->value.real == obj2->value.real;
 #endif
-  case VM_TYPE_LIST:
-    return obj1->value.list == obj2->value.list ||
-      (obj1->value.list->length == 0 && obj2->value.list->length == 0);
+  case VM_TYPE_PAIR:
+    /* R7RS eq?/eqv? on pairs: pointer identity. Two pairs are the
+       same iff they are the same allocation. NULL pair (defensive)
+       compares equal to NULL pair. */
+    return obj1->value.pair == obj2->value.pair;
+  case VM_TYPE_NIL:
+    /* All empty lists are eq?. */
+    return 1;
   case VM_TYPE_VECTOR:
     return obj1->value.vector->length == obj2->value.vector->length &&
       obj1->value.vector->elements == obj2->value.vector->elements;
@@ -514,34 +536,65 @@ vm_objects_equal(vm_thread_t *thread, vm_obj_t *obj1, vm_obj_t *obj2)
 int
 vm_objects_deep_equal(vm_thread_t *thread, vm_obj_t *obj1, vm_obj_t *obj2)
 {
-  vm_list_t *list1, *list2;
-  vm_list_item_t *item1, *item2;
   vm_vector_t *vector1, *vector2;
   int i;
+
+  /* Pair / nil equality is a walk over both inputs. Proper lists
+     are pair chains terminated by NIL; the walker handles the
+     transition uniformly. Cycle detection deferred -- until
+     set-cdr! is used to construct one, all pair structures are
+     acyclic. */
+  if((obj1->type == VM_TYPE_PAIR || obj1->type == VM_TYPE_NIL) &&
+     (obj2->type == VM_TYPE_PAIR || obj2->type == VM_TYPE_NIL)) {
+    vm_list_walker_t w1, w2;
+    vm_obj_t *car1, *car2;
+    vm_obj_t term1, term2;
+    int s1, s2;
+
+    if(!vm_list_walker_init(&w1, obj1) ||
+       !vm_list_walker_init(&w2, obj2)) {
+      return 0;
+    }
+    for(;;) {
+      s1 = vm_list_walker_next(&w1, &car1);
+      s2 = vm_list_walker_next(&w2, &car2);
+      if(s1 != s2) {
+        return 0;
+      }
+      if(s1 == 1) {
+        if(!vm_objects_deep_equal(thread, car1, car2)) {
+          return 0;
+        }
+        continue;
+      }
+      /* Both walkers terminated. For proper-proper or improper-
+         improper we compare the terminator if applicable. */
+      if(s1 == 0) {
+        return 1;
+      }
+      /* s1 == -1: improper-list terminators must compare equal. */
+      vm_list_walker_terminator(&w1, &term1);
+      vm_list_walker_terminator(&w2, &term2);
+      return vm_objects_deep_equal(thread, &term1, &term2);
+    }
+  }
 
   if(obj1->type != obj2->type) {
     return 0;
   }
 
-  if(obj1->type == VM_TYPE_LIST) {
-    list1 = obj1->value.list;
-    list2 = obj2->value.list;
-
-    if(list1->length != list2->length) {
-      return 0;
+  if(obj1->type == VM_TYPE_PAIR) {
+    /* Structural equality on pair chains: car and cdr must each be
+       deeply equal. NULL pair is its own thing -- only equal to NULL.
+       Cycle detection is deferred to a follow-up; until set-cdr! is
+       used to create a cycle, this path is acyclic by construction. */
+    if(obj1->value.pair == NULL || obj2->value.pair == NULL) {
+      return obj1->value.pair == obj2->value.pair;
     }
-
-    item1 = list1->head;
-    item2 = list2->head;
-    while(item1 != NULL && item2 != NULL) {
-      if(!vm_objects_deep_equal(thread, &item1->obj, &item2->obj)) {
-        return 0;
-      }
-      item1 = item1->next;
-      item2 = item2->next;
-    }
-
-    return 1;
+    return vm_objects_deep_equal(thread, &obj1->value.pair->car,
+                                          &obj2->value.pair->car) &&
+           vm_objects_deep_equal(thread, &obj1->value.pair->cdr,
+                                          &obj2->value.pair->cdr);
   } else if(obj1->type == VM_TYPE_VECTOR) {
     vector1 = obj1->value.vector;
     vector2 = obj2->value.vector;
@@ -582,8 +635,8 @@ vm_object_deep_copy(vm_obj_t *old, vm_obj_t *new)
   memcpy(new, old, sizeof(vm_obj_t));
 
   switch(old->type) {
-  case VM_TYPE_LIST:
-    break;
+  case VM_TYPE_PAIR:
+  case VM_TYPE_NIL:
   case VM_TYPE_VECTOR:
     break;
   case VM_TYPE_EXTERNAL:

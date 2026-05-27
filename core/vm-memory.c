@@ -95,7 +95,10 @@ pause_bucket(uint64_t ns)
 }
 #endif
 
-#define VM_POOL_ELEMENT_SIZE    sizeof(vm_list_item_t)
+/* Pool slot size must accommodate every type that the small-allocation
+   path forwards through it. vm_pair_t (32 B on 64-bit) is the largest;
+   vm_list_item_t (24 B) and smaller types pay padding per slot. */
+#define VM_POOL_ELEMENT_SIZE    sizeof(vm_pair_t)
 #define VM_MAX_POOL_ALLOCATIONS (VM_OBJECT_POOL_SIZE / VM_POOL_ELEMENT_SIZE)
 #define VM_MAX_HEAP_ALLOCATIONS (VM_HEAP_SIZE / VM_POOL_ELEMENT_SIZE)
 
@@ -194,21 +197,17 @@ static void
 mark_object(vm_obj_t *obj)
 {
   int k;
-  vm_list_item_t *item;
 
   /* We need to mark only the object types that involve heap memory. */
   switch(obj->type) {
   case VM_TYPE_RATIONAL:
      mark_memory(obj->value.rational);
      break;
-  case VM_TYPE_LIST:
-    if(obj->value.list != NULL && !memory_is_marked(obj->value.list)) {
-      mark_memory(obj->value.list);
-      /* TODO: Avoid recursion. */
-      for(item = obj->value.list->head; item != NULL; item = item->next) {
-        mark_memory(item);
-        mark_object(&item->obj);
-      }
+  case VM_TYPE_PAIR:
+    if(obj->value.pair != NULL && !memory_is_marked(obj->value.pair)) {
+      mark_memory(obj->value.pair);
+      mark_object(&obj->value.pair->car);
+      mark_object(&obj->value.pair->cdr);
     }
     break;
   case VM_TYPE_PORT:

@@ -32,7 +32,7 @@
  */
 
 #include "vm-functions.h"
-#include "vm-list.h"
+#include "vm-pair.h"
 
 VM_FUNCTION(make_vector)
 {
@@ -187,27 +187,20 @@ VM_FUNCTION(vector_set)
 VM_FUNCTION(vector_to_list)
 {
   vm_vector_t *vector;
-  vm_list_t *list;
+  vm_pair_builder_t b;
   vm_integer_t i;
   vm_obj_t ch;
 
   vector = argv[0].value.vector;
 
-  /* Disable GC during list construction */
   vm_gc_disable();
-
-  list = vm_list_create();
-  if(list == NULL) {
-    vm_gc_enable();
-    vm_signal_error(thread, VM_ERROR_HEAP);
-    return;
-  }
+  vm_pair_builder_init(&b);
 
   if(VM_IS_SET(vector->flags, VM_VECTOR_FLAG_BUFFER)) {
     ch.type = VM_TYPE_CHARACTER;
     for(i = 0; i < vector->length; i++) {
       ch.value.character = vector->bytes[i];
-      if(!vm_list_insert_tail(list, &ch)) {
+      if(!vm_pair_builder_append(&b, &ch)) {
         vm_gc_enable();
         vm_signal_error(thread, VM_ERROR_HEAP);
         return;
@@ -215,7 +208,7 @@ VM_FUNCTION(vector_to_list)
     }
   } else {
     for(i = 0; i < vector->length; i++) {
-      if(!vm_list_insert_tail(list, vector->elements + i)) {
+      if(!vm_pair_builder_append(&b, vector->elements + i)) {
         vm_gc_enable();
         vm_signal_error(thread, VM_ERROR_HEAP);
         return;
@@ -223,27 +216,42 @@ VM_FUNCTION(vector_to_list)
     }
   }
 
+  vm_pair_builder_result(&b, &thread->result);
   vm_gc_enable();
-  VM_PUSH_LIST(list);
 }
 
 VM_FUNCTION(list_to_vector)
 {
-  vm_list_t *list;
+  vm_list_walker_t walker;
+  vm_obj_t *car;
+  vm_integer_t length;
   vm_integer_t i;
-  vm_list_item_t *item;
+  int status;
 
-  list = argv[0].value.list;
-  if(vm_vector_create(&thread->result, list->length,
+  /* Two passes: first compute the length so the vector can be
+     pre-sized (vm_vector_create needs the length up front), then walk
+     again to fill. Accepts both VM_TYPE_LIST and VM_TYPE_PAIR
+     inputs. */
+  if(vm_list_length_walk(&argv[0], &length) < 0) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+  if(vm_vector_create(&thread->result, length,
                       VM_VECTOR_FLAG_REGULAR) == NULL) {
     vm_signal_error(thread, VM_ERROR_HEAP);
-  } else {
-    for(i = 0, item = list->head; item != NULL; i++, item = item->next) {
-      if(vm_vector_set(&thread->result, i, &item->obj) < 0) {
-	vm_signal_error(thread, VM_ERROR_INTERNAL);
-	return;
-      }
+    return;
+  }
+  if(!vm_list_walker_init(&walker, &argv[0])) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+  i = 0;
+  while((status = vm_list_walker_next(&walker, &car)) == 1) {
+    if(vm_vector_set(&thread->result, i, car) < 0) {
+      vm_signal_error(thread, VM_ERROR_INTERNAL);
+      return;
     }
+    i++;
   }
 }
 
