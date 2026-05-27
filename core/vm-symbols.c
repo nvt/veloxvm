@@ -271,7 +271,7 @@ int
 vm_symbol_get_ref(vm_thread_t *thread, const char *name,
 		  vm_symbol_ref_t *symbol_ref)
 {
-  vm_symbol_id_t i;
+  unsigned i;
 
   for(i = 0; i < VM_TABLE_SIZE(thread->program->symbols); i++) {
     if(vm_strcasecmp((const char *)VM_TABLE_GET(thread->program->symbols, i),
