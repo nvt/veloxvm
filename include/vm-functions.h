@@ -259,6 +259,8 @@ VM_DECLARE_FUNCTION(make_condition_variable);
 VM_DECLARE_FUNCTION(condition_variable_name);
 VM_DECLARE_FUNCTION(condition_variable_signal);
 VM_DECLARE_FUNCTION(condition_variable_broadcast);
+VM_DECLARE_FUNCTION(condition_variable_specific);
+VM_DECLARE_FUNCTION(condition_variable_specific_set);
 
 /* Vector functions. */
 VM_DECLARE_FUNCTION(make_vector);

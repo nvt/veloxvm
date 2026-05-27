@@ -249,3 +249,5 @@ code writes.
 | 231 | `condition_variable_name` | `condition-variable-name` |
 | 232 | `condition_variable_signal` | `condition-variable-signal!` |
 | 233 | `condition_variable_broadcast` | `condition-variable-broadcast!` |
+| 234 | `condition_variable_specific` | `condition-variable-specific` |
+| 235 | `condition_variable_specific_set` | `condition-variable-specific-set!` |

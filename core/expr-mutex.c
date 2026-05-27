@@ -211,7 +211,16 @@ VM_FUNCTION(mutexp)
 
 VM_FUNCTION(make_mutex)
 {
-  VM_PUSH_MUTEX(argv[0].value.string->str);
+  const char *name;
+
+  /* SRFI 18 lets the name be omitted; we use the empty string in
+     that case so mutex-name still returns a defined value. */
+  if(argc == 0) {
+    name = "";
+  } else {
+    name = argv[0].value.string->str;
+  }
+  VM_PUSH_MUTEX(name);
 }
 
 VM_FUNCTION(mutex_name)

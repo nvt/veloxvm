@@ -54,8 +54,12 @@ with the divergences noted below. Full ID table is `doc/primitives.md`.
   `thunk`; returns a thread object. (Combines SRFI 18's `make-thread`
   + `thread-start!`.)
 - `(thread? obj)`, `(current-thread)`
-- `(thread-join! t)` — block until `t` finishes, return its thunk's
-  result. **No timeout argument yet.**
+- `(thread-join! t [timeout-ms [timeout-val]])` — block until `t`
+  finishes; returns its thunk's result. With `timeout-ms` (integer
+  ms, or `#f` for no timeout), returns `timeout-val` (default `#f`)
+  on expiry. SRFI 18 specifies that an omitted `timeout-val` should
+  raise `join-timeout-exception`; we return `#f` until that exception
+  type lands.
 - `(thread-terminate! t)` — kill `t`; returns `#t` if it was alive.
 - `(thread-yield!)` — give up the rest of this slice.
 - `(thread-sleep! ms)` — suspend for `ms` milliseconds. **Argument is
@@ -66,8 +70,7 @@ with the divergences noted below. Full ID table is `doc/primitives.md`.
   per-thread counters.
 
 ### Mutexes
-- `(make-mutex name)` — **name is currently required** (SRFI says
-  optional).
+- `(make-mutex [name])` — name is optional (defaults to empty string).
 - `(mutex? obj)`, `(mutex-name m)`
 - `(mutex-specific m)`, `(mutex-specific-set! m v)`
 - `(mutex-lock! m [timeout-ms])` — acquire, optionally with a ms
@@ -81,23 +84,25 @@ with the divergences noted below. Full ID table is `doc/primitives.md`.
 ### Condition variables
 - `(make-condition-variable [name])`
 - `(condition-variable? obj)`, `(condition-variable-name cv)`
+- `(condition-variable-specific cv)`, `(condition-variable-specific-set! cv v)`
 - `(condition-variable-signal! cv)` — wake one parked waiter.
 - `(condition-variable-broadcast! cv)` — wake all.
-- *No* `condition-variable-specific[-set!]` yet.
 
 ### What is missing relative to SRFI 18
 
 - `make-thread` / `thread-start!` (combined into `thread-create!`)
 - `thread-name`
-- `thread-join!` timeout + `timeout-val`
 - Absolute-time `thread-sleep!` and the `time` object family
   (`current-time`, `time?`, `time->seconds`, `seconds->time`)
-- `condition-variable-specific[-set!]`
 - Named exception types (`join-timeout-exception?`,
   `abandoned-mutex-exception?`, `terminated-thread-exception?`,
-  `uncaught-exception?`, `uncaught-exception-reason`)
+  `uncaught-exception?`, `uncaught-exception-reason`). Without
+  `join-timeout-exception?`, `thread-join!` on timeout falls back
+  to returning `#f` when no `timeout-val` is supplied.
 - `current-exception-handler` / `with-exception-handler` (we have
   R6RS-style `guard` and `raise` instead)
+- Three of four `mutex-state` return symbols; only the locked/owned
+  case returns a useful value today (the thread object).
 
 ## The canonical wait/signal idiom
 

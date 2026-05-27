@@ -199,7 +199,9 @@ static vm_symbol_t symbol_map[] = {
   SYM("condition-variable?"), SYM("make-condition-variable"),
   SYM("condition-variable-name"),
   SYM("condition-variable-signal!"),
-  SYM("condition-variable-broadcast!")
+  SYM("condition-variable-broadcast!"),
+  SYM("condition-variable-specific"),
+  SYM("condition-variable-specific-set!")
 };
 
 #define CORE_SYMBOL_COUNT VM_ARRAY_SIZE(symbol_map)

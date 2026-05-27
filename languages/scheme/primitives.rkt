@@ -104,7 +104,8 @@
     read-string write-string read-line
     thread? current-thread
     condition-variable? make-condition-variable condition-variable-name
-    condition-variable-signal! condition-variable-broadcast!))
+    condition-variable-signal! condition-variable-broadcast!
+    condition-variable-specific condition-variable-specific-set!))
 
 ;; Check if symbol is a VM primitive
 (define (vm-primitive? sym)

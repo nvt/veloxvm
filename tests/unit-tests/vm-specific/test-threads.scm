@@ -23,17 +23,19 @@
 (assert-false (thread? (make-mutex "m"))
               "thread? returns #f for a mutex")
 
-;; thread-create! returns a thread object too.
-(define child (thread-create! (lambda () 42)))
-(assert-true (thread? child)
+;; thread-create! returns a thread object too. Use a let so the
+;; handle goes out of scope after this assertion -- a top-level
+;; define would root it permanently and consume a slot in the
+;; fixed-size thread table.
+(assert-true (let ((child (thread-create! (lambda () 42))))
+               (thread? child))
              "thread-create! result satisfies thread?")
 
 (test-suite "thread-join!")
 
 ;; thread-join! returns the joinee's thunk result.
-(define joiner-target (thread-create! (lambda () (+ 1 2 3))))
-(define joiner-result (thread-join! joiner-target))
-(assert-equal 6 joiner-result
+(assert-equal 6
+              (thread-join! (thread-create! (lambda () (+ 1 2 3))))
               "thread-join! returns the thunk's return value")
 
 ;; thread-join! on a thread that has already finished surfaces the
@@ -41,10 +43,10 @@
 ;; vary by race: if the joinee was destroyed before we joined, the
 ;; result falls back to an unspecified value. We accept any non-error
 ;; outcome here; the live-thread case above is the strict check.
-(define quick (thread-create! (lambda () 'done)))
-(thread-sleep! 50)   ;; give the scheduler time to run + finalize the thunk
-(define late-result (thread-join! quick))
-(assert-true (or (eq? late-result 'done) #t)
+(assert-true (let ((quick (thread-create! (lambda () 'done))))
+               (thread-sleep! 50)
+               (let ((r (thread-join! quick)))
+                 (or (eq? r 'done) #t)))
              "thread-join! after completion does not crash")
 
 ;; Self-join is a thread-level error (raised via vm_signal_error)
@@ -52,29 +54,73 @@
 ;; Asserting the exact behaviour here would crash the suite; we just
 ;; document the intent and skip a runtime check.
 
+(test-suite "thread-join! timeout")
+
+;; The default POSIX-port VM_THREAD_AMOUNT is small (10), and a
+;; top-level (define x (thread-create! ...)) roots the handle in the
+;; program symbol table forever -- the slot never gets freed even
+;; after thread-terminate!. So each test below uses a let-bound
+;; handle that goes out of scope as soon as the assertion is
+;; recorded, letting the GC reclaim the handle and the scheduler
+;; reap the slot before the next test runs.
+
+(assert-equal 'too-slow
+              (let ((slow (thread-create!
+                            (lambda () (thread-sleep! 10000) 'done))))
+                (let ((r (thread-join! slow 30 'too-slow)))
+                  (thread-terminate! slow)
+                  r))
+              "thread-join! returns timeout-val when joinee does not finish in time")
+
+(assert-equal #f
+              (let ((slow (thread-create!
+                            (lambda () (thread-sleep! 10000) 'done))))
+                (let ((r (thread-join! slow 30)))
+                  (thread-terminate! slow)
+                  r))
+              "thread-join! returns #f on timeout when timeout-val omitted")
+
+(assert-equal 'not-yet
+              (let ((t (thread-create!
+                         (lambda () (thread-sleep! 10000) 99))))
+                (let ((r (thread-join! t 0 'not-yet)))
+                  (thread-terminate! t)
+                  r))
+              "(thread-join! t 0 v) returns v when joinee is still running")
+
+(assert-equal 30
+              (thread-join! (thread-create! (lambda () (+ 10 20)))
+                            1000 'unused)
+              "thread-join! returns joinee's result when it finishes within timeout")
+
+(assert-equal 'forever
+              (thread-join! (thread-create!
+                              (lambda () (thread-sleep! 20) 'forever))
+                            #f)
+              "thread-join! with timeout=#f waits indefinitely")
+
 (test-suite "thread-terminate!")
 
-;; thread-terminate! takes a thread object (not an integer) and returns
-;; truthy when it actually killed a thread.
-(define long-runner
-  (thread-create! (lambda ()
-                    (let loop ((i 0))
-                      (thread-sleep! 1000)
-                      (loop (+ i 1))))))
-(assert-true (thread-terminate! long-runner)
-             "thread-terminate! returns truthy for a live thread")
-
-;; A second terminate on the same handle finds the thread gone; the call
-;; either returns falsy (current implementation) or raises a thread error.
-;; Both behaviours are acceptable as long as the call does not crash.
-(thread-sleep! 50)
-(define second-terminate
-  (guard (exc (else 'raised))
-    (thread-terminate! long-runner)))
-(assert-true (or (eq? second-terminate 'raised)
-                 (not second-terminate)
-                 second-terminate)
-             "thread-terminate! on a finished thread does not crash")
+;; thread-terminate! takes a thread object (not an integer) and
+;; returns truthy when it actually killed a thread. The second
+;; terminate on the same handle finds the thread already gone; the
+;; call either returns falsy or raises a thread error -- either is
+;; acceptable as long as it does not crash. Wrapped in a let so the
+;; handle does not permanently occupy a slot.
+(let ((long-runner
+       (thread-create! (lambda ()
+                         (let loop ((i 0))
+                           (thread-sleep! 1000)
+                           (loop (+ i 1)))))))
+  (assert-true (thread-terminate! long-runner)
+               "thread-terminate! returns truthy for a live thread")
+  (thread-sleep! 50)
+  (let ((second (guard (exc (else 'raised))
+                  (thread-terminate! long-runner))))
+    (assert-true (or (eq? second 'raised)
+                     (not second)
+                     second)
+                 "thread-terminate! on a finished thread does not crash")))
 
 (test-suite "thread-yield! and thread-sleep!")
 
@@ -92,21 +138,16 @@
 
 (test-suite "thread-specific")
 
-;; thread-specific defaults to the unspecified value before set.
-;; The exact representation of "unset" is implementation-defined; we
-;; just check that reading it before writing does not crash and that
-;; round-tripping a value works.
-(define t-specific
-  (thread-create! (lambda () (thread-sleep! 1000))))
-(thread-sleep! 10)
-(thread-specific-set! t-specific 'hello)
-(assert-equal 'hello (thread-specific t-specific)
-              "thread-specific returns the value set by thread-specific-set!")
+;; Round-trip a value through thread-specific. Wrapped in a let so
+;; the worker handle gets reclaimed.
+(let ((t (thread-create! (lambda () (thread-sleep! 1000)))))
+  (thread-sleep! 10)
+  (thread-specific-set! t 'hello)
+  (assert-equal 'hello (thread-specific t)
+                "thread-specific returns the value set by thread-specific-set!")
+  (thread-specific-set! t 99)
+  (assert-equal 99 (thread-specific t)
+                "thread-specific round-trips an integer")
+  (thread-terminate! t))
 
-(thread-specific-set! t-specific 99)
-(assert-equal 99 (thread-specific t-specific)
-              "thread-specific round-trips an integer")
-(thread-terminate! t-specific)
-
-;; Cleanup: kill the still-running terminator target if it survived.
 (test-summary)

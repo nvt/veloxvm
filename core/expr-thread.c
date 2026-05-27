@@ -74,10 +74,41 @@ VM_FUNCTION(current_thread)
   thread_obj_create(&thread->result, thread);
 }
 
+/* wait_cancel for a thread parked in thread-join! whose timeout
+   fires before the joinee terminates. Removes self from the
+   joinee's joiners list so a later natural completion does not
+   write into parent argv after we have moved on; the timeout
+   value itself is already in the parent argv slot (the post-eval
+   pop wrote thread->result there, which the operator pre-seeded
+   with timeout-val below). */
+static void
+join_cancel_wait(vm_thread_t *thread)
+{
+  vm_thread_t *target;
+  vm_thread_joiner_t **link;
+  vm_thread_joiner_t *waiter;
+
+  target = thread->wait_object;
+  if(target != NULL) {
+    for(link = &target->joiners; (waiter = *link) != NULL;
+        link = &waiter->next) {
+      if(waiter->joiner_id == thread->id) {
+        *link = waiter->next;
+        VM_FREE(waiter);
+        break;
+      }
+    }
+  }
+  thread->wait_object = NULL;
+  thread->wait_cancel = NULL;
+  thread->wait_outcome = VM_WAIT_OUTCOME_TIMEOUT;
+}
+
 VM_FUNCTION(thread_join)
 {
   vm_thread_t *target;
   vm_thread_joiner_t *waiter;
+  vm_integer_t timeout_ms;
 
   target = vm_thread_from_object(&argv[0]);
   if(target == NULL) {
@@ -109,6 +140,33 @@ VM_FUNCTION(thread_join)
     return;
   }
 
+  /* Optional SRFI-18-style timeout. We accept an integer ms-relative
+     timeout (extension: SRFI uses time objects or absolute seconds,
+     which we don't have yet) or #f for "wait forever". A timeout of
+     0 polls and returns timeout-val immediately. */
+  timeout_ms = -1;
+  if(argc >= 2) {
+    if(argv[1].type == VM_TYPE_INTEGER) {
+      timeout_ms = argv[1].value.integer;
+    } else if(argv[1].type == VM_TYPE_BOOLEAN) {
+      timeout_ms = -1;
+    } else {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+      return;
+    }
+  }
+
+  if(timeout_ms == 0) {
+    /* Poll: the joinee was not finished above, so just return
+       timeout-val without parking. */
+    if(argc >= 3) {
+      memcpy(&thread->result, &argv[2], sizeof(vm_obj_t));
+    } else {
+      VM_PUSH_BOOLEAN(VM_FALSE);
+    }
+    return;
+  }
+
   waiter = VM_MALLOC(sizeof(vm_thread_joiner_t));
   if(waiter == NULL) {
     vm_signal_error(thread, VM_ERROR_HEAP);
@@ -118,7 +176,29 @@ VM_FUNCTION(thread_join)
   waiter->next = target->joiners;
   target->joiners = waiter;
 
-  thread->status = VM_THREAD_WAITING;
+  /* Pre-seed thread->result with the timeout fallback so the post-
+     eval pop writes it into the parent argv slot. The natural-join
+     wake path (vm_thread_finalize_joiners) will overwrite that slot
+     with target->result; the timeout-fire wake path just leaves it
+     in place. SRFI 18 spec is that an omitted timeout-val raises
+     join-timeout-exception -- we don't yet expose that exception
+     type, so omitted means #f for now. */
+  if(argc >= 3) {
+    memcpy(&thread->result, &argv[2], sizeof(vm_obj_t));
+  } else {
+    thread->result.type = VM_TYPE_BOOLEAN;
+    thread->result.value.boolean = VM_FALSE;
+  }
+
+  thread->wait_object = target;
+  thread->wait_cancel = join_cancel_wait;
+  thread->wait_outcome = VM_WAIT_OUTCOME_NONE;
+
+  if(timeout_ms > 0) {
+    vm_native_sleep(thread, timeout_ms);
+  } else {
+    thread->status = VM_THREAD_WAITING;
+  }
 }
 
 VM_FUNCTION(thread_sleep)

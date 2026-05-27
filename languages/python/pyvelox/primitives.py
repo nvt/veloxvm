@@ -168,6 +168,7 @@ VM_PRIMITIVES = [
     'condition_variablep', 'make_condition_variable',
     'condition_variable_name',
     'condition_variable_signal', 'condition_variable_broadcast',
+    'condition_variable_specific', 'condition_variable_specific_set',
 ]
 
 # Create reverse lookup dictionary (name -> ID)
@@ -280,6 +281,8 @@ SCHEME_ALIASES = {
     'condition-variable-name': 'condition_variable_name',
     'condition-variable-signal!': 'condition_variable_signal',
     'condition-variable-broadcast!': 'condition_variable_broadcast',
+    'condition-variable-specific': 'condition_variable_specific',
+    'condition-variable-specific-set!': 'condition_variable_specific_set',
     'current-input-port': 'current_input_port',
     'current-output-port': 'current_output_port',
     'open-input-file': 'open_input_file',
@@ -350,7 +353,7 @@ def get_primitive_id(name: str) -> int:
         name: The primitive name (e.g., 'add', '+', 'list-ref')
 
     Returns:
-        The symbol ID (0-235) or None if not a primitive
+        The symbol ID (0-237) or None if not a primitive
     """
     # Check if it's a Scheme alias
     if name in SCHEME_ALIASES:
@@ -377,7 +380,7 @@ def get_primitive_name(symbol_id: int) -> str:
     Get the primitive name for a given symbol ID.
 
     Args:
-        symbol_id: The symbol ID (0-235)
+        symbol_id: The symbol ID (0-237)
 
     Returns:
         The primitive name or None if invalid ID
@@ -388,4 +391,4 @@ def get_primitive_name(symbol_id: int) -> str:
 
 
 # The primitive count must match core/vm-procedures.c exactly.
-assert len(VM_PRIMITIVES) == 234, f"Expected 234 primitives, got {len(VM_PRIMITIVES)}"
+assert len(VM_PRIMITIVES) == 236, f"Expected 236 primitives, got {len(VM_PRIMITIVES)}"

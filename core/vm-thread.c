@@ -75,12 +75,25 @@ thread_obj_deallocate(vm_obj_t *obj)
   if(target->handle_count > 0) {
     target->handle_count--;
   }
-  /* Don't destroy the thread here even if handle_count just dropped
-     to zero on an already-FINISHED thread: we're running inside the
-     GC, and vm_thread_destroy / vm_unload_program touch program
-     data structures that the GC is still walking. The scheduler's
-     VM_THREAD_FINISHED case revisits zombies every vm_run iteration
-     and reaps any whose handle_count has reached zero. */
+  /* If this was the last live handle on an already-finished thread,
+     reclaim the slot now. The alternative -- waiting for the
+     scheduler's next VM_THREAD_FINISHED visit -- means zombie threads
+     accumulate until something triggers a GC pass, and on the
+     POSIX port that pass may never come if the rest of the program
+     does not allocate. vm_thread_destroy is safe to call from the
+     GC's finalize phase: it touches the frame mempool (separate
+     from the allocations hash), removes the thread from threads[],
+     and frees the struct's hash entry (we are in
+     finalize_unmarked_ext_objects which runs before the sweep, so
+     the sweep will not revisit the just-freed entry). It does not
+     call vm_unload_program -- the scheduler's nthreads==0 check
+     handles that on the next vm_run iteration. */
+  if(target->handle_count == 0 &&
+     (target->status == VM_THREAD_FINISHED ||
+      target->status == VM_THREAD_ERROR ||
+      target->status == VM_THREAD_EXITING)) {
+    vm_thread_destroy(target);
+  }
 }
 
 static void
@@ -125,6 +138,21 @@ allocate_thread_id(void)
   int i;
 
   /* Find an available thread ID. */
+  for(i = 0; i < VM_THREAD_AMOUNT; i++) {
+    if(threads[i] == NULL) {
+      return i;
+    }
+  }
+
+  /* Every slot is occupied -- but some may be zombies (FINISHED with
+     handle_count > 0) whose ext_object handles became unreachable
+     since the last sweep. Force a GC pass; thread_obj_deallocate
+     will then drop the count to zero and destroy each such zombie,
+     freeing its slot. Without this, programs that create and drop
+     more than VM_THREAD_AMOUNT threads over their lifetime can hit
+     a spurious "out of threads" error even though no live thread
+     references remain. */
+  vm_gc_force();
   for(i = 0; i < VM_THREAD_AMOUNT; i++) {
     if(threads[i] == NULL) {
       return i;
@@ -488,14 +516,22 @@ vm_thread_finalize_joiners(vm_thread_t *thread)
     joiner_thread = vm_thread_get(waiter->joiner_id);
     if(joiner_thread != NULL) {
       /* When op_thread_join set the joiner WAITING, the scheduler had
-         already popped the join's own frame and written VM_TYPE_NONE
-         into the parent's argv[eval_arg] slot (see "Replace the
-         evaluated object with the result of the evaluation" in
-         vm_sched_thread). To make (thread-join! t) actually return
-         the joinee's result, we overwrite that same slot now, while
-         the joiner is still parked and its frame stack is exactly
-         where the pop left it. The result is also placed in
-         joiner_thread->result for symmetry with other operators. */
+         already popped the join's own frame and written
+         thread->result (the operator's pre-seeded timeout-val, or
+         VM_TYPE_NONE in the no-timeout case) into the parent's
+         argv[eval_arg] slot. To make (thread-join! t) actually
+         return the joinee's result, we overwrite that same slot now,
+         while the joiner is still parked and its frame stack is
+         exactly where the pop left it. The result is also placed in
+         joiner_thread->result for symmetry with other operators.
+
+         Clear wait_cancel so any pending timeout timer that fires
+         later sees status != WAITING and skips its cancel hook --
+         redundant given process_timers' own status check, but cheap
+         hygiene. */
+      joiner_thread->wait_cancel = NULL;
+      joiner_thread->wait_object = NULL;
+      joiner_thread->wait_outcome = VM_WAIT_OUTCOME_SIGNALED;
       memcpy(&joiner_thread->result, &thread->result, sizeof(vm_obj_t));
       if(joiner_thread->exprc > 0) {
         parent_frame = joiner_thread->expr;

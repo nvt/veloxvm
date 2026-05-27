@@ -48,6 +48,11 @@ typedef struct vm_cond {
   /* Owned heap copy of the name. */
   char *name;
   cv_waiter_t *wait_list;
+  /* SRFI-18-style application-specific cell. type == VM_TYPE_NONE
+     means "unset" (the slot returned by condition-variable-specific
+     before any -set! call); the GC mark hook walks this field so
+     heap objects stashed here stay live. */
+  vm_obj_t specific;
 } vm_cond_t;
 
 static void cond_copy(vm_obj_t *, vm_obj_t *);
@@ -133,6 +138,10 @@ cond_mark(vm_obj_t *obj)
   if(cv->name != NULL) {
     vm_gc_mark_pointer(cv->name);
   }
+  /* Walk the specific cell so heap objects stashed via
+     condition-variable-specific-set! stay alive as long as the cv
+     does. Same treatment as mutex's inline specific. */
+  vm_gc_mark_object(&cv->specific);
 }
 
 /* Remove a thread from this CV's wait list (idempotent). Used by
@@ -307,6 +316,7 @@ VM_FUNCTION(make_condition_variable)
     return;
   }
   cv->wait_list = NULL;
+  cv->specific.type = VM_TYPE_NONE;
   if(vm_ext_object_create(&thread->result, &ext_type_cond, cv) == NULL) {
     VM_FREE(cv->name);
     VM_FREE(cv);
@@ -337,4 +347,20 @@ VM_FUNCTION(condition_variable_broadcast)
   while(cond_wake_one(cv)) {
     /* loop until the wait list is empty */
   }
+}
+
+VM_FUNCTION(condition_variable_specific)
+{
+  vm_cond_t *cv;
+
+  EXTRACT_COND(thread, argv[0], cv);
+  VM_PUSH(&cv->specific);
+}
+
+VM_FUNCTION(condition_variable_specific_set)
+{
+  vm_cond_t *cv;
+
+  EXTRACT_COND(thread, argv[0], cv);
+  memcpy(&cv->specific, &argv[1], sizeof(vm_obj_t));
 }

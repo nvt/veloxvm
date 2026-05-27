@@ -121,4 +121,33 @@
 (assert-equal 1 1
               "signal/broadcast on an empty cv does not raise")
 
+(test-suite "condition-variable-specific")
+
+(define cv-spec (make-condition-variable "spec"))
+(condition-variable-specific-set! cv-spec 'hello)
+(assert-equal 'hello (condition-variable-specific cv-spec)
+              "condition-variable-specific round-trips a symbol")
+(condition-variable-specific-set! cv-spec 42)
+(assert-equal 42 (condition-variable-specific cv-spec)
+              "condition-variable-specific round-trips an integer")
+(condition-variable-specific-set! cv-spec '(a b c))
+(assert-equal '(a b c) (condition-variable-specific cv-spec)
+              "condition-variable-specific round-trips a list")
+
+(test-suite "Optional names")
+
+;; make-mutex without a name is allowed; mutex-name returns the empty
+;; string.
+(define m-anon (make-mutex))
+(assert-true (mutex? m-anon)
+             "(make-mutex) with no name produces a mutex")
+(assert-equal "" (mutex-name m-anon)
+              "anonymous mutex has empty-string name")
+
+;; make-condition-variable without a name was already allowed; just
+;; verify it still works after the specific-cell addition.
+(define cv-anon (make-condition-variable))
+(assert-true (condition-variable? cv-anon)
+             "(make-condition-variable) with no name produces a cv")
+
 (test-summary)

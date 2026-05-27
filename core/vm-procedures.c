@@ -250,8 +250,11 @@ static const vm_procedure_t operators[] = {
      existing compiled bytecode) stay stable. */
   VM_OPERATOR(thread_fork, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 0, 0),
   VM_OPERATOR(thread_id, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 0, 0),
-  VM_OPERATOR(thread_join, VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
-              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  /* thread-join! takes (thread [timeout-ms [timeout-val]]); the body
+     validates argv[0] is a thread, argv[1] (if present) is integer
+     or boolean, and argv[2] can be anything. */
+  VM_OPERATOR(thread_join, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 1, 3),
   VM_OPERATOR(thread_sleep, VM_TYPE_FLAG_NUMBER,
 	      VM_PROCEDURE_EVAL_ARGS, 1, 1),
   VM_OPERATOR(thread_specific, VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
@@ -269,8 +272,11 @@ static const vm_procedure_t operators[] = {
 
   /* Mutex functions. */
   VM_OPERATOR(mutexp, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  /* SRFI 18 makes the name argument optional, defaulting to a
+     unique implementation-chosen value. We default to the empty
+     string when no name is supplied. */
   VM_OPERATOR(make_mutex, VM_TYPE_FLAG(VM_TYPE_STRING),
-	      VM_PROCEDURE_EVAL_ARGS, 1, 1),
+	      VM_PROCEDURE_EVAL_ARGS, 0, 1),
   VM_OPERATOR(mutex_name, VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
 	      VM_PROCEDURE_EVAL_ARGS, 1, 1),
   VM_OPERATOR(mutex_specific, VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
@@ -538,6 +544,13 @@ static const vm_procedure_t operators[] = {
   VM_OPERATOR(condition_variable_broadcast,
               VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
               VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(condition_variable_specific,
+              VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  /* The value argument may be any type, so valid_types is ANY and
+     the body validates argv[0] is a condition variable. */
+  VM_OPERATOR(condition_variable_specific_set, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 2, 2),
 };
 
 #define MAX_COMMON_SYMBOL_ID 127
