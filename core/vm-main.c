@@ -127,11 +127,7 @@ vm_print_error(vm_thread_t *thread)
   vm_thread_print_ip(thread, thread->expr);
 
 #if VM_ERROR_MESSAGES
-  if(thread->error.error_type == VM_ERROR_SYMBOL_UNDEFINED) {
-    VM_PRINTF(": %s", error_message(thread->error.error_type));
-  } else {
-    VM_PRINTF(": %s", error_message(thread->error.error_type));
-  }
+  VM_PRINTF(": %s", error_message(thread->error.error_type));
 
   if(thread->error.error_obj.type != VM_TYPE_NONE) {
     VM_PRINTF(": ");
