@@ -360,9 +360,9 @@ alarm_handler(int signo)
 {
   timers_expired = 1;
 
-  if(signal(SIGALRM, alarm_handler) == SIG_ERR) {
-    perror("signal");
-  }
+  /* Re-arm for SysV signal() semantics. Cannot report failure from
+     here: perror/fprintf are not async-signal-safe. */
+  (void)signal(SIGALRM, alarm_handler);
 }
 
 int
