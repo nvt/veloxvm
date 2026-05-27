@@ -105,7 +105,8 @@
     thread? current-thread
     condition-variable? make-condition-variable condition-variable-name
     condition-variable-signal! condition-variable-broadcast!
-    condition-variable-specific condition-variable-specific-set!))
+    condition-variable-specific condition-variable-specific-set!
+    current-time time? time->seconds seconds->time))
 
 ;; Check if symbol is a VM primitive
 (define (vm-primitive? sym)

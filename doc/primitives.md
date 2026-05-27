@@ -251,3 +251,7 @@ code writes.
 | 233 | `condition_variable_broadcast` | `condition-variable-broadcast!` |
 | 234 | `condition_variable_specific` | `condition-variable-specific` |
 | 235 | `condition_variable_specific_set` | `condition-variable-specific-set!` |
+| 236 | `current_time` | `current-time` |
+| 237 | `timep` | `time?` |
+| 238 | `time_to_seconds` | `time->seconds` |
+| 239 | `seconds_to_time` | `seconds->time` |

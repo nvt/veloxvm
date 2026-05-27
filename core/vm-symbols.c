@@ -201,7 +201,11 @@ static vm_symbol_t symbol_map[] = {
   SYM("condition-variable-signal!"),
   SYM("condition-variable-broadcast!"),
   SYM("condition-variable-specific"),
-  SYM("condition-variable-specific-set!")
+  SYM("condition-variable-specific-set!"),
+
+  /* SRFI-18 time objects. */
+  SYM("current-time"), SYM("time?"),
+  SYM("time->seconds"), SYM("seconds->time")
 };
 
 #define CORE_SYMBOL_COUNT VM_ARRAY_SIZE(symbol_map)

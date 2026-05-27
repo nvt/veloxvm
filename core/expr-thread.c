@@ -33,6 +33,7 @@
 #include "vm-functions.h"
 #include "vm-log.h"
 #include "vm-native.h"
+#include "vm-time.h"
 
 VM_FUNCTION(thread_create)
 {
@@ -140,17 +141,14 @@ VM_FUNCTION(thread_join)
     return;
   }
 
-  /* Optional SRFI-18-style timeout. We accept an integer ms-relative
-     timeout (extension: SRFI uses time objects or absolute seconds,
-     which we don't have yet) or #f for "wait forever". A timeout of
-     0 polls and returns timeout-val immediately. */
+  /* Optional SRFI-18-style timeout: integer ms-relative
+     (VeloxVM convention), a SRFI-18 time object (absolute deadline,
+     converted via current time), or #f for "wait forever". */
   timeout_ms = -1;
   if(argc >= 2) {
-    if(argv[1].type == VM_TYPE_INTEGER) {
-      timeout_ms = argv[1].value.integer;
-    } else if(argv[1].type == VM_TYPE_BOOLEAN) {
-      timeout_ms = -1;
-    } else {
+    int valid;
+    timeout_ms = vm_time_parse_timeout(&argv[1], &valid);
+    if(!valid) {
       vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
       return;
     }
@@ -203,19 +201,32 @@ VM_FUNCTION(thread_join)
 
 VM_FUNCTION(thread_sleep)
 {
-  VM_DEBUG(VM_DEBUG_MEDIUM, "Sleeping %lu ms",
-           (unsigned long)argv[0].value.integer);
-  if(argv[0].value.integer < 0) {
+  vm_integer_t ms;
+  int valid;
+
+  ms = vm_time_parse_timeout(&argv[0], &valid);
+  if(!valid) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    vm_set_error_object(thread, &argv[0]);
+    return;
+  }
+  if(ms < 0) {
+    /* SRFI 18 reads thread-sleep!'s timeout as "until that deadline";
+       a #f or other negative-ms value would mean "forever", which is
+       not useful for thread-sleep!. Reject it explicitly. */
     vm_signal_error(thread, VM_ERROR_ARGUMENT_VALUE);
     vm_set_error_object(thread, &argv[0]);
-  } else if(argv[0].value.integer == 0) {
-    /* SRFI 18: a 0-ms sleep is a yield. Defer the rest of this
-       per-invocation slice to the next runnable thread; status
-       stays RUNNABLE so vm_run brings us back next round. */
-    thread->yield_requested = 1;
-  } else {
-    vm_native_sleep(thread, argv[0].value.integer);
+    return;
   }
+  if(ms == 0) {
+    /* (thread-sleep! 0) and time objects with a past/now deadline
+       both become yields: hand the rest of this per-invocation slice
+       to the next runnable thread without parking. */
+    thread->yield_requested = 1;
+    return;
+  }
+  VM_DEBUG(VM_DEBUG_MEDIUM, "Sleeping %lu ms", (unsigned long)ms);
+  vm_native_sleep(thread, ms);
 }
 
 VM_FUNCTION(thread_specific)

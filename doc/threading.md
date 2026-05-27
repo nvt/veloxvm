@@ -62,9 +62,11 @@ with the divergences noted below. Full ID table is `doc/primitives.md`.
   type lands.
 - `(thread-terminate! t)` — kill `t`; returns `#t` if it was alive.
 - `(thread-yield!)` — give up the rest of this slice.
-- `(thread-sleep! ms)` — suspend for `ms` milliseconds. **Argument is
-  a relative ms integer, not a SRFI-18 absolute time object.**
-  `(thread-sleep! 0)` is a yield.
+- `(thread-sleep! timeout)` — suspend until the timeout deadline.
+  Accepts an integer (ms-relative, VeloxVM convention) or a SRFI-18
+  time object (absolute deadline; sleep until that point in time).
+  `(thread-sleep! 0)` and `(thread-sleep! (current-time))` both
+  yield without blocking.
 - `(thread-specific t)`, `(thread-specific-set! t v)`
 - `(thread-id)`, `(thread-stats [t])` — non-SRFI: integer id and
   per-thread counters.
@@ -88,12 +90,28 @@ with the divergences noted below. Full ID table is `doc/primitives.md`.
 - `(condition-variable-signal! cv)` — wake one parked waiter.
 - `(condition-variable-broadcast! cv)` — wake all.
 
+### Time objects (SRFI 18)
+
+- `(current-time)` — samples the host clock; returns an absolute
+  time object.
+- `(time? obj)`
+- `(time->seconds t)` — returns an integer when the time is a whole
+  number of seconds, otherwise a real (a real-less embedded target
+  truncates to integer seconds).
+- `(seconds->time x)` — accepts integer, rational, or real seconds
+  since epoch.
+
+Time objects can be used wherever the surface accepts a timeout
+(`thread-sleep!`, `thread-join!`, `mutex-lock!`, `mutex-unlock! m cv
+timeout`). They are interpreted as absolute deadlines and converted
+to ms-relative internally. Integer timeouts continue to mean
+ms-relative (the VeloxVM convention, divergent from SRFI 18 which
+reads bare numbers as absolute seconds since epoch).
+
 ### What is missing relative to SRFI 18
 
 - `make-thread` / `thread-start!` (combined into `thread-create!`)
 - `thread-name`
-- Absolute-time `thread-sleep!` and the `time` object family
-  (`current-time`, `time?`, `time->seconds`, `seconds->time`)
 - Named exception types (`join-timeout-exception?`,
   `abandoned-mutex-exception?`, `terminated-thread-exception?`,
   `uncaught-exception?`, `uncaught-exception-reason`). Without
@@ -103,6 +121,10 @@ with the divergences noted below. Full ID table is `doc/primitives.md`.
   R6RS-style `guard` and `raise` instead)
 - Three of four `mutex-state` return symbols; only the locked/owned
   case returns a useful value today (the thread object).
+- Integer-vs-time-object timeout semantics: VeloxVM keeps integers
+  as ms-relative for back-compat; SRFI 18 reads them as absolute
+  seconds since epoch. Use time objects for portable absolute
+  deadlines.
 
 ## The canonical wait/signal idiom
 

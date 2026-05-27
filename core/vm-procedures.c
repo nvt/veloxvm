@@ -255,7 +255,12 @@ static const vm_procedure_t operators[] = {
      or boolean, and argv[2] can be anything. */
   VM_OPERATOR(thread_join, VM_TYPE_FLAG_ANY,
               VM_PROCEDURE_EVAL_ARGS, 1, 3),
-  VM_OPERATOR(thread_sleep, VM_TYPE_FLAG_NUMBER,
+  /* thread-sleep! accepts a number (ms-relative; legacy VeloxVM
+     convention), #f (no timeout, rejected as an error in the body
+     since "sleep forever" is not meaningful), or a SRFI-18 time
+     object (absolute deadline). Type validation happens in the
+     body via vm_time_parse_timeout. */
+  VM_OPERATOR(thread_sleep, VM_TYPE_FLAG_ANY,
 	      VM_PROCEDURE_EVAL_ARGS, 1, 1),
   VM_OPERATOR(thread_specific, VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
               VM_PROCEDURE_EVAL_ARGS, 1, 1),
@@ -551,6 +556,18 @@ static const vm_procedure_t operators[] = {
      the body validates argv[0] is a condition variable. */
   VM_OPERATOR(condition_variable_specific_set, VM_TYPE_FLAG_ANY,
               VM_PROCEDURE_EVAL_ARGS, 2, 2),
+
+  /* SRFI-18 time objects. current-time samples the host clock;
+     time? predicates the external; time->seconds returns a real
+     when reals are enabled (else integer seconds, dropping ms);
+     seconds->time accepts integer, rational, or real input. */
+  VM_OPERATOR(current_time, VM_TYPE_NONE,
+              VM_PROCEDURE_EVAL_ARGS, 0, 0),
+  VM_OPERATOR(timep, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(time_to_seconds, VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(seconds_to_time, VM_TYPE_FLAG_NUMBER,
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
 };
 
 #define MAX_COMMON_SYMBOL_ID 127

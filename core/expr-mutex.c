@@ -34,6 +34,7 @@
 #include "vm-cond.h"
 #include "vm-log.h"
 #include "vm-native.h"
+#include "vm-time.h"
 
 /*
  * There are four mutex states according to SRFI-18:
@@ -375,19 +376,16 @@ VM_FUNCTION(mutex_lock)
 
   EXTRACT_MUTEX(thread, argv[0], mutex);
 
-  /* SRFI-18-style optional timeout. A negative value (or omitted)
-     means "wait indefinitely"; 0 means "try acquire, return #f on
-     contention without parking"; positive is a wait deadline in ms.
-     A non-integer/non-boolean timeout argument is rejected. */
+  /* Optional SRFI-18 timeout. A negative value (or omitted) means
+     "wait indefinitely"; 0 polls (return #f without parking);
+     positive ms is a relative deadline. The shared parser accepts
+     integer ms-relative (VeloxVM convention), #f, or a SRFI-18
+     time object (absolute deadline). */
   timeout_ms = -1;
   if(argc >= 2) {
-    if(argv[1].type == VM_TYPE_INTEGER) {
-      timeout_ms = argv[1].value.integer;
-    } else if(argv[1].type == VM_TYPE_BOOLEAN) {
-      /* #f = no timeout (SRFI 18). Any other boolean is treated the
-         same; SRFI 18 only defines #f as the "no timeout" sentinel. */
-      timeout_ms = -1;
-    } else {
+    int valid;
+    timeout_ms = vm_time_parse_timeout(&argv[1], &valid);
+    if(!valid) {
       vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
       return;
     }
@@ -495,11 +493,9 @@ VM_FUNCTION(mutex_unlock)
 
   timeout_ms = -1;
   if(argc >= 3) {
-    if(argv[2].type == VM_TYPE_INTEGER) {
-      timeout_ms = argv[2].value.integer;
-    } else if(argv[2].type == VM_TYPE_BOOLEAN) {
-      timeout_ms = -1;
-    } else {
+    int valid;
+    timeout_ms = vm_time_parse_timeout(&argv[2], &valid);
+    if(!valid) {
       vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
       return;
     }

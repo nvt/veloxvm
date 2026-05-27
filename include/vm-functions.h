@@ -262,6 +262,12 @@ VM_DECLARE_FUNCTION(condition_variable_broadcast);
 VM_DECLARE_FUNCTION(condition_variable_specific);
 VM_DECLARE_FUNCTION(condition_variable_specific_set);
 
+/* SRFI-18 time objects. */
+VM_DECLARE_FUNCTION(current_time);
+VM_DECLARE_FUNCTION(timep);
+VM_DECLARE_FUNCTION(time_to_seconds);
+VM_DECLARE_FUNCTION(seconds_to_time);
+
 /* Vector functions. */
 VM_DECLARE_FUNCTION(make_vector);
 VM_DECLARE_FUNCTION(vector);
