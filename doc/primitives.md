@@ -255,3 +255,8 @@ code writes.
 | 237 | `timep` | `time?` |
 | 238 | `time_to_seconds` | `time->seconds` |
 | 239 | `seconds_to_time` | `seconds->time` |
+| 240 | `join_timeout_exceptionp` | `join-timeout-exception?` |
+| 241 | `abandoned_mutex_exceptionp` | `abandoned-mutex-exception?` |
+| 242 | `terminated_thread_exceptionp` | `terminated-thread-exception?` |
+| 243 | `uncaught_exceptionp` | `uncaught-exception?` |
+| 244 | `uncaught_exception_reason` | `uncaught-exception-reason` |

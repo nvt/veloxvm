@@ -106,7 +106,10 @@
     condition-variable? make-condition-variable condition-variable-name
     condition-variable-signal! condition-variable-broadcast!
     condition-variable-specific condition-variable-specific-set!
-    current-time time? time->seconds seconds->time))
+    current-time time? time->seconds seconds->time
+    join-timeout-exception? abandoned-mutex-exception?
+    terminated-thread-exception? uncaught-exception?
+    uncaught-exception-reason))
 
 ;; Check if symbol is a VM primitive
 (define (vm-primitive? sym)

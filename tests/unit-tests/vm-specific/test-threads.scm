@@ -72,13 +72,18 @@
                   r))
               "thread-join! returns timeout-val when joinee does not finish in time")
 
-(assert-equal #f
+;; SRFI 18: an omitted timeout-val raises join-timeout-exception
+;; rather than falling back to #f.
+(assert-equal 'caught
               (let ((slow (thread-create!
                             (lambda () (thread-sleep! 10000) 'done))))
-                (let ((r (thread-join! slow 30)))
+                (let ((r (guard (exc ((join-timeout-exception? exc)
+                                      'caught)
+                                     (else 'unexpected))
+                           (thread-join! slow 30))))
                   (thread-terminate! slow)
                   r))
-              "thread-join! returns #f on timeout when timeout-val omitted")
+              "thread-join! raises join-timeout-exception when timeout-val omitted")
 
 (assert-equal 'not-yet
               (let ((t (thread-create!

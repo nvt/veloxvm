@@ -231,6 +231,15 @@ typedef struct vm_thread {
      thread_obj_deallocate; the deallocate hook destroys the thread
      when it drops to zero on an already-FINISHED thread. */
   uint8_t handle_count;
+  /* Set by vm_thread_kill so a future thread-join! can distinguish
+     a natural exit from an abnormal termination and raise SRFI 18's
+     terminated-thread-exception instead of surfacing the joinee's
+     last (often unspecified) result. */
+  uint8_t was_killed;
+  /* Set by op_thread_join when no timeout-val is supplied; tells
+     join_cancel_wait to raise SRFI 18's join-timeout-exception
+     instead of leaving the pre-seeded #f in parent argv. */
+  uint8_t wait_raises_on_timeout;
   /* Set by whichever wake path (signal/broadcast vs timeout) reaches
      a parked thread first. Read by the operator's wake handler when
      deciding what value to surface (typically through parent argv). */

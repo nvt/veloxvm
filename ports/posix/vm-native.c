@@ -340,14 +340,18 @@ process_timers(void)
        timer->thread->status == VM_THREAD_WAITING) {
       /* If a wait_cancel is registered, the thread is parked on a
          mutex or condition variable. The cancel hook removes self
-         from that wait list and writes #f into the parent argv slot
-         so (mutex-lock! m timeout) / (mutex-unlock! m cv timeout)
-         actually return #f on the timeout path. The hook clears
-         wait_cancel so a racing signal does not double-fire. */
+         from that wait list and either writes a timeout fallback
+         (e.g. #f for mutex-lock! / mutex-unlock!) into the parent
+         argv slot or raises a SRFI 18 typed exception via
+         vm_raise_exception. The latter may itself transition the
+         thread to VM_THREAD_ERROR (no enclosing guard), so only
+         force RUNNABLE if the cancel hook left status untouched. */
       if(timer->thread->wait_cancel != NULL) {
         timer->thread->wait_cancel(timer->thread);
       }
-      timer->thread->status = VM_THREAD_RUNNABLE;
+      if(timer->thread->status == VM_THREAD_WAITING) {
+        timer->thread->status = VM_THREAD_RUNNABLE;
+      }
     }
     tmp_timer = timer->next;
     VM_DEBUG(VM_DEBUG_HIGH, "Remove timer (expiration %ld)",

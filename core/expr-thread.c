@@ -31,6 +31,7 @@
  */
 
 #include "vm-functions.h"
+#include "vm-exceptions.h"
 #include "vm-log.h"
 #include "vm-native.h"
 #include "vm-time.h"
@@ -78,16 +79,18 @@ VM_FUNCTION(current_thread)
 /* wait_cancel for a thread parked in thread-join! whose timeout
    fires before the joinee terminates. Removes self from the
    joinee's joiners list so a later natural completion does not
-   write into parent argv after we have moved on; the timeout
-   value itself is already in the parent argv slot (the post-eval
-   pop wrote thread->result there, which the operator pre-seeded
-   with timeout-val below). */
+   write into parent argv after we have moved on. If
+   wait_raises_on_timeout is set (the caller omitted timeout-val),
+   raise SRFI 18 join-timeout-exception; otherwise the pre-seeded
+   timeout-val is already in the parent argv slot from the post-eval
+   pop. */
 static void
 join_cancel_wait(vm_thread_t *thread)
 {
   vm_thread_t *target;
   vm_thread_joiner_t **link;
   vm_thread_joiner_t *waiter;
+  uint8_t raises;
 
   target = thread->wait_object;
   if(target != NULL) {
@@ -103,6 +106,11 @@ join_cancel_wait(vm_thread_t *thread)
   thread->wait_object = NULL;
   thread->wait_cancel = NULL;
   thread->wait_outcome = VM_WAIT_OUTCOME_TIMEOUT;
+  raises = thread->wait_raises_on_timeout;
+  thread->wait_raises_on_timeout = 0;
+  if(raises) {
+    vm_raise_srfi18_exception(thread, VM_SRFI18_JOIN_TIMEOUT, NULL);
+  }
 }
 
 VM_FUNCTION(thread_join)
@@ -133,11 +141,20 @@ VM_FUNCTION(thread_join)
   if(target->status == VM_THREAD_FINISHED ||
      target->status == VM_THREAD_ERROR ||
      target->status == VM_THREAD_EXITING) {
-    /* The joinee has run to completion since the handle was
-       constructed but the scheduler has not yet finalized it.
-       Surface its result directly; vm_thread_finalize_joiners would
-       do the same once the joinee is processed. */
-    memcpy(&thread->result, &target->result, sizeof(vm_obj_t));
+    /* The joinee has already terminated. Mirror finalize_joiners'
+       three-way dispatch: kill -> terminated-thread-exception,
+       error -> uncaught-exception (wrapping the joinee's
+       error_obj), normal exit -> surface the result. */
+    if(target->was_killed) {
+      vm_raise_srfi18_exception(thread,
+                                VM_SRFI18_TERMINATED_THREAD, NULL);
+    } else if(target->status == VM_THREAD_ERROR) {
+      vm_raise_srfi18_exception(thread,
+                                VM_SRFI18_UNCAUGHT_EXCEPTION,
+                                &target->error.error_obj);
+    } else {
+      memcpy(&thread->result, &target->result, sizeof(vm_obj_t));
+    }
     return;
   }
 
@@ -177,15 +194,16 @@ VM_FUNCTION(thread_join)
   /* Pre-seed thread->result with the timeout fallback so the post-
      eval pop writes it into the parent argv slot. The natural-join
      wake path (vm_thread_finalize_joiners) will overwrite that slot
-     with target->result; the timeout-fire wake path just leaves it
-     in place. SRFI 18 spec is that an omitted timeout-val raises
-     join-timeout-exception -- we don't yet expose that exception
-     type, so omitted means #f for now. */
+     with target->result; the timeout-fire wake path either leaves
+     it in place (timeout-val supplied) or raises join-timeout-
+     exception via join_cancel_wait (timeout-val omitted). */
   if(argc >= 3) {
     memcpy(&thread->result, &argv[2], sizeof(vm_obj_t));
+    thread->wait_raises_on_timeout = 0;
   } else {
     thread->result.type = VM_TYPE_BOOLEAN;
     thread->result.value.boolean = VM_FALSE;
+    thread->wait_raises_on_timeout = 1;
   }
 
   thread->wait_object = target;

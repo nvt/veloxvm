@@ -172,6 +172,11 @@ VM_PRIMITIVES = [
 
     # SRFI-18 time objects
     'current_time', 'timep', 'time_to_seconds', 'seconds_to_time',
+
+    # SRFI-18 typed-exception predicates + accessor
+    'join_timeout_exceptionp', 'abandoned_mutex_exceptionp',
+    'terminated_thread_exceptionp', 'uncaught_exceptionp',
+    'uncaught_exception_reason',
 ]
 
 # Create reverse lookup dictionary (name -> ID)
@@ -289,6 +294,11 @@ SCHEME_ALIASES = {
     'time?': 'timep',
     'time->seconds': 'time_to_seconds',
     'seconds->time': 'seconds_to_time',
+    'join-timeout-exception?': 'join_timeout_exceptionp',
+    'abandoned-mutex-exception?': 'abandoned_mutex_exceptionp',
+    'terminated-thread-exception?': 'terminated_thread_exceptionp',
+    'uncaught-exception?': 'uncaught_exceptionp',
+    'uncaught-exception-reason': 'uncaught_exception_reason',
     'current-input-port': 'current_input_port',
     'current-output-port': 'current_output_port',
     'open-input-file': 'open_input_file',
@@ -359,7 +369,7 @@ def get_primitive_id(name: str) -> int:
         name: The primitive name (e.g., 'add', '+', 'list-ref')
 
     Returns:
-        The symbol ID (0-241) or None if not a primitive
+        The symbol ID (0-246) or None if not a primitive
     """
     # Check if it's a Scheme alias
     if name in SCHEME_ALIASES:
@@ -386,7 +396,7 @@ def get_primitive_name(symbol_id: int) -> str:
     Get the primitive name for a given symbol ID.
 
     Args:
-        symbol_id: The symbol ID (0-241)
+        symbol_id: The symbol ID (0-246)
 
     Returns:
         The primitive name or None if invalid ID
@@ -397,4 +407,4 @@ def get_primitive_name(symbol_id: int) -> str:
 
 
 # The primitive count must match core/vm-procedures.c exactly.
-assert len(VM_PRIMITIVES) == 240, f"Expected 240 primitives, got {len(VM_PRIMITIVES)}"
+assert len(VM_PRIMITIVES) == 245, f"Expected 245 primitives, got {len(VM_PRIMITIVES)}"

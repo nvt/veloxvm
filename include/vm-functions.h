@@ -229,6 +229,13 @@ VM_DECLARE_FUNCTION(exit);
 VM_DECLARE_FUNCTION(guard);
 VM_DECLARE_FUNCTION(raise);
 
+/* SRFI 18 typed-exception predicates and accessor. */
+VM_DECLARE_FUNCTION(join_timeout_exceptionp);
+VM_DECLARE_FUNCTION(abandoned_mutex_exceptionp);
+VM_DECLARE_FUNCTION(terminated_thread_exceptionp);
+VM_DECLARE_FUNCTION(uncaught_exceptionp);
+VM_DECLARE_FUNCTION(uncaught_exception_reason);
+
 /* Thread functions. */
 VM_DECLARE_FUNCTION(thread_create);
 VM_DECLARE_FUNCTION(thread_fork);

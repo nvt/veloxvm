@@ -56,10 +56,12 @@ with the divergences noted below. Full ID table is `doc/primitives.md`.
 - `(thread? obj)`, `(current-thread)`
 - `(thread-join! t [timeout-ms [timeout-val]])` — block until `t`
   finishes; returns its thunk's result. With `timeout-ms` (integer
-  ms, or `#f` for no timeout), returns `timeout-val` (default `#f`)
-  on expiry. SRFI 18 specifies that an omitted `timeout-val` should
-  raise `join-timeout-exception`; we return `#f` until that exception
-  type lands.
+  ms, a SRFI-18 time object, or `#f` for no timeout): returns
+  `timeout-val` on expiry, or raises `join-timeout-exception` if
+  `timeout-val` is omitted. Joining a thread killed via
+  `thread-terminate!` raises `terminated-thread-exception`; joining
+  a thread that died with an uncaught exception raises
+  `uncaught-exception` wrapping the original.
 - `(thread-terminate! t)` — kill `t`; returns `#t` if it was alive.
 - `(thread-yield!)` — give up the rest of this slice.
 - `(thread-sleep! timeout)` — suspend until the timeout deadline.
@@ -108,17 +110,37 @@ to ms-relative internally. Integer timeouts continue to mean
 ms-relative (the VeloxVM convention, divergent from SRFI 18 which
 reads bare numbers as absolute seconds since epoch).
 
+### Typed exceptions (SRFI 18)
+
+The runtime raises typed conditions for four failure modes; user
+code dispatches inside `guard`:
+
+- `(join-timeout-exception? obj)` — raised by `thread-join!` when
+  its timeout expires and no `timeout-val` was supplied.
+- `(abandoned-mutex-exception? obj)` — raised by `mutex-lock!` when
+  the mutex was abandoned by a terminated owner.
+- `(terminated-thread-exception? obj)` — raised by `thread-join!`
+  on a joinee that was killed via `thread-terminate!`.
+- `(uncaught-exception? obj)` — raised by `thread-join!` on a
+  joinee that died with an unhandled exception. The wrapped reason
+  is recovered via `(uncaught-exception-reason exc)`.
+
+```scheme
+(guard (exc ((join-timeout-exception? exc)         'timed-out)
+            ((terminated-thread-exception? exc)    'killed)
+            ((uncaught-exception? exc)
+             (list 'died (uncaught-exception-reason exc)))
+            (else (raise exc)))
+  (thread-join! worker 1000))
+```
+
 ### What is missing relative to SRFI 18
 
 - `make-thread` / `thread-start!` (combined into `thread-create!`)
 - `thread-name`
-- Named exception types (`join-timeout-exception?`,
-  `abandoned-mutex-exception?`, `terminated-thread-exception?`,
-  `uncaught-exception?`, `uncaught-exception-reason`). Without
-  `join-timeout-exception?`, `thread-join!` on timeout falls back
-  to returning `#f` when no `timeout-val` is supplied.
 - `current-exception-handler` / `with-exception-handler` (we have
-  R6RS-style `guard` and `raise` instead)
+  R6RS-style `guard` and `raise` instead, plus the four SRFI 18
+  typed exceptions above).
 - Three of four `mutex-state` return symbols; only the locked/owned
   case returns a useful value today (the thread object).
 - Integer-vs-time-object timeout semantics: VeloxVM keeps integers

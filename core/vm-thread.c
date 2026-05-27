@@ -34,6 +34,7 @@
 #include <stdlib.h>
 
 #include "vm.h"
+#include "vm-exceptions.h"
 #include "vm-id.h"
 #include "vm-log.h"
 #include "vm-native.h"
@@ -190,6 +191,8 @@ create_thread(vm_thread_t *parent)
   child->joiners = NULL;
   child->yield_requested = 0;
   child->handle_count = 0;
+  child->was_killed = 0;
+  child->wait_raises_on_timeout = 0;
   child->wait_outcome = VM_WAIT_OUTCOME_NONE;
   child->wait_cancel = NULL;
   child->wait_object = NULL;
@@ -372,6 +375,7 @@ vm_thread_kill(vm_id_t id)
     return 0;
   }
 
+  threads[index]->was_killed = 1;
   threads[index]->status = VM_THREAD_FINISHED;
   if(VM_GC_AGGRESSIVE) {
     vm_gc();
@@ -439,6 +443,8 @@ vm_thread_create(vm_program_t *program)
     thread->joiners = NULL;
     thread->yield_requested = 0;
     thread->handle_count = 0;
+    thread->was_killed = 0;
+    thread->wait_raises_on_timeout = 0;
     thread->wait_outcome = VM_WAIT_OUTCOME_NONE;
     thread->wait_cancel = NULL;
     thread->wait_object = NULL;
@@ -485,6 +491,8 @@ vm_thread_create_parked(vm_program_t *program)
   thread->joiners = NULL;
   thread->yield_requested = 0;
   thread->handle_count = 0;
+  thread->was_killed = 0;
+  thread->wait_raises_on_timeout = 0;
   thread->wait_outcome = VM_WAIT_OUTCOME_NONE;
   thread->wait_cancel = NULL;
   thread->wait_object = NULL;
@@ -519,25 +527,40 @@ vm_thread_finalize_joiners(vm_thread_t *thread)
          already popped the join's own frame and written
          thread->result (the operator's pre-seeded timeout-val, or
          VM_TYPE_NONE in the no-timeout case) into the parent's
-         argv[eval_arg] slot. To make (thread-join! t) actually
-         return the joinee's result, we overwrite that same slot now,
-         while the joiner is still parked and its frame stack is
-         exactly where the pop left it. The result is also placed in
-         joiner_thread->result for symmetry with other operators.
+         argv[eval_arg] slot. Three outcomes are possible now:
+
+           - The joinee was killed via thread-terminate!: raise SRFI
+             18 terminated-thread-exception in the joiner.
+           - The joinee died with an uncaught exception
+             (status==ERROR): wrap its error_obj in an
+             uncaught-exception and raise it in the joiner.
+           - Otherwise the joinee completed normally: overwrite the
+             parent argv slot with its result.
 
          Clear wait_cancel so any pending timeout timer that fires
-         later sees status != WAITING and skips its cancel hook --
-         redundant given process_timers' own status check, but cheap
-         hygiene. */
+         later sees status != WAITING and skips its cancel hook. */
       joiner_thread->wait_cancel = NULL;
       joiner_thread->wait_object = NULL;
       joiner_thread->wait_outcome = VM_WAIT_OUTCOME_SIGNALED;
-      memcpy(&joiner_thread->result, &thread->result, sizeof(vm_obj_t));
-      if(joiner_thread->exprc > 0) {
-        parent_frame = joiner_thread->expr;
-        if(parent_frame != NULL && parent_frame->eval_arg < parent_frame->argc) {
-          memcpy(&parent_frame->argv[parent_frame->eval_arg],
-                 &thread->result, sizeof(vm_obj_t));
+      joiner_thread->wait_raises_on_timeout = 0;
+
+      if(thread->was_killed) {
+        vm_raise_srfi18_exception(joiner_thread,
+                                  VM_SRFI18_TERMINATED_THREAD, NULL);
+      } else if(thread->status == VM_THREAD_ERROR) {
+        vm_raise_srfi18_exception(joiner_thread,
+                                  VM_SRFI18_UNCAUGHT_EXCEPTION,
+                                  &thread->error.error_obj);
+      } else {
+        memcpy(&joiner_thread->result, &thread->result,
+               sizeof(vm_obj_t));
+        if(joiner_thread->exprc > 0) {
+          parent_frame = joiner_thread->expr;
+          if(parent_frame != NULL &&
+             parent_frame->eval_arg < parent_frame->argc) {
+            memcpy(&parent_frame->argv[parent_frame->eval_arg],
+                   &thread->result, sizeof(vm_obj_t));
+          }
         }
       }
       if(joiner_thread->status == VM_THREAD_WAITING) {

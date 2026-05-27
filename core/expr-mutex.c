@@ -32,6 +32,7 @@
 
 #include "vm-functions.h"
 #include "vm-cond.h"
+#include "vm-exceptions.h"
 #include "vm-log.h"
 #include "vm-native.h"
 #include "vm-time.h"
@@ -396,11 +397,11 @@ VM_FUNCTION(mutex_lock)
     mutex->owner_id = thread->id;
 
     if(VM_IS_SET(mutex->state, MUTEX_ABANDONED)) {
-      /* The mutex has been abandoned, so an "abandoned mutex exception"
-         must be raised in the locking thread after locking the mutex. */
-
-      /* TO DO: Change the exception object from the mutex to a symbol. */
-      vm_raise_exception(thread, &argv[0]);
+      /* SRFI 18: the mutex's previous owner was terminated without
+         unlocking. Lock succeeds, then we raise the abandoned-mutex
+         exception so the caller can react. */
+      vm_raise_srfi18_exception(thread,
+                                VM_SRFI18_ABANDONED_MUTEX, NULL);
     }
 
     VM_DEBUG(VM_DEBUG_MEDIUM, "Locked mutex \"%s\"", mutex->name);

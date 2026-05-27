@@ -568,6 +568,20 @@ static const vm_procedure_t operators[] = {
               VM_PROCEDURE_EVAL_ARGS, 1, 1),
   VM_OPERATOR(seconds_to_time, VM_TYPE_FLAG_NUMBER,
               VM_PROCEDURE_EVAL_ARGS, 1, 1),
+
+  /* SRFI 18 typed-exception predicates and accessor. Used inside
+     guard handlers to dispatch on the runtime-raised exception
+     kinds. */
+  VM_OPERATOR(join_timeout_exceptionp, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(abandoned_mutex_exceptionp, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(terminated_thread_exceptionp, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(uncaught_exceptionp, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(uncaught_exception_reason, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
 };
 
 #define MAX_COMMON_SYMBOL_ID 127

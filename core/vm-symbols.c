@@ -205,7 +205,14 @@ static vm_symbol_t symbol_map[] = {
 
   /* SRFI-18 time objects. */
   SYM("current-time"), SYM("time?"),
-  SYM("time->seconds"), SYM("seconds->time")
+  SYM("time->seconds"), SYM("seconds->time"),
+
+  /* SRFI-18 typed-exception predicates and accessor. */
+  SYM("join-timeout-exception?"),
+  SYM("abandoned-mutex-exception?"),
+  SYM("terminated-thread-exception?"),
+  SYM("uncaught-exception?"),
+  SYM("uncaught-exception-reason")
 };
 
 #define CORE_SYMBOL_COUNT VM_ARRAY_SIZE(symbol_map)
