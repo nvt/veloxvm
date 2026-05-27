@@ -253,6 +253,13 @@ VM_DECLARE_FUNCTION(mutex_state);
 VM_DECLARE_FUNCTION(mutex_lock);
 VM_DECLARE_FUNCTION(mutex_unlock);
 
+/* Condition variable functions. */
+VM_DECLARE_FUNCTION(condition_variablep);
+VM_DECLARE_FUNCTION(make_condition_variable);
+VM_DECLARE_FUNCTION(condition_variable_name);
+VM_DECLARE_FUNCTION(condition_variable_signal);
+VM_DECLARE_FUNCTION(condition_variable_broadcast);
+
 /* Vector functions. */
 VM_DECLARE_FUNCTION(make_vector);
 VM_DECLARE_FUNCTION(vector);

@@ -115,6 +115,13 @@ thread_timer_expired(void *arg)
      entry expression), the timer is stale and must not override
      the newer status. */
   if(thread->status == VM_THREAD_WAITING) {
+    /* Wake-via-timeout: a parked mutex/cv waiter cancels its
+       enrollment in the target's wait list and writes #f into the
+       parent argv slot via this hook. Plain thread-sleep! leaves
+       wait_cancel as NULL and skips the call. */
+    if(thread->wait_cancel != NULL) {
+      thread->wait_cancel(thread);
+    }
     thread->status = VM_THREAD_RUNNABLE;
     process_poll(&vm_process);
   }

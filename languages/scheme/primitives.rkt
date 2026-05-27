@@ -102,7 +102,9 @@
     read-u8 peek-u8 write-u8
     read-bytevector read-bytevector! write-bytevector
     read-string write-string read-line
-    thread? current-thread))
+    thread? current-thread
+    condition-variable? make-condition-variable condition-variable-name
+    condition-variable-signal! condition-variable-broadcast!))
 
 ;; Check if symbol is a VM primitive
 (define (vm-primitive? sym)

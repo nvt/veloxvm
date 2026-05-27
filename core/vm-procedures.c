@@ -279,10 +279,16 @@ static const vm_procedure_t operators[] = {
 	      VM_PROCEDURE_EVAL_ARGS, 2, 2),
   VM_OPERATOR(mutex_state, VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
 	      VM_PROCEDURE_EVAL_ARGS, 1, 1),
-  VM_OPERATOR(mutex_lock, VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
-	      VM_PROCEDURE_EVAL_ARGS, 1, 1),
-  VM_OPERATOR(mutex_unlock, VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
-	      VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  /* mutex-lock! takes (mutex [timeout [thread]]); timeout may be an
+     integer (ms) or #f. The body validates argv[0] is a mutex and
+     argv[1] (if present) is integer/boolean, so valid_types accepts
+     anything. The optional thread argument is currently ignored. */
+  VM_OPERATOR(mutex_lock, VM_TYPE_FLAG_ANY,
+	      VM_PROCEDURE_EVAL_ARGS, 1, 2),
+  /* mutex-unlock! takes (mutex [cv [timeout]]); cv must be a
+     condition-variable when supplied, timeout an integer or #f. */
+  VM_OPERATOR(mutex_unlock, VM_TYPE_FLAG_ANY,
+	      VM_PROCEDURE_EVAL_ARGS, 1, 3),
 
   /* Vector functions. */
   VM_OPERATOR(make_vector, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 1, 2),
@@ -517,6 +523,21 @@ static const vm_procedure_t operators[] = {
   VM_OPERATOR(threadp, VM_TYPE_FLAG_ANY, VM_PROCEDURE_EVAL_ARGS, 1, 1),
   VM_OPERATOR(current_thread, VM_TYPE_FLAG_ANY,
               VM_PROCEDURE_EVAL_ARGS, 0, 0),
+
+  /* SRFI-18-style condition variables. Pair with mutexes via the
+     (mutex-unlock! m cv [timeout]) atomic release-and-wait. */
+  VM_OPERATOR(condition_variablep, VM_TYPE_FLAG_ANY,
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(make_condition_variable, VM_TYPE_FLAG(VM_TYPE_STRING),
+              VM_PROCEDURE_EVAL_ARGS, 0, 1),
+  VM_OPERATOR(condition_variable_name, VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(condition_variable_signal,
+              VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
+  VM_OPERATOR(condition_variable_broadcast,
+              VM_TYPE_FLAG(VM_TYPE_EXTERNAL),
+              VM_PROCEDURE_EVAL_ARGS, 1, 1),
 };
 
 #define MAX_COMMON_SYMBOL_ID 127

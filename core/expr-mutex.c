@@ -31,7 +31,9 @@
  */
 
 #include "vm-functions.h"
+#include "vm-cond.h"
 #include "vm-log.h"
+#include "vm-native.h"
 
 /*
  * There are four mutex states according to SRFI-18:
@@ -271,13 +273,116 @@ VM_FUNCTION(mutex_state)
   }
 }
 
+static void
+mutex_remove_waiter(vm_mutex_t *mutex, vm_id_t thread_id)
+{
+  wait_thread_t **link;
+  wait_thread_t *wt;
+
+  for(link = &mutex->wait_list;
+      (wt = *link) != NULL;
+      link = &wt->next) {
+    if(wt->thread_id == thread_id) {
+      *link = wt->next;
+      VM_FREE(wt);
+      return;
+    }
+  }
+}
+
+/* wait_cancel for a thread parked in mutex-lock! with a timeout that
+   fires before the lock can be handed to us. Unhook self from the
+   mutex's wait list and write #f into the parent argv slot so the
+   form returns #f on the timeout path. */
+static void
+mutex_lock_cancel_wait(vm_thread_t *thread)
+{
+  vm_mutex_t *mutex;
+  vm_expr_t *frame;
+
+  mutex = thread->wait_object;
+  if(mutex != NULL) {
+    mutex_remove_waiter(mutex, thread->id);
+  }
+  thread->wait_object = NULL;
+  thread->wait_cancel = NULL;
+  thread->wait_outcome = VM_WAIT_OUTCOME_TIMEOUT;
+  thread->result.type = VM_TYPE_BOOLEAN;
+  thread->result.value.boolean = VM_FALSE;
+  frame = thread->expr;
+  if(frame != NULL && frame->eval_arg < frame->argc) {
+    memcpy(&frame->argv[frame->eval_arg], &thread->result,
+           sizeof(vm_obj_t));
+  }
+}
+
+/* Hand the mutex off to a parked waiter as part of mutex-unlock!.
+   Mirrors cond_wake_one in expr-cond.c: clears the waiter's wait_cancel
+   so a racing timeout sees status != WAITING and skips, writes #t into
+   the waiter's parent argv slot so (mutex-lock! m timeout) returns #t
+   on the signal path, and flips status to RUNNABLE. */
+static int
+mutex_hand_off(vm_mutex_t *mutex)
+{
+  wait_thread_t *wt;
+  vm_thread_t *lock_thread;
+  vm_expr_t *frame;
+
+  while((wt = mutex->wait_list) != NULL) {
+    lock_thread = vm_thread_get(wt->thread_id);
+    mutex->wait_list = wt->next;
+    VM_FREE(wt);
+    if(lock_thread == NULL) {
+      continue;
+    }
+    mutex->owner_id = lock_thread->id;
+    lock_thread->wait_cancel = NULL;
+    lock_thread->wait_object = NULL;
+    lock_thread->wait_outcome = VM_WAIT_OUTCOME_SIGNALED;
+    lock_thread->result.type = VM_TYPE_BOOLEAN;
+    lock_thread->result.value.boolean = VM_TRUE;
+    frame = lock_thread->expr;
+    if(frame != NULL && frame->eval_arg < frame->argc) {
+      memcpy(&frame->argv[frame->eval_arg], &lock_thread->result,
+             sizeof(vm_obj_t));
+    }
+    if(lock_thread->status == VM_THREAD_WAITING) {
+      lock_thread->status = VM_THREAD_RUNNABLE;
+    }
+    VM_DEBUG(VM_DEBUG_MEDIUM,
+             "Handed mutex \"%s\" to thread %lu",
+             mutex->name, (unsigned long)mutex->owner_id);
+    return 1;
+  }
+  return 0;
+}
+
 VM_FUNCTION(mutex_lock)
 {
   vm_mutex_t *mutex;
   wait_thread_t *wt;
   wait_thread_t *wt_iter;
+  vm_integer_t timeout_ms;
 
   EXTRACT_MUTEX(thread, argv[0], mutex);
+
+  /* SRFI-18-style optional timeout. A negative value (or omitted)
+     means "wait indefinitely"; 0 means "try acquire, return #f on
+     contention without parking"; positive is a wait deadline in ms.
+     A non-integer/non-boolean timeout argument is rejected. */
+  timeout_ms = -1;
+  if(argc >= 2) {
+    if(argv[1].type == VM_TYPE_INTEGER) {
+      timeout_ms = argv[1].value.integer;
+    } else if(argv[1].type == VM_TYPE_BOOLEAN) {
+      /* #f = no timeout (SRFI 18). Any other boolean is treated the
+         same; SRFI 18 only defines #f as the "no timeout" sentinel. */
+      timeout_ms = -1;
+    } else {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+      return;
+    }
+  }
 
   if(VM_IS_CLEAR(mutex->state, MUTEX_LOCKED)) {
     VM_SET_FLAG(mutex->state, MUTEX_LOCKED);
@@ -294,6 +399,12 @@ VM_FUNCTION(mutex_lock)
     VM_DEBUG(VM_DEBUG_MEDIUM, "Locked mutex \"%s\"", mutex->name);
 
     VM_PUSH_BOOLEAN(VM_TRUE);
+    return;
+  }
+
+  if(timeout_ms == 0) {
+    /* Poll path: contended and the caller does not want to wait. */
+    VM_PUSH_BOOLEAN(VM_FALSE);
     return;
   }
 
@@ -319,14 +430,25 @@ VM_FUNCTION(mutex_lock)
 
   VM_DEBUG(VM_DEBUG_MEDIUM, "Waiting for mutex \"%s\"", mutex->name);
 
-  thread->status = VM_THREAD_WAITING;
+  /* Register the cancellation hook so a racing timeout pulls us
+     back out of the wait list and surfaces #f. The hook is cleared
+     by mutex_hand_off on the signal path. */
+  thread->wait_object = mutex;
+  thread->wait_cancel = mutex_lock_cancel_wait;
+  thread->wait_outcome = VM_WAIT_OUTCOME_NONE;
+
+  if(timeout_ms > 0) {
+    /* vm_native_sleep arms the wake timer and sets status WAITING. */
+    vm_native_sleep(thread, timeout_ms);
+  } else {
+    thread->status = VM_THREAD_WAITING;
+  }
 }
 
 VM_FUNCTION(mutex_unlock)
 {
   vm_mutex_t *mutex;
-  vm_thread_t *lock_thread;
-  wait_thread_t *wt;
+  vm_integer_t timeout_ms;
 
   /* Any thread may unlock a mutex, even if it is not the owner. An already
      unlocked mutex may also be unlocked again. */
@@ -335,26 +457,51 @@ VM_FUNCTION(mutex_unlock)
 
   VM_DEBUG(VM_DEBUG_MEDIUM, "Unlocked mutex \"%s\"", mutex->name);
 
-  /* If there are threads on the waiting list, we immediately let the
-     next one in the queue lock the mutex. */
-  while(mutex->wait_list != NULL) {
-    lock_thread = vm_thread_get(mutex->wait_list->thread_id);
-    wt = mutex->wait_list->next;
-    VM_FREE(mutex->wait_list);
-    mutex->wait_list = wt;
+  /* Release the mutex before parking on the condition variable. The
+     SRFI-18 unlock-cv-wait atomicity boundary is "the calling thread
+     is added to the cv before the mutex is unlocked" -- but because
+     VeloxVM is single-threaded with cooperative+preemptive
+     scheduling, no other thread can observe an intermediate state
+     between these two operations. Either order is safe; releasing
+     first keeps the no-cv case identical to before. */
+  if(!mutex_hand_off(mutex)) {
+    /* No waiters wanted the mutex, so place it in the unlocked
+       state. */
+    VM_CLEAR_FLAG(mutex->state, MUTEX_LOCKED);
+  }
 
-    if(lock_thread != NULL) {
-      /* We found the next thread that can lock the mutex. */
-      mutex->owner_id = lock_thread->id;
-      lock_thread->status = VM_THREAD_RUNNABLE;
-      VM_DEBUG(VM_DEBUG_MEDIUM,
-	       "Immediately locked mutex \"%s\" for thread %lu",
-	       mutex->name, (unsigned long)mutex->owner_id);
+  if(argc < 2) {
+    /* The classic (mutex-unlock! m) form: release and return. */
+    return;
+  }
+
+  /* SRFI-18 (mutex-unlock! mutex cv [timeout]) atomically releases
+     the mutex and parks the caller on cv. Returns #t on signal, #f
+     on timeout (the boolean is propagated into the parent argv slot
+     by cond_wake_one / cond_cancel_wait). */
+  if(!vm_cond_check_type(&argv[1])) {
+    vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
+    return;
+  }
+
+  timeout_ms = -1;
+  if(argc >= 3) {
+    if(argv[2].type == VM_TYPE_INTEGER) {
+      timeout_ms = argv[2].value.integer;
+    } else if(argv[2].type == VM_TYPE_BOOLEAN) {
+      timeout_ms = -1;
+    } else {
+      vm_signal_error(thread, VM_ERROR_ARGUMENT_TYPES);
       return;
     }
   }
 
-  /* There was no thread that could lock the mutex, so we place it in
-     the unlocked state. */
-  VM_CLEAR_FLAG(mutex->state, MUTEX_LOCKED);
+  if(timeout_ms == 0) {
+    /* SRFI 18 timeout of 0 means "do not block"; return #f
+       immediately without enrolling on the cv. */
+    VM_PUSH_BOOLEAN(VM_FALSE);
+    return;
+  }
+
+  vm_cond_park_thread(&argv[1], thread, timeout_ms);
 }

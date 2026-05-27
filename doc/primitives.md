@@ -244,3 +244,8 @@ code writes.
 | 226 | `read_line` | `read-line` |
 | 227 | `threadp` | `thread?` |
 | 228 | `current_thread` | `current-thread` |
+| 229 | `condition_variablep` | `condition-variable?` |
+| 230 | `make_condition_variable` | `make-condition-variable` |
+| 231 | `condition_variable_name` | `condition-variable-name` |
+| 232 | `condition_variable_signal` | `condition-variable-signal!` |
+| 233 | `condition_variable_broadcast` | `condition-variable-broadcast!` |

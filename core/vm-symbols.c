@@ -193,7 +193,13 @@ static vm_symbol_t symbol_map[] = {
   SYM("read-string"), SYM("write-string"), SYM("read-line"),
 
   /* SRFI-18-style thread identity primitives. */
-  SYM("thread?"), SYM("current-thread")
+  SYM("thread?"), SYM("current-thread"),
+
+  /* SRFI-18-style condition variables. */
+  SYM("condition-variable?"), SYM("make-condition-variable"),
+  SYM("condition-variable-name"),
+  SYM("condition-variable-signal!"),
+  SYM("condition-variable-broadcast!")
 };
 
 #define CORE_SYMBOL_COUNT VM_ARRAY_SIZE(symbol_map)

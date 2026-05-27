@@ -188,6 +188,25 @@ typedef struct vm_thread_joiner {
   vm_id_t joiner_id;
 } vm_thread_joiner_t;
 
+/* Outcome of a parked-on-mutex/cv wait, set by whichever wake path
+   (signal/broadcast or timeout) reaches the thread first. The wake
+   path also writes the corresponding #t / #f into the joiner's
+   parent argv slot so (mutex-lock! m timeout) and
+   (mutex-unlock! m cv [timeout]) actually return that boolean. */
+typedef enum {
+  VM_WAIT_OUTCOME_NONE     = 0,
+  VM_WAIT_OUTCOME_SIGNALED = 1,
+  VM_WAIT_OUTCOME_TIMEOUT  = 2
+} vm_wait_outcome_t;
+
+struct vm_thread;
+/* Cancellation callback for parked threads. NULL on plain thread-sleep!
+   (no list to clean up). Set when a thread parks on a mutex or
+   condition variable; invoked by the timer-fire path before status
+   flips to RUNNABLE so the wait can be cancelled (remove self from
+   the target's wait list, write #f into parent argv slot). */
+typedef void (*vm_wait_cancel_t)(struct vm_thread *);
+
 typedef struct vm_thread {
   vm_expr_t *exprv[VM_CONTEXT_STACK_SIZE];
   vm_obj_t result;
@@ -212,6 +231,18 @@ typedef struct vm_thread {
      thread_obj_deallocate; the deallocate hook destroys the thread
      when it drops to zero on an already-FINISHED thread. */
   uint8_t handle_count;
+  /* Set by whichever wake path (signal/broadcast vs timeout) reaches
+     a parked thread first. Read by the operator's wake handler when
+     deciding what value to surface (typically through parent argv). */
+  uint8_t wait_outcome;
+  /* When non-NULL, the timer-fire path calls this with `this` before
+     setting status to RUNNABLE. Used by mutex-lock! / mutex-unlock!
+     with timeout and by condition-variable waits to unhook self
+     from the target's wait list and write #f into parent argv. */
+  vm_wait_cancel_t wait_cancel;
+  /* Opaque pointer to the wait target (vm_cond_t * / vm_mutex_t *),
+     interpreted by wait_cancel. NULL when no cancel is registered. */
+  void *wait_object;
 #ifdef VM_REPL_ENABLE
   /* When set, the scheduler parks this thread (instead of destroying
      it) once its top frame's bytecode runs out. Set only on the

@@ -338,6 +338,15 @@ process_timers(void)
        not override the more recent state. */
     if(timer->thread != NULL &&
        timer->thread->status == VM_THREAD_WAITING) {
+      /* If a wait_cancel is registered, the thread is parked on a
+         mutex or condition variable. The cancel hook removes self
+         from that wait list and writes #f into the parent argv slot
+         so (mutex-lock! m timeout) / (mutex-unlock! m cv timeout)
+         actually return #f on the timeout path. The hook clears
+         wait_cancel so a racing signal does not double-fire. */
+      if(timer->thread->wait_cancel != NULL) {
+        timer->thread->wait_cancel(timer->thread);
+      }
       timer->thread->status = VM_THREAD_RUNNABLE;
     }
     tmp_timer = timer->next;

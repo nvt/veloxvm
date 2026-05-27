@@ -162,6 +162,9 @@ create_thread(vm_thread_t *parent)
   child->joiners = NULL;
   child->yield_requested = 0;
   child->handle_count = 0;
+  child->wait_outcome = VM_WAIT_OUTCOME_NONE;
+  child->wait_cancel = NULL;
+  child->wait_object = NULL;
 
   VM_DEBUG(VM_DEBUG_MEDIUM, "Create a thread with index %u and ID %ld",
            (unsigned)index, (long)child->id);
@@ -408,6 +411,9 @@ vm_thread_create(vm_program_t *program)
     thread->joiners = NULL;
     thread->yield_requested = 0;
     thread->handle_count = 0;
+    thread->wait_outcome = VM_WAIT_OUTCOME_NONE;
+    thread->wait_cancel = NULL;
+    thread->wait_object = NULL;
 
     /* Initialize the first expr of the thread. */
     vm_thread_stack_push(thread);
@@ -451,6 +457,9 @@ vm_thread_create_parked(vm_program_t *program)
   thread->joiners = NULL;
   thread->yield_requested = 0;
   thread->handle_count = 0;
+  thread->wait_outcome = VM_WAIT_OUTCOME_NONE;
+  thread->wait_cancel = NULL;
+  thread->wait_object = NULL;
   thread->repl_main = 1;
 
   /* Push a top frame but leave its ip/end unset; vm_repl_run will
