@@ -70,6 +70,7 @@ extern void yyerror(const char *);
 "UDP"            return T_UDP;
 "client"         return T_CLIENT;
 "server"         return T_SERVER;
+"ANY"            return T_ANY;
 "kbps"           { STRING; return T_KBPS; }
 "bps"            { STRING; return T_BPS; }
 "window"         return T_WINDOW;

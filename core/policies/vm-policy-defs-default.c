@@ -35,57 +35,17 @@
 #include "vm-policy.h"
 
 /*
- * Permissive fallback policy. Attached to every program that does not
- * have a named policy of its own, so that VM_SUPERUSER_MODE=0 can be the
- * default without breaking existing apps and tests. Tighten or replace
- * this file (or define a vm-policy-defs-custom.c, which the Makefile
- * prefers over the default) to enforce a real policy.
+ * No-op safety net.
+ *
+ * The DSL pipeline (policy-defs/ .policy files → tools/policy-compiler →
+ * vm-policy-defs-custom.c) is the source of truth for VM policies. This
+ * file is linked only when no DSL sources exist and no custom file has
+ * been generated, in which case every program falls back to vm_policy_default
+ * with no rules — deny-by-default. Add a .policy spec under policy-defs/
+ * rather than editing this file.
  */
 int
 vm_policy_define(void)
 {
-  vm_policy_rule_t rule;
-
-  rule = (vm_policy_rule_t){
-    .type = VM_POLICY_TYPE_RESOURCES,
-    .resources.resource_access = VM_POLICY_RESOURCE_SUPERUSER,
-  };
-  if(!vm_policy_add_rule(&vm_policy_default, &rule)) {
-    return 0;
-  }
-
-  rule = (vm_policy_rule_t){
-    .type = VM_POLICY_TYPE_THREADS,
-    .threads.limit = 0xff,
-  };
-  if(!vm_policy_add_rule(&vm_policy_default, &rule)) {
-    return 0;
-  }
-
-  rule = (vm_policy_rule_t){
-    .type = VM_POLICY_TYPE_CPU,
-    .cpu.usage_percentage = 100,
-  };
-  if(!vm_policy_add_rule(&vm_policy_default, &rule)) {
-    return 0;
-  }
-
-  rule = (vm_policy_rule_t){
-    .type = VM_POLICY_TYPE_FILE,
-    .file.path = "*",
-  };
-  if(!vm_policy_add_rule(&vm_policy_default, &rule)) {
-    return 0;
-  }
-
-  rule = (vm_policy_rule_t){
-    .type = VM_POLICY_TYPE_NET,
-    .net.address = NULL,
-    .net.port = 0,
-  };
-  if(!vm_policy_add_rule(&vm_policy_default, &rule)) {
-    return 0;
-  }
-
   return 1;
 }
