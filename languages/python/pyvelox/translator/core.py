@@ -578,16 +578,45 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             return parts[0]
         return create_inline_call('string_append', parts, self.bc)
 
+    # Chunk size for breaking up large list / tuple / dict literals
+    # so the emitted (list ...) calls stay below VM_OBJECT_STACK_SIZE
+    # at runtime. The bytecode format itself permits up to 31 args
+    # per inline call, but each port caps the per-frame argv at
+    # VM_OBJECT_STACK_SIZE (typically 16); leaving one slot for the
+    # `list`/`append` operator gives 14 elements per chunk.
+    _LIST_LITERAL_CHUNK = 14
+
+    def _build_list_call(self, elems: list) -> bytes:
+        """Emit `(list e1 ... eN)` for small N, or a right-fold of
+        `(append (list ...) (append (list ...) ...))` for N that
+        would otherwise exceed the inline-form argc cap.
+
+        Each chunk is itself a small inline call; chunks beyond the
+        first are auto-hoisted by `create_inline_call` when they
+        appear as inline-form arguments."""
+        chunk = self._LIST_LITERAL_CHUNK
+        if len(elems) <= chunk:
+            return create_inline_call('list', elems, self.bc)
+        chunks = [create_inline_call('list', elems[i:i + chunk], self.bc)
+                  for i in range(0, len(elems), chunk)]
+        result = chunks[-1]
+        for piece in reversed(chunks[:-1]):
+            result = create_inline_call('append', [piece, result], self.bc)
+        return result
+
     def translate_list(self, node) -> bytes:
         """Translate `[1, 2, 3]` or `(1, 2, 3)` to `(list 1 2 3)`.
 
         Tuples are represented as lists in VeloxVM (both are
         immutable from the user's perspective), so list and tuple
         literals share this handler. Complex elements are stored
-        separately so the inline form's argc cap doesn't bite.
+        separately so the inline form's argc cap doesn't bite, and
+        literals beyond the chunk size are stitched together with
+        `append` so they survive the inline-form argc cap and the
+        runtime per-frame argv cap.
         """
         elem_bytecode = [self.translate_expr_with_ref(e) for e in node.elts]
-        return create_inline_call('list', elem_bytecode, self.bc)
+        return self._build_list_call(elem_bytecode)
 
     translate_tuple = translate_list
 
@@ -595,7 +624,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         """
         Translate a dict literal to association list.
         {'a': 1, 'b': 2} -> (list (cons 'a 1) (cons 'b 2))
-        Complex keys/values stored separately.
+        Complex keys/values stored separately. Large dict literals
+        are chunked the same way as list literals.
         """
         pairs = []
 
@@ -608,8 +638,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             # Store each cons pair separately
             pairs.append(self._hoist(pair_bytes))
 
-        # Wrap in (list pair1 pair2 ...)
-        return create_inline_call('list', pairs, self.bc)
+        return self._build_list_call(pairs)
 
     def translate_name(self, node: ast.Name) -> bytes:
         """Translate a variable reference."""

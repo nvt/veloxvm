@@ -304,7 +304,9 @@ class Disassembler:
         form_type = (header >> 5) & 0x03
 
         if form_type == 0:  # INLINE
-            argc = header & 0x3F
+            # argc occupies bits 4-0 only; bit 5 would collide with the
+            # form-type field. See encoder.encode_inline_form.
+            argc = header & 0x1F
             elements = []
             for i in range(argc):
                 elem, pos = self.disassemble_expr(data, pos)
