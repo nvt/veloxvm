@@ -54,6 +54,8 @@ extern void yyerror(const char *);
                   } while(c != '\n' && c != EOF);
                 }
 "PROGRAM-POLICY" return T_PROGRAM_POLICY;
+"POLICY-CLASS"   return T_POLICY_CLASS;
+"INHERIT"        return T_INHERIT;
 "DEFAULT"        return T_DEFAULT;
 "BANDWIDTH"      return T_BANDWIDTH;
 "CPU"            return T_CPU;

@@ -42,7 +42,13 @@ DEFAULT_POLICY_FILE = $(VM_POLICY_DIR)/vm-policy-defs-default.c
 # C build links that instead of DEFAULT_POLICY_FILE. With no DSL sources,
 # the build falls back to whichever C file is checked in.
 POLICY_SRC_DIR = policy-defs
-POLICY_SRC_FILES = $(wildcard $(POLICY_SRC_DIR)/*.policy)
+# Underscore-prefixed files (classes, default) parse first so that named
+# PROGRAM-POLICY blocks can INHERIT from them regardless of how the
+# host's directory listing orders glob results.
+POLICY_SHARED_FILES = $(sort $(wildcard $(POLICY_SRC_DIR)/_*.policy))
+POLICY_APP_FILES = $(sort $(filter-out $(POLICY_SHARED_FILES), \
+                                       $(wildcard $(POLICY_SRC_DIR)/*.policy)))
+POLICY_SRC_FILES = $(POLICY_SHARED_FILES) $(POLICY_APP_FILES)
 POLICY_COMPILER = $(POLICY_COMPILER_DIR)/vm-policy
 
 ifneq ($(POLICY_SRC_FILES),)

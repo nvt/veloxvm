@@ -62,9 +62,28 @@ extern const char *yytext;
 extern FILE *yyin;
 extern void yyrestart(FILE *);
 
+#define MAX_POLICY_CLASSES 32
+
+struct policy_class {
+  char *name;
+  char *body;
+  size_t body_size;
+  uint8_t resources;
+};
+
 static char file_path[PATH_MAX];
 static uint8_t resources;
 static FILE *out_fp;
+
+static struct policy_class classes[MAX_POLICY_CLASSES];
+static int num_classes;
+
+/* While a POLICY-CLASS block is being parsed, out_fp is redirected to a
+   memory stream; the captured text becomes the class body. */
+static FILE *saved_out_fp;
+static char *class_buf;
+static size_t class_buf_size;
+static char *pending_class_name;
 
 void
 yyerror(const char *str)
@@ -82,6 +101,58 @@ add_resource(uint8_t resource)
 {
   resources |= resource;
 }
+
+static void
+class_begin(const char *name)
+{
+  saved_out_fp = out_fp;
+  class_buf = NULL;
+  class_buf_size = 0;
+  out_fp = open_memstream(&class_buf, &class_buf_size);
+  if(out_fp == NULL) {
+    yyerror("open_memstream failed");
+  }
+  pending_class_name = strdup(name);
+}
+
+static void
+class_end(void)
+{
+  fclose(out_fp);
+  out_fp = saved_out_fp;
+  if(num_classes >= MAX_POLICY_CLASSES) {
+    yyerror("too many policy classes");
+  }
+  classes[num_classes].name = pending_class_name;
+  classes[num_classes].body = class_buf;
+  classes[num_classes].body_size = class_buf_size;
+  classes[num_classes].resources = resources;
+  num_classes++;
+  resources = 0;
+  pending_class_name = NULL;
+  class_buf = NULL;
+  class_buf_size = 0;
+}
+
+static void
+class_expand(const char *name)
+{
+  int i;
+
+  for(i = 0; i < num_classes; i++) {
+    if(strcmp(classes[i].name, name) == 0) {
+      fprintf(out_fp, "  /* INHERIT %s */\n", name);
+      if(classes[i].body_size > 0) {
+        fwrite(classes[i].body, 1, classes[i].body_size, out_fp);
+      }
+      resources |= classes[i].resources;
+      return;
+    }
+  }
+  fprintf(stderr, "Policy class \"%s\" not found (must be declared "
+                  "before use)\n", name);
+  yyerror("unknown policy class");
+}
 %}
 
 %union {
@@ -97,12 +168,16 @@ add_resource(uint8_t resource)
 %token <token> T_READ T_WRITE T_READWRITE T_TCP T_UDP T_CLIENT T_SERVER
 %token <token> T_WINDOW T_THROTTLE T_SHA256 T_LBRACE T_RBRACE T_SEMICOLON
 %token <token> T_COMMA T_SUPERUSER T_CONSOLE T_DNS T_IPC T_STATS T_ANY
+%token <token> T_POLICY_CLASS T_INHERIT
+%type <string> hash_value
 
 %%
 
-policies: policy
-        | policy policies
+policies: top_item
+        | top_item policies
         ;
+
+top_item: policy | policy_class;
 
 policy: header T_LBRACE rules T_RBRACE
 {
@@ -113,6 +188,12 @@ policy: header T_LBRACE rules T_RBRACE
     ADD_RULE(out_fp);
   }
   resources = 0;
+};
+
+policy_class: T_POLICY_CLASS T_IDENTIFIER T_LBRACE { class_begin($2); }
+              rules T_RBRACE
+{
+  class_end();
 };
 
 rules: rule
@@ -127,7 +208,13 @@ rule : bandwidth_rule
       | power_rule
       | resource_rule
       | threads_rule
+      | inherit_rule
        ;
+
+inherit_rule: T_INHERIT T_IDENTIFIER
+{
+  class_expand($2);
+};
 
 bandwidth_rule: T_BANDWIDTH T_INTEGER T_BPS
 {
@@ -238,13 +325,15 @@ threads_rule: T_THREADS T_INTEGER
 
 header: program_header | default_header;
 
-program_header: T_PROGRAM_POLICY T_IDENTIFIER T_SHA256 T_IDENTIFIER
+program_header: T_PROGRAM_POLICY T_IDENTIFIER T_SHA256 hash_value
 {
   fprintf(out_fp, "  /* Policy definition for program %s */\n", $2);
   fprintf(out_fp, "  p = vm_policy_add(\"%s\", NULL, %d);\n",
           $2, (int)(strlen($4) * 8));
   fprintf(out_fp, "  if(p == NULL) {\n    return 0;\n  }\n\n");
 };
+
+hash_value: T_IDENTIFIER | T_INTEGER;
 
 default_header: T_DEFAULT
 {

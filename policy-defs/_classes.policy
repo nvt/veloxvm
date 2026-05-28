@@ -1,0 +1,31 @@
+# Generic policy classes.
+#
+# Inherit one of these from a PROGRAM-POLICY block to give an app the
+# typical capabilities for its category, e.g.
+#
+#   PROGRAM-POLICY sieve
+#   SHA256 0000 { INHERIT compute-only }
+#
+# Tighter per-program rules can be added on top, but classes already set
+# CPU/THREADS/RESOURCES, so don't also declare those in the inheriting
+# block -- the loader rejects duplicate unique-type rules and the policy
+# will fail to install.
+
+POLICY-CLASS unrestricted {
+  RESOURCE superuser
+  THREADS 255
+  CPU 100%
+  FILE * RW
+  NET ANY
+}
+
+POLICY-CLASS compute-only {
+  CPU 100%
+  THREADS 1
+  RESOURCE console
+}
+
+POLICY-CLASS networking {
+  INHERIT compute-only
+  NET ANY
+}
