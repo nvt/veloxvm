@@ -76,6 +76,23 @@ print("  s = 'hello', s[0]:", s[0], ", s[4]:", s[4])
 print("  len(s[0]):", len(s[0]))
 b = bytes([65, 66, 67])
 print("  b = bytes([65,66,67]), b[0]:", b[0], ", b[2]:", b[2])
+
+# `+` dispatches at runtime on the left operand's type so that list
+# + list and str + str work even when neither side is a literal.
+# Earlier the no-literal path fell through to numeric `add` and
+# crashed on list-var + list-var.
+xs = [1, 2, 3]
+ys = [4, 5]
+print("  xs + ys:", xs + ys, "len:", len(xs + ys))
+hello = "hello"
+space_world = " world"
+print("  hello + space_world:", hello + space_world)
+empty = []
+print("  empty + xs:", empty + xs)
+# Numeric path must still work.
+n = 5
+m = 7
+print("  5 + 7 = (n + m):", n + m)
 # Note: Negative indexing not yet supported
 # print("  Negative index lst[-1]:", lst[-1])
 

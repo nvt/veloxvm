@@ -2553,20 +2553,52 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         """
         # Special handling for string and list concatenation
         if isinstance(node.op, ast.Add):
-            # Check if both operands are string literals
-            if (isinstance(node.left, ast.Constant) and isinstance(node.left.value, str) and
-                isinstance(node.right, ast.Constant) and isinstance(node.right.value, str)):
-                # String concatenation
-                left_bytes = self.translate_expr_with_ref(node.left)
-                right_bytes = self.translate_expr_with_ref(node.right)
-                return create_inline_call('string_append', [left_bytes, right_bytes], self.bc)
+            left_is_str_lit = (isinstance(node.left, ast.Constant)
+                               and isinstance(node.left.value, str))
+            right_is_str_lit = (isinstance(node.right, ast.Constant)
+                                and isinstance(node.right.value, str))
+            left_is_list_lit = isinstance(node.left, ast.List)
+            right_is_list_lit = isinstance(node.right, ast.List)
 
-            # Check if either operand is a list literal (for list concatenation)
-            if isinstance(node.left, ast.List) or isinstance(node.right, ast.List):
-                # List concatenation
+            # Static dispatch when at least one operand is a literal
+            # whose type we know: the other operand has to match (a
+            # type mismatch is a runtime error either way), so we
+            # avoid the dispatch overhead.
+            if left_is_str_lit or right_is_str_lit:
                 left_bytes = self.translate_expr_with_ref(node.left)
                 right_bytes = self.translate_expr_with_ref(node.right)
-                return create_inline_call('append', [left_bytes, right_bytes], self.bc)
+                return create_inline_call(
+                    'string_append', [left_bytes, right_bytes], self.bc)
+            if left_is_list_lit or right_is_list_lit:
+                left_bytes = self.translate_expr_with_ref(node.left)
+                right_bytes = self.translate_expr_with_ref(node.right)
+                return create_inline_call(
+                    'append', [left_bytes, right_bytes], self.bc)
+
+            # Neither operand is a literal whose type we can read
+            # off the AST. Dispatch at runtime on the left operand
+            # so that `lst + lst2`, `"x" + var`, and `1 + 2` all do
+            # the right thing. Without this, the fall-through to
+            # numeric `add` crashed on list-var + list-var. Both
+            # operands are read across multiple branches, so each is
+            # wrapped in `_evaluate_once`.
+            def build_with_right(right_token: bytes) -> bytes:
+                def build_with_left(left_token: bytes) -> bytes:
+                    str_branch = create_inline_call(
+                        'string_append',
+                        [left_token, right_token], self.bc)
+                    list_branch = create_inline_call(
+                        'append', [left_token, right_token], self.bc)
+                    add_branch = create_inline_call(
+                        'add', [left_token, right_token], self.bc)
+                    return self._emit_type_dispatch(
+                        left_token,
+                        [('stringp', str_branch),
+                         ('pairp', list_branch),
+                         ('nullp', list_branch)],
+                        add_branch)
+                return self._evaluate_once(node.left, build_with_left)
+            return self._evaluate_once(node.right, build_with_right)
 
         op_map = {
             ast.Add: 'add',
