@@ -3351,25 +3351,34 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             # Get the value from the pair with cdr
             return create_inline_call('cdr', [assoc_ref], self.bc)
 
-        # Sequence access. `list-ref` handles lists and strings;
-        # `bytes` is a buffer-flagged vector and needs `vector-ref`,
-        # which on a buffer returns a character — convert back to the
-        # int the Python user expects. Dispatch on `vectorp` so
-        # `lst[i]` and `b[i]` both work. Both the receiver and the
-        # index are read in two branches plus the predicate, so each
-        # is wrapped in `_evaluate_once` to avoid re-executing the
-        # underlying expression three times.
+        # Sequence access dispatched at runtime on the receiver
+        # type. `bytes` is a buffer-flagged vector -- note that the
+        # `vectorp` predicate returns FALSE for buffers, so the
+        # bytes branch must use `bufferp` -- and `vector-ref` on a
+        # buffer returns a character, which we convert back to the
+        # int Python's `b[i]` returns. Strings would error out under
+        # `list-ref` (which only accepts pair receivers), so route
+        # them through `slice` to get a 1-char string back, matching
+        # Python's `s[i]` returning a single-character string. Lists
+        # fall through to `list-ref`. Receiver and index are read
+        # across the predicates plus several branches, so each is
+        # wrapped in `_evaluate_once`.
         def build_with_idx(idx_token: bytes) -> bytes:
             def build_with_recv(recv_token: bytes) -> bytes:
                 vec_ref = create_inline_call(
                     'vector_ref', [recv_token, idx_token], self.bc)
-                vec_branch = create_inline_call(
+                bytes_branch = create_inline_call(
                     'char_to_integer', [vec_ref], self.bc)
+                idx_plus_one = create_inline_call(
+                    'add', [idx_token, encode_integer(1)], self.bc)
+                str_branch = create_inline_call(
+                    'slice',
+                    [recv_token, idx_token, idx_plus_one], self.bc)
                 list_branch = create_inline_call(
                     'list_ref', [recv_token, idx_token], self.bc)
                 return self._emit_type_dispatch(
                     recv_token,
-                    [('vectorp', vec_branch)],
+                    [('bufferp', bytes_branch), ('stringp', str_branch)],
                     list_branch)
             return self._evaluate_once(node.value, build_with_recv)
         return self._evaluate_once(node.slice, build_with_idx)

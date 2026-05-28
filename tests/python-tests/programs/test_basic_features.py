@@ -67,6 +67,15 @@ print("  List:", lst)
 print("  Length:", len(lst))
 print("  First element lst[0]:", lst[0])
 print("  Last element lst[4]:", lst[4])
+
+# Subscript on a string returns a 1-char string (Python semantics),
+# not the underlying character; subscript on bytes returns the int
+# byte value. The dispatch runs at runtime via bufferp / stringp.
+s = "hello"
+print("  s = 'hello', s[0]:", s[0], ", s[4]:", s[4])
+print("  len(s[0]):", len(s[0]))
+b = bytes([65, 66, 67])
+print("  b = bytes([65,66,67]), b[0]:", b[0], ", b[2]:", b[2])
 # Note: Negative indexing not yet supported
 # print("  Negative index lst[-1]:", lst[-1])
 
