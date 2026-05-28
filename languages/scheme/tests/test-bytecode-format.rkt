@@ -138,9 +138,9 @@
 ;; Form type is bits 6-5, extracted as (header >> 5) & 3
 (define inline-type (bitwise-and (arithmetic-shift inline-header -5) #x03))
 (check-equal? inline-type 0 "Inline form type is 0")
-;; Arg count is the low 6 bits of the header (see VM_GET_ARGC). For
+;; Arg count is the low 5 bits of the header (see VM_GET_ARGC). For
 ;; (+ 1 2) the count is 3: operator + two args.
-(define inline-argc (bitwise-and inline-header #x3F))
+(define inline-argc (bitwise-and inline-header #x1F))
 (check-equal? inline-argc 3 "Inline form argc is operator + 2 args")
 (displayln (format "  Inline form header: 0x~x, argc: ~a"
                    inline-header inline-argc))

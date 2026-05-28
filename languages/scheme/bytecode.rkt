@@ -320,21 +320,24 @@
 ;; Form Encoding
 ;; ============================================================================
 
-;; Inline form arg-count field is 6 bits.
-(define VM-MAX-INLINE-ARGC 63)
+;; Inline form arg-count field is 5 bits (bits 4-0). Bit 5 belongs
+;; to the form-type field -- a header with bit 5 set decodes as
+;; VM_FORM_LAMBDA and the call is treated as a reference to a
+;; nonexistent expression.
+(define VM-MAX-INLINE-ARGC 31)
 
 (define (encode-form-inline arg-count)
   ;; Inline form: single byte encoding
   ;; Bit 7: 1 (FORM token)
   ;; Bits 6-5: 00 (form-type=INLINE, extracted via >> 5 & 3)
-  ;; Bits 5-0: arg-count (6 bits, max 63)
+  ;; Bits 4-0: arg-count (5 bits, max 31)
   (when (> arg-count VM-MAX-INLINE-ARGC)
     (error 'encode-form-inline
            "too many arguments in form (~a exceeds VM inline limit of ~a)"
            arg-count VM-MAX-INLINE-ARGC))
   (let ([header (bitwise-ior #x80                     ; bit 7 = 1 (FORM token)
                              (arithmetic-shift 0 5)   ; bits 6-5 = 0 (INLINE)
-                             (bitwise-and arg-count #x3F))]) ; bits 5-0 = argc
+                             (bitwise-and arg-count #x1F))]) ; bits 4-0 = argc
     (expr-encoding 'form (bytes header))))
 
 ;; Lambda/ref form expr-id: 4 bits (simple) or 12 bits (extended, 4+8).
