@@ -211,6 +211,39 @@ class TestListTranslation(unittest.TestCase):
         self.assertIsInstance(result, bytes)
         self.assertTrue(len(self.bc.expressions) > 0)
 
+    def test_list_at_chunk_boundary(self):
+        """A list right at the chunk size emits a single inline call
+        (no append chain)."""
+        n = self.translator._LIST_LITERAL_CHUNK
+        src = "[" + ", ".join(str(i) for i in range(n)) + "]"
+        before = len(self.bc.expressions)
+        result = self.translator.translate_expr(ast.parse(src).body[0].value)
+        self.assertIsInstance(result, bytes)
+        # No hoisted append-chunks should have appeared.
+        self.assertEqual(len(self.bc.expressions), before)
+
+    def test_large_list_literal_chunks(self):
+        """A list literal that would exceed the inline-form argc cap
+        is split into chunks joined by `append`. Bug history: prior
+        to the encoder fix, a list of 32+ elements emitted a header
+        byte whose argc bit 5 collided with the form-type field, so
+        the call decoded as a LAMBDA form pointing at a nonexistent
+        expression.
+        """
+        # 45 elements -- enough to need multiple chunks for any
+        # reasonable _LIST_LITERAL_CHUNK setting.
+        src = "[" + ", ".join(str(i) for i in range(45)) + "]"
+        result = self.translator.translate_expr(ast.parse(src).body[0].value)
+        self.assertIsInstance(result, bytes)
+        # First byte must be a valid INLINE-form header (form_type 0),
+        # not a LAMBDA / REF mis-decode.
+        header = result[0]
+        self.assertEqual(header & 0x80, 0x80, "must be a FORM token")
+        self.assertEqual((header >> 5) & 0x03, 0,
+                         "must be VM_FORM_INLINE, not LAMBDA/REF")
+        # And argc must be representable in 5 bits.
+        self.assertLessEqual(header & 0x1F, 31)
+
 
 class TestFunctionTranslation(unittest.TestCase):
     """Test function definition and calls."""

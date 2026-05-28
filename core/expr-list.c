@@ -294,6 +294,14 @@ VM_FUNCTION(slice)
     vm_string_t *result_string;
 
     string = argv[0].value.string;
+    /* String-table-backed literals carry a string_id rather than an
+       inline char buffer; resolve once so ->str points at the real
+       bytes before we memcpy. Without this the resulting substring
+       comes from a stale or NULL pointer. */
+    if(vm_string_resolve(thread, string) == NULL) {
+      vm_signal_error(thread, VM_ERROR_STRING_ID);
+      return;
+    }
     length = string->length;
     normalize_slice_bounds(length, &start, &end);
 

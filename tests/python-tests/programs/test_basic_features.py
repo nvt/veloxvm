@@ -67,6 +67,40 @@ print("  List:", lst)
 print("  Length:", len(lst))
 print("  First element lst[0]:", lst[0])
 print("  Last element lst[4]:", lst[4])
+
+# Subscript on a string returns a 1-char string (Python semantics),
+# not the underlying character; subscript on bytes returns the int
+# byte value. The dispatch runs at runtime via bufferp / stringp.
+s = "hello"
+print("  s = 'hello', s[0]:", s[0], ", s[4]:", s[4])
+print("  len(s[0]):", len(s[0]))
+b = bytes([65, 66, 67])
+print("  b = bytes([65,66,67]), b[0]:", b[0], ", b[2]:", b[2])
+
+# `+` dispatches at runtime on the left operand's type so that list
+# + list and str + str work even when neither side is a literal.
+# Earlier the no-literal path fell through to numeric `add` and
+# crashed on list-var + list-var.
+xs = [1, 2, 3]
+ys = [4, 5]
+print("  xs + ys:", xs + ys, "len:", len(xs + ys))
+hello = "hello"
+space_world = " world"
+print("  hello + space_world:", hello + space_world)
+empty = []
+print("  empty + xs:", empty + xs)
+# Numeric path must still work.
+n = 5
+m = 7
+print("  5 + 7 = (n + m):", n + m)
+
+# `lst.pop()` returns and removes the last element. The VM's `pop`
+# primitive is a stub since the VM_TYPE_LIST retirement; pyvelox
+# lowers pop to a let-chain so the call no longer reaches it.
+stk = [10, 20, 30, 40]
+last = stk.pop()
+print("  stk after pop:", stk, ", popped:", last, ", len:", len(stk))
+print("  next pop:", stk.pop(), ", stk:", stk)
 # Note: Negative indexing not yet supported
 # print("  Negative index lst[-1]:", lst[-1])
 
@@ -121,6 +155,18 @@ print("    x, y = [1, 2]: x =", x, ", y =", y)
 
 p, q, r = [10, 20, 30]
 print("    p, q, r = [10,20,30]: p =", p, ", q =", q, ", r =", r)
+
+# Regression: the RHS of an unpack must evaluate exactly once, not
+# once per target. Earlier translator versions embedded the RHS
+# form-ref directly into each list_ref, firing side effects N times.
+_unpack_count = 0
+def make_pair():
+    global _unpack_count
+    _unpack_count = _unpack_count + 1
+    return [99, 100]
+u, v = make_pair()
+print("    u, v from make_pair(): u =", u, ", v =", v,
+      ", calls =", _unpack_count, "(want 1)")
 
 print("  OK: Variable operations work")
 

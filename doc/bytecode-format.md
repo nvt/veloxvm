@@ -205,7 +205,7 @@ Symbols reference entries in the symbol table:
 Single byte encoding:
 Bit 7:    1 (FORM token)
 Bits 6-5: 00 (INLINE form type)
-Bits 5-0: argument count (0-63, includes operator + arguments)
+Bits 4-0: argument count (0-31, includes operator + arguments)
 ```
 
 **IMPORTANT**: The inline form instruction must appear FIRST in the bytecode sequence, followed by the operator and then the arguments. For example, the expression `(+ 10 20)` is encoded as:
@@ -217,7 +217,7 @@ Bits 5-0: argument count (0-63, includes operator + arguments)
 Inline forms represent direct function calls with the argument count specified.
 The form ID is 0 for inline forms (the instruction is executed directly without a form table lookup).
 
-The argc is extracted as `(byte & 63)`, which is bits 5-0, allowing values 0-63.
+The argc field is bits 4-0 (extracted as `byte & 31`), allowing values 0-31. Bit 5 is reserved as the low bit of the form-type field (bits 6-5): a header byte with bit 5 set would be parsed as VM_FORM_LAMBDA, so argc cannot extend into that bit. Each port further constrains the runtime argc with `VM_OBJECT_STACK_SIZE`.
 
 ### Form - Lambda/Reference (VM_FORM_LAMBDA or VM_FORM_REF)
 

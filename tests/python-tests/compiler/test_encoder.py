@@ -189,15 +189,33 @@ class TestFormEncoding(unittest.TestCase):
         self.assertEqual(result[0], 0x83)  # 0x80 | 3
 
     def test_inline_form_max(self):
-        """Test encoding inline form with max argc (63)."""
-        result = encode_inline_form(63)
+        """Test encoding inline form with max argc (31)."""
+        result = encode_inline_form(31)
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0], 0xBF)  # 0x80 | 63
+        # bit 7 set (FORM), bits 6-5 clear (INLINE), bits 4-0 = 11111
+        self.assertEqual(result[0], 0x9F)
 
     def test_inline_form_invalid(self):
-        """Test that invalid argc raises error."""
+        """argc > 31 must be refused: bit 5 would collide with the
+        form-type field and the byte would mis-decode as LAMBDA."""
+        with self.assertRaises(ValueError):
+            encode_inline_form(32)
         with self.assertRaises(ValueError):
             encode_inline_form(64)
+        with self.assertRaises(ValueError):
+            encode_inline_form(-1)
+
+    def test_inline_form_does_not_collide_with_lambda(self):
+        """No valid inline-form header byte should look like a
+        LAMBDA form (bits 6-5 == 01). This guards against the
+        historical 6-bit argc encoding that miscompiled large
+        list/dict literals as references to nonexistent expressions.
+        """
+        for argc in range(0, 32):
+            header = encode_inline_form(argc)[0]
+            form_type = (header >> 5) & 0x03
+            self.assertEqual(form_type, 0,
+                             f"argc={argc} encoded as form_type {form_type}")
 
     def test_form_ref_simple(self):
         """Test encoding simple form reference (ID < 16)."""

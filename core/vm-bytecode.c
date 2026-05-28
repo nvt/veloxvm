@@ -57,7 +57,8 @@
 #define VM_GET_BOOLEAN(thread)      (VM_GET_EMBEDDED(thread) & 1)
 #define VM_GET_INTEGER_SIZE(thread) ((unsigned)(VM_GET_EMBEDDED(thread) & 7))
 #define VM_GET_INTEGER_SIGN(thread) ((unsigned)(VM_GET_EMBEDDED(thread) >> 3))
-#define VM_GET_ARGC(thread)         ((unsigned)(VM_IP(thread) & 63))
+/* argc is 5 bits (bits 4-0). */
+#define VM_GET_ARGC(thread)         ((unsigned)(VM_IP(thread) & 31))
 
 static vm_integer_t
 get_integer(vm_thread_t *thread)

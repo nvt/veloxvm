@@ -221,23 +221,33 @@ def encode_symbol(name: str, bc: Bytecode) -> bytes:
         return bytes([header, sym_byte, low])
 
 
+INLINE_FORM_MAX_ARGC = 31
+
+
 def encode_inline_form(argc: int) -> bytes:
     """
     Encode an inline form header.
 
     Format:
-    - Byte 0: bit 7=1 (FORM), bits 6-5=00 (INLINE), bits 5-0=argc
+    - Byte 0: bit 7=1 (FORM), bits 6-5=00 (INLINE), bits 4-0=argc
+
+    argc covers the operator plus its arguments. The field is 5 bits
+    wide (max 31): bits 6-5 carry the form type, so bit 5 cannot be
+    reused for argc -- a header byte with bit 5 set would be parsed
+    as VM_FORM_LAMBDA (`(form_type >> 5) & 3 == 1`), silently
+    decoding the call as a reference to a non-existent expression.
 
     Args:
-        argc: Argument count (0-63), includes operator + arguments
+        argc: Argument count (0-31), includes operator + arguments
 
     Returns:
         1-byte encoding
     """
-    if not (0 <= argc <= 63):
-        raise ValueError(f"Inline form argc must be 0-63, got {argc}")
+    if not (0 <= argc <= INLINE_FORM_MAX_ARGC):
+        raise ValueError(
+            f"Inline form argc must be 0-{INLINE_FORM_MAX_ARGC}, got {argc}")
 
-    return bytes([0x80 | (VM_FORM_INLINE << 5) | (argc & 0x3F)])
+    return bytes([0x80 | (VM_FORM_INLINE << 5) | (argc & 0x1F)])
 
 
 def encode_form_lambda(expr_id: int) -> bytes:

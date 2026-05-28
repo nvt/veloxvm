@@ -578,16 +578,45 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             return parts[0]
         return create_inline_call('string_append', parts, self.bc)
 
+    # Chunk size for breaking up large list / tuple / dict literals
+    # so the emitted (list ...) calls stay below VM_OBJECT_STACK_SIZE
+    # at runtime. The bytecode format itself permits up to 31 args
+    # per inline call, but each port caps the per-frame argv at
+    # VM_OBJECT_STACK_SIZE (typically 16); leaving one slot for the
+    # `list`/`append` operator gives 14 elements per chunk.
+    _LIST_LITERAL_CHUNK = 14
+
+    def _build_list_call(self, elems: list) -> bytes:
+        """Emit `(list e1 ... eN)` for small N, or a right-fold of
+        `(append (list ...) (append (list ...) ...))` for N that
+        would otherwise exceed the inline-form argc cap.
+
+        Each chunk is itself a small inline call; chunks beyond the
+        first are auto-hoisted by `create_inline_call` when they
+        appear as inline-form arguments."""
+        chunk = self._LIST_LITERAL_CHUNK
+        if len(elems) <= chunk:
+            return create_inline_call('list', elems, self.bc)
+        chunks = [create_inline_call('list', elems[i:i + chunk], self.bc)
+                  for i in range(0, len(elems), chunk)]
+        result = chunks[-1]
+        for piece in reversed(chunks[:-1]):
+            result = create_inline_call('append', [piece, result], self.bc)
+        return result
+
     def translate_list(self, node) -> bytes:
         """Translate `[1, 2, 3]` or `(1, 2, 3)` to `(list 1 2 3)`.
 
         Tuples are represented as lists in VeloxVM (both are
         immutable from the user's perspective), so list and tuple
         literals share this handler. Complex elements are stored
-        separately so the inline form's argc cap doesn't bite.
+        separately so the inline form's argc cap doesn't bite, and
+        literals beyond the chunk size are stitched together with
+        `append` so they survive the inline-form argc cap and the
+        runtime per-frame argv cap.
         """
         elem_bytecode = [self.translate_expr_with_ref(e) for e in node.elts]
-        return create_inline_call('list', elem_bytecode, self.bc)
+        return self._build_list_call(elem_bytecode)
 
     translate_tuple = translate_list
 
@@ -595,7 +624,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         """
         Translate a dict literal to association list.
         {'a': 1, 'b': 2} -> (list (cons 'a 1) (cons 'b 2))
-        Complex keys/values stored separately.
+        Complex keys/values stored separately. Large dict literals
+        are chunked the same way as list literals.
         """
         pairs = []
 
@@ -608,8 +638,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             # Store each cons pair separately
             pairs.append(self._hoist(pair_bytes))
 
-        # Wrap in (list pair1 pair2 ...)
-        return create_inline_call('list', pairs, self.bc)
+        return self._build_list_call(pairs)
 
     def translate_name(self, node: ast.Name) -> bytes:
         """Translate a variable reference."""
@@ -684,9 +713,25 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
 
         current_scope = self.scope_stack[-1]
         defines = []
+
+        # Evaluate the RHS exactly once. For complex expressions
+        # `translate_expr_with_ref` returned a form-ref to the
+        # underlying call; embedding that ref once per target would
+        # re-fire the expression's side effects per name. Hoist it
+        # into a unique temp `define`d in the current scope so the
+        # list_refs below only read a symbol token.
+        if self.encodes_as_single_token(value_expr):
+            rhs_token = value_bytes
+        else:
+            tmp_name = self.bc.get_unique_var_name("_unpack")
+            rhs_token = encode_symbol(tmp_name, self.bc)
+            defines.append(create_inline_call(
+                'define', [rhs_token, value_bytes], self.bc))
+            current_scope.add(tmp_name)
+
         for i, name in enumerate(target_names):
             list_ref = create_inline_call(
-                'list_ref', [value_bytes, encode_integer(i)], self.bc)
+                'list_ref', [rhs_token, encode_integer(i)], self.bc)
             defines.append(create_inline_call(
                 'define', [encode_symbol(name, self.bc), list_ref], self.bc))
             current_scope.add(name)
@@ -2508,20 +2553,52 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         """
         # Special handling for string and list concatenation
         if isinstance(node.op, ast.Add):
-            # Check if both operands are string literals
-            if (isinstance(node.left, ast.Constant) and isinstance(node.left.value, str) and
-                isinstance(node.right, ast.Constant) and isinstance(node.right.value, str)):
-                # String concatenation
-                left_bytes = self.translate_expr_with_ref(node.left)
-                right_bytes = self.translate_expr_with_ref(node.right)
-                return create_inline_call('string_append', [left_bytes, right_bytes], self.bc)
+            left_is_str_lit = (isinstance(node.left, ast.Constant)
+                               and isinstance(node.left.value, str))
+            right_is_str_lit = (isinstance(node.right, ast.Constant)
+                                and isinstance(node.right.value, str))
+            left_is_list_lit = isinstance(node.left, ast.List)
+            right_is_list_lit = isinstance(node.right, ast.List)
 
-            # Check if either operand is a list literal (for list concatenation)
-            if isinstance(node.left, ast.List) or isinstance(node.right, ast.List):
-                # List concatenation
+            # Static dispatch when at least one operand is a literal
+            # whose type we know: the other operand has to match (a
+            # type mismatch is a runtime error either way), so we
+            # avoid the dispatch overhead.
+            if left_is_str_lit or right_is_str_lit:
                 left_bytes = self.translate_expr_with_ref(node.left)
                 right_bytes = self.translate_expr_with_ref(node.right)
-                return create_inline_call('append', [left_bytes, right_bytes], self.bc)
+                return create_inline_call(
+                    'string_append', [left_bytes, right_bytes], self.bc)
+            if left_is_list_lit or right_is_list_lit:
+                left_bytes = self.translate_expr_with_ref(node.left)
+                right_bytes = self.translate_expr_with_ref(node.right)
+                return create_inline_call(
+                    'append', [left_bytes, right_bytes], self.bc)
+
+            # Neither operand is a literal whose type we can read
+            # off the AST. Dispatch at runtime on the left operand
+            # so that `lst + lst2`, `"x" + var`, and `1 + 2` all do
+            # the right thing. Without this, the fall-through to
+            # numeric `add` crashed on list-var + list-var. Both
+            # operands are read across multiple branches, so each is
+            # wrapped in `_evaluate_once`.
+            def build_with_right(right_token: bytes) -> bytes:
+                def build_with_left(left_token: bytes) -> bytes:
+                    str_branch = create_inline_call(
+                        'string_append',
+                        [left_token, right_token], self.bc)
+                    list_branch = create_inline_call(
+                        'append', [left_token, right_token], self.bc)
+                    add_branch = create_inline_call(
+                        'add', [left_token, right_token], self.bc)
+                    return self._emit_type_dispatch(
+                        left_token,
+                        [('stringp', str_branch),
+                         ('pairp', list_branch),
+                         ('nullp', list_branch)],
+                        add_branch)
+                return self._evaluate_once(node.left, build_with_left)
+            return self._evaluate_once(node.right, build_with_right)
 
         op_map = {
             ast.Add: 'add',
@@ -3306,25 +3383,34 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             # Get the value from the pair with cdr
             return create_inline_call('cdr', [assoc_ref], self.bc)
 
-        # Sequence access. `list-ref` handles lists and strings;
-        # `bytes` is a buffer-flagged vector and needs `vector-ref`,
-        # which on a buffer returns a character — convert back to the
-        # int the Python user expects. Dispatch on `vectorp` so
-        # `lst[i]` and `b[i]` both work. Both the receiver and the
-        # index are read in two branches plus the predicate, so each
-        # is wrapped in `_evaluate_once` to avoid re-executing the
-        # underlying expression three times.
+        # Sequence access dispatched at runtime on the receiver
+        # type. `bytes` is a buffer-flagged vector -- note that the
+        # `vectorp` predicate returns FALSE for buffers, so the
+        # bytes branch must use `bufferp` -- and `vector-ref` on a
+        # buffer returns a character, which we convert back to the
+        # int Python's `b[i]` returns. Strings would error out under
+        # `list-ref` (which only accepts pair receivers), so route
+        # them through `slice` to get a 1-char string back, matching
+        # Python's `s[i]` returning a single-character string. Lists
+        # fall through to `list-ref`. Receiver and index are read
+        # across the predicates plus several branches, so each is
+        # wrapped in `_evaluate_once`.
         def build_with_idx(idx_token: bytes) -> bytes:
             def build_with_recv(recv_token: bytes) -> bytes:
                 vec_ref = create_inline_call(
                     'vector_ref', [recv_token, idx_token], self.bc)
-                vec_branch = create_inline_call(
+                bytes_branch = create_inline_call(
                     'char_to_integer', [vec_ref], self.bc)
+                idx_plus_one = create_inline_call(
+                    'add', [idx_token, encode_integer(1)], self.bc)
+                str_branch = create_inline_call(
+                    'slice',
+                    [recv_token, idx_token, idx_plus_one], self.bc)
                 list_branch = create_inline_call(
                     'list_ref', [recv_token, idx_token], self.bc)
                 return self._emit_type_dispatch(
                     recv_token,
-                    [('vectorp', vec_branch)],
+                    [('bufferp', bytes_branch), ('stringp', str_branch)],
                     list_branch)
             return self._evaluate_once(node.value, build_with_recv)
         return self._evaluate_once(node.slice, build_with_idx)
