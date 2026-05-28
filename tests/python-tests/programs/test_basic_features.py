@@ -122,6 +122,18 @@ print("    x, y = [1, 2]: x =", x, ", y =", y)
 p, q, r = [10, 20, 30]
 print("    p, q, r = [10,20,30]: p =", p, ", q =", q, ", r =", r)
 
+# Regression: the RHS of an unpack must evaluate exactly once, not
+# once per target. Earlier translator versions embedded the RHS
+# form-ref directly into each list_ref, firing side effects N times.
+_unpack_count = 0
+def make_pair():
+    global _unpack_count
+    _unpack_count = _unpack_count + 1
+    return [99, 100]
+u, v = make_pair()
+print("    u, v from make_pair(): u =", u, ", v =", v,
+      ", calls =", _unpack_count, "(want 1)")
+
 print("  OK: Variable operations work")
 
 # ============================================================================

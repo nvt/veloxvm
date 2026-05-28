@@ -713,9 +713,25 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
 
         current_scope = self.scope_stack[-1]
         defines = []
+
+        # Evaluate the RHS exactly once. For complex expressions
+        # `translate_expr_with_ref` returned a form-ref to the
+        # underlying call; embedding that ref once per target would
+        # re-fire the expression's side effects per name. Hoist it
+        # into a unique temp `define`d in the current scope so the
+        # list_refs below only read a symbol token.
+        if self.encodes_as_single_token(value_expr):
+            rhs_token = value_bytes
+        else:
+            tmp_name = self.bc.get_unique_var_name("_unpack")
+            rhs_token = encode_symbol(tmp_name, self.bc)
+            defines.append(create_inline_call(
+                'define', [rhs_token, value_bytes], self.bc))
+            current_scope.add(tmp_name)
+
         for i, name in enumerate(target_names):
             list_ref = create_inline_call(
-                'list_ref', [value_bytes, encode_integer(i)], self.bc)
+                'list_ref', [rhs_token, encode_integer(i)], self.bc)
             defines.append(create_inline_call(
                 'define', [encode_symbol(name, self.bc), list_ref], self.bc))
             current_scope.add(name)
