@@ -53,8 +53,11 @@ struct vm_policy_reaction_rule default_reaction_rules[] = {
   {VM_POLICY_TYPE_THREADS, VM_POLICY_REACTION_EXCEPTION}
 };
 
-/* The default policy. */
-static const vm_policy_t default_policy;
+/* The fallback policy applied to any program that does not match a
+   named policy. Populated by vm_policy_define() in the active
+   vm-policy-defs-*.c file; left empty (deny-by-default) if that
+   function adds no rules. */
+vm_policy_t vm_policy_default = { .program_name = "(default)" };
 
 /* A linked list of active VM policies. */
 static vm_policy_t *policies;
@@ -196,7 +199,7 @@ vm_policy_init_program(vm_program_t *program)
 
   program->policy = find_policy(program->name);
   if(program->policy == NULL) {
-    program->policy = &default_policy;
+    program->policy = &vm_policy_default;
     VM_DEBUG(VM_DEBUG_LOW, "Policy for program \"%s\": *DEFAULT*",
              program->name);
   } else {

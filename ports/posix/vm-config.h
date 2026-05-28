@@ -49,7 +49,7 @@
 /* Superuser mode entails that the VM runs programs without
    enforcing any security policies. */
 #ifndef VM_SUPERUSER_MODE
-#define VM_SUPERUSER_MODE 1
+#define VM_SUPERUSER_MODE 0
 #endif
 
 /* This setting determined whether to keep the VM running even if there

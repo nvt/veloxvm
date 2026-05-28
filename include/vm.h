@@ -413,6 +413,9 @@ int vm_policy_add_rule(vm_policy_t *, vm_policy_rule_t *);
 void vm_policy_print(const vm_policy_t *);
 vm_policy_reaction_t vm_policy_default_reaction(vm_policy_type_t);
 
+/* Fallback policy attached to programs without a named policy. */
+extern vm_policy_t vm_policy_default;
+
 /* VM policy enforcement functions. (vm-policy-enforce.c) */
 vm_boolean_t vm_policy_check_bandwidth(vm_thread_t *);
 vm_boolean_t vm_policy_check_cpu(vm_program_t *, unsigned);

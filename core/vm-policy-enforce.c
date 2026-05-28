@@ -249,6 +249,10 @@ vm_policy_check_file(vm_thread_t *thread, const char *path, unsigned mode)
     for(rule = policy->rules[VM_POLICY_TYPE_FILE];
 	rule != NULL;
 	rule = rule->next) {
+      if(rule->file.path != NULL &&
+         (rule->file.path[0] == '*' && rule->file.path[1] == '\0')) {
+        return VM_TRUE;
+      }
       if(strcmp(path, rule->file.path) == 0) {
 	return VM_TRUE;
       }
@@ -292,6 +296,9 @@ vm_policy_check_net(vm_thread_t *thread,
     for(rule = policy->rules[VM_POLICY_TYPE_NET];
 	rule != NULL;
 	rule = rule->next) {
+      if(rule->net.port == 0 && rule->net.address == NULL) {
+        return VM_TRUE;
+      }
       if(rule->net.port == port) {
 	VM_DEBUG(VM_DEBUG_MEDIUM, "Found a rule with a matching port (%u)\n",
 		 port);
