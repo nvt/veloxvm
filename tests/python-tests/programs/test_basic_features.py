@@ -94,6 +94,16 @@ n = 5
 m = 7
 print("  5 + 7 = (n + m):", n + m)
 
+# `*` dispatches at runtime so seq * n and seq-var * n both repeat,
+# without falling through to numeric `multiply` and crashing.
+print("  'ab' * 3:", "ab" * 3, "len:", len("ab" * 3))
+s_for_mul = "hi"
+print("  s * 4:", s_for_mul * 4)
+ys_for_mul = [1, 2]
+print("  ys * 3:", ys_for_mul * 3, "len:", len(ys_for_mul * 3))
+# Numeric * must still take the fast path.
+print("  6 * 7:", 6 * 7)
+
 # `lst.pop()` returns and removes the last element. The VM's `pop`
 # primitive is a stub since the VM_TYPE_LIST retirement; pyvelox
 # lowers pop to a let-chain so the call no longer reaches it.

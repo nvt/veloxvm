@@ -2315,6 +2315,67 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             self.bc)
         self._preamble.extend(define_invoke)
 
+    def _emit_repeat_helpers(self) -> None:
+        """Emit `_pyvelox_str_repeat` and `_pyvelox_list_repeat` into
+        the program prologue. Idempotent. These back the `*`
+        operator's sequence-repetition branches (`"x" * n`, `[1] * n`).
+
+        Both are straight recursive helpers, not tail-recursive --
+        each iteration cons-prepends one copy of the sequence onto
+        the recursion result. Adequate for typical use (decorative
+        repeats, small replicas); very large `n` will exhaust the VM
+        context stack.
+        """
+        if '_pyvelox_str_repeat' in self._emitted_helpers:
+            return
+        self._emitted_helpers.add('_pyvelox_str_repeat')
+
+        sym_s = lambda: encode_symbol('s', self.bc)
+        sym_n = lambda: encode_symbol('n', self.bc)
+        sym_lst = lambda: encode_symbol('lst', self.bc)
+        n_minus_one = lambda: create_inline_call(
+            'subtract', [sym_n(), encode_integer(1)], self.bc)
+        n_at_floor = lambda: create_inline_call(
+            'less_than_equal', [sym_n(), encode_integer(0)], self.bc)
+
+        # _pyvelox_str_repeat(s, n) -> n copies of s concatenated.
+        str_recur = create_inline_call(
+            '_pyvelox_str_repeat', [sym_s(), n_minus_one()], self.bc)
+        str_body = create_inline_call(
+            'if',
+            [n_at_floor(),
+             encode_string('', self.bc),
+             create_inline_call(
+                 'string_append', [sym_s(), str_recur], self.bc)],
+            self.bc)
+        str_lambda_ref = self._emit_lambda(
+            ['s', 'n'], str_body, is_function=True)
+        define_str = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_str_repeat', self.bc),
+             str_lambda_ref],
+            self.bc)
+        self._preamble.extend(define_str)
+
+        # _pyvelox_list_repeat(lst, n) -> lst appended to itself n times.
+        list_recur = create_inline_call(
+            '_pyvelox_list_repeat', [sym_lst(), n_minus_one()], self.bc)
+        list_body = create_inline_call(
+            'if',
+            [n_at_floor(),
+             create_inline_call('list', [], self.bc),
+             create_inline_call(
+                 'append', [sym_lst(), list_recur], self.bc)],
+            self.bc)
+        list_lambda_ref = self._emit_lambda(
+            ['lst', 'n'], list_body, is_function=True)
+        define_list = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_list_repeat', self.bc),
+             list_lambda_ref],
+            self.bc)
+        self._preamble.extend(define_list)
+
     def translate_lambda(self, node: ast.Lambda) -> bytes:
         """Translate `lambda x: expr` — Python lambdas are real
         functions (like `def`), so they get `bind_function`. Unlike
@@ -3059,6 +3120,56 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                         add_branch)
                 return self._evaluate_once(node.left, build_with_left)
             return self._evaluate_once(node.right, build_with_right)
+
+        # `*` is similarly polymorphic in Python: `seq * n` repeats
+        # the sequence. The numeric `multiply` primitive crashes on
+        # string / pair / nil receivers, so the same shape applies:
+        # static fast path when one operand is a literal whose type
+        # we know, runtime dispatch on the left otherwise.
+        if isinstance(node.op, ast.Mult):
+            left_is_str_lit = (isinstance(node.left, ast.Constant)
+                               and isinstance(node.left.value, str))
+            right_is_str_lit = (isinstance(node.right, ast.Constant)
+                                and isinstance(node.right.value, str))
+            left_is_list_lit = isinstance(node.left, ast.List)
+            right_is_list_lit = isinstance(node.right, ast.List)
+
+            if (left_is_str_lit or right_is_str_lit
+                    or left_is_list_lit or right_is_list_lit):
+                self._emit_repeat_helpers()
+                # Sequence always goes first to the helper; the count
+                # is the other side.
+                seq_first = left_is_str_lit or left_is_list_lit
+                seq_node = node.left if seq_first else node.right
+                n_node = node.right if seq_first else node.left
+                seq_bytes = self.translate_expr_with_ref(seq_node)
+                n_bytes = self.translate_expr_with_ref(n_node)
+                helper = ('_pyvelox_str_repeat'
+                          if (left_is_str_lit or right_is_str_lit)
+                          else '_pyvelox_list_repeat')
+                return create_inline_call(
+                    helper, [seq_bytes, n_bytes], self.bc)
+
+            self._emit_repeat_helpers()
+
+            def build_with_right_mul(right_token: bytes) -> bytes:
+                def build_with_left_mul(left_token: bytes) -> bytes:
+                    str_branch = create_inline_call(
+                        '_pyvelox_str_repeat',
+                        [left_token, right_token], self.bc)
+                    list_branch = create_inline_call(
+                        '_pyvelox_list_repeat',
+                        [left_token, right_token], self.bc)
+                    mul_branch = create_inline_call(
+                        'multiply', [left_token, right_token], self.bc)
+                    return self._emit_type_dispatch(
+                        left_token,
+                        [('stringp', str_branch),
+                         ('pairp', list_branch),
+                         ('nullp', list_branch)],
+                        mul_branch)
+                return self._evaluate_once(node.left, build_with_left_mul)
+            return self._evaluate_once(node.right, build_with_right_mul)
 
         op_map = {
             ast.Add: 'add',
