@@ -204,23 +204,61 @@ class _MethodHandlers:
                 'append', [token, other_bytes], self.bc))
 
     def translate_list_pop(self, list_expr: ast.expr, args: List[ast.expr]) -> bytes:
+        """Translate `lst.pop()` to a let-chain that drops the tail
+        of `lst` and returns the popped element.
+
+        The VM's `pop` primitive was stubbed during the VM_TYPE_LIST
+        retirement and always errors with UNIMPLEMENTED, so this can
+        no longer route through a single VM call. Lower instead to::
+
+            ((lambda (_n)
+               ((lambda (_v)
+                  (begin (set! lst (slice lst 0 _n)) _v))
+                (list-ref lst _n)))
+             (- (length lst) 1))
+
+        `_n` is bound once so `length(lst)` runs a single time;
+        `_v` snapshots the popped element before the slice rebinds
+        `lst`. Only the no-argument form is supported -- pop(i) is
+        rejected at compile time so the missing semantics don't
+        silently produce the wrong answer.
         """
-        Translate lst.pop() -> (pop lst)
+        if not isinstance(list_expr, ast.Name):
+            raise NotImplementedError(
+                "list.pop() only supports simple variable targets")
+        if len(args) > 0:
+            raise NotImplementedError(
+                "list.pop(index) not yet supported, use pop() without args")
 
-        Note: VeloxVM's pop returns the last element but doesn't modify the list.
-        For mutation, we'd need: (let ((val (pop lst))) (set! lst (reverse (cdr (reverse lst)))) val)
-        For now, just return the value without mutation.
-        """
-        if len(args) > 1:
-            raise ValueError("list.pop() takes at most 1 argument")
+        lst_token = encode_symbol(
+            self.get_safe_name(list_expr.id), self.bc)
 
-        if len(args) == 1:
-            raise NotImplementedError("list.pop(index) not yet supported, use pop() without args")
+        n_name = self.bc.get_unique_var_name("_pop_n")
+        n_token = encode_symbol(n_name, self.bc)
+        v_name = self.bc.get_unique_var_name("_pop_v")
+        v_token = encode_symbol(v_name, self.bc)
 
-        list_bytes = self.translate_expr_with_ref(list_expr)
+        new_lst = create_inline_call(
+            'slice',
+            [lst_token, encode_integer(0), n_token], self.bc)
+        mutate = create_inline_call(
+            'set', [lst_token, new_lst], self.bc)
+        inner_body = create_inline_call(
+            'begin', [mutate, v_token], self.bc)
+        inner_lambda = self._emit_lambda([v_name], inner_body)
 
-        # Simple version: just return last element (no mutation)
-        return create_inline_call('pop', [list_bytes], self.bc)
+        popped_val = create_inline_call(
+            'list_ref', [lst_token, n_token], self.bc)
+        outer_body = create_inline_call(
+            inner_lambda, [popped_val], self.bc)
+        outer_lambda = self._emit_lambda([n_name], outer_body)
+
+        n_expr = create_inline_call(
+            'subtract',
+            [create_inline_call('length', [lst_token], self.bc),
+             encode_integer(1)],
+            self.bc)
+        return create_inline_call(outer_lambda, [n_expr], self.bc)
 
     def translate_list_remove(self, list_expr: ast.expr,
                               args: List[ast.expr]) -> bytes:

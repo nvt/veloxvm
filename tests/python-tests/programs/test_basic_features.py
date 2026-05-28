@@ -93,6 +93,14 @@ print("  empty + xs:", empty + xs)
 n = 5
 m = 7
 print("  5 + 7 = (n + m):", n + m)
+
+# `lst.pop()` returns and removes the last element. The VM's `pop`
+# primitive is a stub since the VM_TYPE_LIST retirement; pyvelox
+# lowers pop to a let-chain so the call no longer reaches it.
+stk = [10, 20, 30, 40]
+last = stk.pop()
+print("  stk after pop:", stk, ", popped:", last, ", len:", len(stk))
+print("  next pop:", stk.pop(), ", stk:", stk)
 # Note: Negative indexing not yet supported
 # print("  Negative index lst[-1]:", lst[-1])
 
