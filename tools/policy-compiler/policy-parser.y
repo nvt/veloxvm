@@ -46,15 +46,27 @@
 #define DEFAULT_VM_BASE_DIR "../../"
 #define POLICY_DEFINITION_FILE "core/policies/vm-policy-defs-custom.c"
 
-#define ADD_RULE(fp) \
-  fprintf((fp), "  if(vm_policy_add_rule(p, &rule) == 0) {\n    return 0;\n  }\n\n");
-
 /* The values of these flags must match those defined in vm-policy.h. */
 #define VM_POLICY_RESOURCE_SUPERUSER 0x01
 #define VM_POLICY_RESOURCE_CONSOLE   0x02
 #define VM_POLICY_RESOURCE_DNS       0x04
 #define VM_POLICY_RESOURCE_IPC       0x08
 #define VM_POLICY_RESOURCE_STATS     0x10
+
+/* Mirror of vm_policy_reaction_t. USE_DEFAULT is the sentinel the
+   loader resolves to the type-specific default. */
+#define VM_POLICY_REACTION_EXCEPTION   0
+#define VM_POLICY_REACTION_REPORT      1
+#define VM_POLICY_REACTION_SLOWDOWN    2
+#define VM_POLICY_REACTION_KILL        3
+#define VM_POLICY_REACTION_USE_DEFAULT 4
+
+#define ADD_RULE(fp) do {                                                  \
+  fprintf((fp), "  rule.reaction = %s;\n",                                 \
+          reaction_c_name(current_rule_reaction));                         \
+  fprintf((fp), "  if(vm_policy_add_rule(p, &rule) == 0) {\n"              \
+                "    return 0;\n  }\n\n");                                 \
+} while(0)
 
 extern int yylex();
 extern int yylineno;
@@ -74,6 +86,14 @@ struct policy_class {
 static char file_path[PATH_MAX];
 static uint8_t resources;
 static FILE *out_fp;
+
+/* Reaction state. block_reaction is the default for every rule in the
+   current { ... } block, settable with an ON-VIOLATION line.
+   current_rule_reaction is what the next ADD_RULE emit will use; it is
+   reset to block_reaction before each rule and overridden by a trailing
+   per-rule ON-VIOLATION clause. */
+static int block_reaction = VM_POLICY_REACTION_USE_DEFAULT;
+static int current_rule_reaction = VM_POLICY_REACTION_USE_DEFAULT;
 
 static struct policy_class classes[MAX_POLICY_CLASSES];
 static int num_classes;
@@ -100,6 +120,25 @@ static void
 add_resource(uint8_t resource)
 {
   resources |= resource;
+}
+
+static const char *
+reaction_c_name(int r)
+{
+  switch(r) {
+  case VM_POLICY_REACTION_EXCEPTION: return "VM_POLICY_REACTION_EXCEPTION";
+  case VM_POLICY_REACTION_REPORT:    return "VM_POLICY_REACTION_REPORT";
+  case VM_POLICY_REACTION_SLOWDOWN:  return "VM_POLICY_REACTION_SLOWDOWN";
+  case VM_POLICY_REACTION_KILL:      return "VM_POLICY_REACTION_KILL";
+  default:                           return "VM_POLICY_REACTION_USE_DEFAULT";
+  }
+}
+
+static void
+block_begin(void)
+{
+  block_reaction = VM_POLICY_REACTION_USE_DEFAULT;
+  current_rule_reaction = VM_POLICY_REACTION_USE_DEFAULT;
 }
 
 static void
@@ -169,7 +208,10 @@ class_expand(const char *name)
 %token <token> T_WINDOW T_THROTTLE T_SHA256 T_LBRACE T_RBRACE T_SEMICOLON
 %token <token> T_COMMA T_SUPERUSER T_CONSOLE T_DNS T_IPC T_STATS T_ANY
 %token <token> T_POLICY_CLASS T_INHERIT
+%token <token> T_ON_VIOLATION
+%token <token> T_R_EXCEPTION T_R_REPORT T_R_SLOWDOWN T_R_KILL
 %type <string> hash_value
+%type <token> reaction_value
 
 %%
 
@@ -179,9 +221,10 @@ policies: top_item
 
 top_item: policy | policy_class;
 
-policy: header T_LBRACE rules T_RBRACE
+policy: header T_LBRACE { block_begin(); } rules T_RBRACE
 {
   if(resources != 0) {
+    current_rule_reaction = block_reaction;
     fprintf(out_fp, "  rule.type = VM_POLICY_TYPE_RESOURCES;\n");
     fprintf(out_fp, "  rule.resources.resource_access = %u;\n",
             (unsigned)resources);
@@ -190,7 +233,8 @@ policy: header T_LBRACE rules T_RBRACE
   resources = 0;
 };
 
-policy_class: T_POLICY_CLASS T_IDENTIFIER T_LBRACE { class_begin($2); }
+policy_class: T_POLICY_CLASS T_IDENTIFIER T_LBRACE
+              { class_begin($2); block_begin(); }
               rules T_RBRACE
 {
   class_end();
@@ -209,6 +253,7 @@ rule : bandwidth_rule
       | resource_rule
       | threads_rule
       | inherit_rule
+      | violation_rule
        ;
 
 inherit_rule: T_INHERIT T_IDENTIFIER
@@ -216,8 +261,21 @@ inherit_rule: T_INHERIT T_IDENTIFIER
   class_expand($2);
 };
 
+violation_rule: T_ON_VIOLATION reaction_value
+{
+  block_reaction = $2;
+  current_rule_reaction = $2;
+};
+
+reaction_value: T_R_EXCEPTION { $$ = VM_POLICY_REACTION_EXCEPTION; }
+              | T_R_REPORT    { $$ = VM_POLICY_REACTION_REPORT; }
+              | T_R_SLOWDOWN  { $$ = VM_POLICY_REACTION_SLOWDOWN; }
+              | T_R_KILL      { $$ = VM_POLICY_REACTION_KILL; }
+              ;
+
 bandwidth_rule: T_BANDWIDTH T_INTEGER T_BPS
 {
+  current_rule_reaction = block_reaction;
   fprintf(out_fp, "  rule.type = VM_POLICY_TYPE_BANDWIDTH;\n");
   fprintf(out_fp, "  rule.bandwidth.throughput = %d;\n", atoi($2));
   if(strcmp($3, "kbps") == 0) {
@@ -230,6 +288,7 @@ bandwidth_rule: T_BANDWIDTH T_INTEGER T_BPS
 
 cpu_rule: T_CPU T_IDENTIFIER
 {
+  current_rule_reaction = block_reaction;
   fprintf(out_fp, "  rule.type = VM_POLICY_TYPE_CPU;\n");
   fprintf(out_fp, "  rule.cpu.usage_percentage = %d;\n", atoi($2));
   fprintf(out_fp, "  rule.cpu.window = 0;\n");
@@ -238,6 +297,7 @@ cpu_rule: T_CPU T_IDENTIFIER
 
 file_rule: T_FILE T_IDENTIFIER permission
 {
+  current_rule_reaction = block_reaction;
   fprintf(out_fp, "  rule.type = VM_POLICY_TYPE_FILE;\n");
   fprintf(out_fp, "  rule.file.path = \"%s\";\n", $2);
   fprintf(out_fp, "  rule.file.flags = 0;\n");
@@ -248,6 +308,7 @@ permission: T_READ | T_WRITE | T_READWRITE;
 
 memory_rule: T_MEMORY T_INTEGER
 {
+  current_rule_reaction = block_reaction;
   fprintf(out_fp, "  rule.type = VM_POLICY_TYPE_MEMORY;\n");
   fprintf(out_fp, "  rule.memory.limit = %d;\n", atoi($2));
   ADD_RULE(out_fp);
@@ -255,6 +316,7 @@ memory_rule: T_MEMORY T_INTEGER
 
 net_rule: T_NET T_ANY
 {
+  current_rule_reaction = block_reaction;
   fprintf(out_fp, "  rule.type = VM_POLICY_TYPE_NET;\n");
   fprintf(out_fp, "  rule.net.address = NULL;\n");
   fprintf(out_fp, "  rule.net.port = 0;\n");
@@ -262,6 +324,7 @@ net_rule: T_NET T_ANY
 }
         | T_NET T_IDENTIFIER T_INTEGER protocol direction
 {
+  current_rule_reaction = block_reaction;
   struct in6_addr address;
   int i;
 
@@ -299,6 +362,7 @@ direction: T_CLIENT | T_SERVER;
 power_rule: T_POWER T_INTEGER T_UW |
             T_POWER T_INTEGER T_MW
 {
+  current_rule_reaction = block_reaction;
   fprintf(out_fp, "  rule.type = VM_POLICY_TYPE_POWER;\n");
   fprintf(out_fp, "  rule.power.allocated_power = %d;\n", atoi($2));
   if(strcmp($3, "mW") == 0) {
@@ -318,6 +382,7 @@ resource_rule:
 
 threads_rule: T_THREADS T_INTEGER
 {
+  current_rule_reaction = block_reaction;
   fprintf(out_fp, "  rule.type = VM_POLICY_TYPE_THREADS;\n");
   fprintf(out_fp, "  rule.threads.limit = %d;\n", atoi($2));
   ADD_RULE(out_fp);
