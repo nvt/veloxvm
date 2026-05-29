@@ -53,6 +53,28 @@ static vm_program_t *loaded_programs;
     }                                                                         \
   } while(0)
 
+/* All multi-byte framing fields in the bytecode file are little-endian.
+   Read them through this helper rather than as raw uint16_t so the
+   loader behaves identically on big-endian hosts. */
+static int
+read_u16_le(int handle, uint16_t *out)
+{
+  uint8_t bytes[2];
+  if(VM_LOADER_READ(handle, bytes, 2) != 2) {
+    return 0;
+  }
+  *out = (uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8);
+  return 1;
+}
+
+#define READ_U16_LE(handle, var)                                              \
+  do {                                                                        \
+    if(!read_u16_le((handle), &(var))) {                                      \
+      VM_DEBUG(VM_DEBUG_MEDIUM, "Failed to read 2 bytes");                    \
+      return 0;                                                               \
+    }                                                                         \
+  } while(0)
+
 static void
 destroy_program_threads(vm_program_t *program)
 {
@@ -163,7 +185,7 @@ read_table(vm_table_t *table, int handle)
   vm_loader_offset_t saved_offset;
 
   item_count = 0;
-  READ_CHECK(handle, &item_count, sizeof(item_count));
+  READ_U16_LE(handle, item_count);
   VM_DEBUG(VM_DEBUG_MEDIUM, "Reading a table containing %u item%s",
          item_count, item_count == 1 ? "" : "s");
 
@@ -177,7 +199,7 @@ read_table(vm_table_t *table, int handle)
   table_size = 0;
   for(i = 0; i < item_count; i++) {
     item_length = 0;
-    READ_CHECK(handle, &item_length, sizeof(item_length));
+    READ_U16_LE(handle, item_length);
 
     if(item_length > VM_TABLE_MAX_ITEM_SIZE) {
       VM_DEBUG(VM_DEBUG_LOW, "Item size (%u) exceeds maximum (%u)",
@@ -213,7 +235,7 @@ read_table(vm_table_t *table, int handle)
 
   /* Fill the table with data from the file. */
   for(i = 0; i < item_count; i++) {
-    READ_CHECK(handle, &item_length, sizeof(item_length));
+    READ_U16_LE(handle, item_length);
     READ_CHECK(handle, buf, item_length);
     if(vm_table_set(table, i, buf, item_length) == 0) {
       VM_DEBUG(VM_DEBUG_LOW, "Failed to allocate a table item");
@@ -303,7 +325,7 @@ read_program(const char *name)
      emitted directly as a count + (length, bytes) entries. */
   {
     uint16_t entry_count = 0;
-    READ_CHECK(handle, &entry_count, sizeof(entry_count));
+    READ_U16_LE(handle, entry_count);
     if(entry_count > 0) {
       program->captures_size = VM_TABLE_SIZE(program->exprv);
       program->captures = VM_MALLOC(program->captures_size *
@@ -322,7 +344,7 @@ read_program(const char *name)
         unsigned k;
         vm_captures_t *cap;
 
-        READ_CHECK(handle, &entry_length, sizeof(entry_length));
+        READ_U16_LE(handle, entry_length);
         /* Minimum: expr_id (2) + one captured symbol ID (2). */
         if(entry_length < 4 || (entry_length % 2) != 0) {
           VM_DEBUG(VM_DEBUG_LOW, "Captures entry length %u invalid",
@@ -334,7 +356,7 @@ read_program(const char *name)
           VM_DEBUG(VM_DEBUG_LOW, "Captures entry %u exceeds limit", i);
           goto error;
         }
-        READ_CHECK(handle, &expr_id, sizeof(expr_id));
+        READ_U16_LE(handle, expr_id);
         if(expr_id >= program->captures_size) {
           VM_DEBUG(VM_DEBUG_LOW, "Captures expr_id %u out of range",
                    (unsigned)expr_id);
@@ -359,7 +381,7 @@ read_program(const char *name)
         }
         for(k = 0; k < capture_count; k++) {
           uint16_t sym_id = 0;
-          READ_CHECK(handle, &sym_id, sizeof(sym_id));
+          READ_U16_LE(handle, sym_id);
           cap->symbols[k] = sym_id;
         }
         program->captures[expr_id] = cap;
