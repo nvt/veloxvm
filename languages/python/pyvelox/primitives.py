@@ -61,7 +61,7 @@ VM_PRIMITIVES = [
     'print', 'random', 'time', 'get_programs', 'program_info', 'exit',
 
     # List functions
-    'list', 'cons', 'push', 'pop', 'car', 'cdr',
+    'list', 'cons', 'car', 'cdr',
     'list_ref', 'list_tail', 'slice', 'append', 'remove', 'reverse', 'length',
     'nullp', 'listp', 'pairp', 'set_car', 'set_cdr',
     'memq', 'memv', 'member', 'assq', 'assv', 'assoc',
