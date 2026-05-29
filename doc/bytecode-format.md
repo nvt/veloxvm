@@ -307,21 +307,26 @@ Value  Type              Description
 0      VM_TYPE_BOOLEAN   True/false values
 1      VM_TYPE_INTEGER   32-bit signed integers
 2      VM_TYPE_RATIONAL  Fraction (numerator/denominator)
-3      VM_TYPE_REAL      Double-precision floating point (optional)
+3      VM_TYPE_REAL      Floating point (vm_real_t == double at runtime; encoded as 4-byte LE single-precision)
 4      VM_TYPE_STRING    Immutable string references
 5      VM_TYPE_SYMBOL    Variable/procedure name references
 6      VM_TYPE_CHARACTER Single byte characters
 7      VM_TYPE_FORM      Function call expressions
-8      VM_TYPE_LIST      Linked lists
+8      (retired)         Was VM_TYPE_LIST (legacy wrapper representation); tag value reserved, see vm-objects.h
 9      VM_TYPE_VECTOR    Arrays/byte buffers
 10     VM_TYPE_PORT      I/O ports (files, sockets, devices)
 11     VM_TYPE_COMPLEX   Complex numbers
 12     VM_TYPE_PROCEDURE Built-in procedures
 13     VM_TYPE_EXTERNAL  External library objects
 14     VM_TYPE_NONE      Unbound/empty value
+15     VM_TYPE_BOX       Heap container for mutable captured variables
+16     VM_TYPE_CLOSURE   Lambda body paired with captured environment
+17     VM_TYPE_EOF       End-of-file sentinel
+18     VM_TYPE_PAIR      R7RS cons pair
+19     VM_TYPE_NIL       Empty list / nil
 ```
 
-Note: Types 8-14 are runtime types created during execution and do not have direct bytecode encodings. They are created through VM operations.
+Note: Tags 9–19 are runtime types created during execution and do not have direct bytecode encodings. They are created through VM operations.
 
 ## Encoding Built-In Instruction Calls
 
