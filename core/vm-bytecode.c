@@ -32,6 +32,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "vm.h"
 #include "vm-bytecode.h"
@@ -237,6 +238,33 @@ vm_get_object(vm_thread_t *thread, vm_obj_t *obj)
   case VM_TYPE_INTEGER:
     obj->value.integer = get_integer(thread);
     break;
+  case VM_TYPE_REAL:
+#if VM_ENABLE_REALS
+    if(!VM_STEP(thread)) {
+      return;
+    }
+    if(!VM_CHECK_BOUNDARY(thread, 4)) {
+      vm_signal_error(thread, VM_ERROR_BYTECODE);
+      return;
+    }
+    {
+      uint32_t bits;
+      float f;
+      bits  = (uint32_t)thread->expr->ip[0];
+      bits |= (uint32_t)thread->expr->ip[1] << 8;
+      bits |= (uint32_t)thread->expr->ip[2] << 16;
+      bits |= (uint32_t)thread->expr->ip[3] << 24;
+      memcpy(&f, &bits, sizeof(f));
+      obj->value.real = (vm_real_t)f;
+      thread->expr->ip += 4;
+    }
+    break;
+#else
+    vm_signal_error(thread, VM_ERROR_BYTECODE);
+    vm_set_error_string(thread,
+                        "real literals not supported on this port");
+    return;
+#endif
   case VM_TYPE_RATIONAL:
     if(!VM_STEP(thread)) {
       return;
