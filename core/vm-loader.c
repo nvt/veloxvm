@@ -323,7 +323,8 @@ read_program(const char *name)
         vm_captures_t *cap;
 
         READ_CHECK(handle, &entry_length, sizeof(entry_length));
-        if(entry_length < 2 || (entry_length % 2) != 0) {
+        /* Minimum: expr_id (2) + one captured symbol ID (2). */
+        if(entry_length < 4 || (entry_length % 2) != 0) {
           VM_DEBUG(VM_DEBUG_LOW, "Captures entry length %u invalid",
                    entry_length);
           goto error;
