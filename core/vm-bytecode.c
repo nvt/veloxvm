@@ -95,8 +95,24 @@ get_integer(vm_thread_t *thread)
     return 0;
   }
 
+  /* Reject non-minimal-width encodings (leading zero byte). */
+  if(nbytes > 1 && magnitude == 0) {
+    vm_signal_error(thread, VM_ERROR_BYTECODE);
+    vm_set_error_string(thread,
+                        "non-canonical integer (leading zero byte)");
+    return 0;
+  }
+
   while(--nbytes > 0) {
     magnitude = (magnitude << 8) | *thread->expr->ip++;
+  }
+
+  /* Reject negative zero. */
+  if(magnitude == 0 && is_negative) {
+    vm_signal_error(thread, VM_ERROR_BYTECODE);
+    vm_set_error_string(thread,
+                        "non-canonical integer (negative zero)");
+    return 0;
   }
 
   if(is_negative) {
@@ -170,6 +186,15 @@ get_symbol_ref(vm_thread_t *thread, vm_symbol_ref_t *symbol_ref)
     if(!VM_STEP(thread)) {
       return;
     }
+  }
+
+  if(symbol_ref->scope == VM_SYMBOL_SCOPE_CORE) {
+    if(symbol_ref->symbol_id >= vm_procedure_count()) {
+      vm_signal_error(thread, VM_ERROR_SYMBOL_ID);
+    }
+  } else if(symbol_ref->symbol_id >=
+            VM_TABLE_SIZE(thread->program->symbols)) {
+    vm_signal_error(thread, VM_ERROR_SYMBOL_ID);
   }
 }
 
@@ -271,6 +296,11 @@ vm_get_object(vm_thread_t *thread, vm_obj_t *obj)
       } else {
         /* Simple form: 7-bit ID */
         string_id = byte;
+      }
+
+      if(string_id >= VM_TABLE_SIZE(thread->program->strings)) {
+        vm_signal_error(thread, VM_ERROR_STRING_ID);
+        return;
       }
 
       obj->value.string->flags = VM_STRING_FLAG_ID | VM_STRING_FLAG_IMMUTABLE;
