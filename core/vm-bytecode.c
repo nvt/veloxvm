@@ -187,6 +187,15 @@ get_symbol_ref(vm_thread_t *thread, vm_symbol_ref_t *symbol_ref)
       return;
     }
   }
+
+  if(symbol_ref->scope == VM_SYMBOL_SCOPE_CORE) {
+    if(symbol_ref->symbol_id >= vm_procedure_count()) {
+      vm_signal_error(thread, VM_ERROR_SYMBOL_ID);
+    }
+  } else if(symbol_ref->symbol_id >=
+            VM_TABLE_SIZE(thread->program->symbols)) {
+    vm_signal_error(thread, VM_ERROR_SYMBOL_ID);
+  }
 }
 
 void
@@ -287,6 +296,11 @@ vm_get_object(vm_thread_t *thread, vm_obj_t *obj)
       } else {
         /* Simple form: 7-bit ID */
         string_id = byte;
+      }
+
+      if(string_id >= VM_TABLE_SIZE(thread->program->strings)) {
+        vm_signal_error(thread, VM_ERROR_STRING_ID);
+        return;
       }
 
       obj->value.string->flags = VM_STRING_FLAG_ID | VM_STRING_FLAG_IMMUTABLE;
