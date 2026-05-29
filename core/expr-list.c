@@ -145,22 +145,6 @@ VM_FUNCTION(cons)
   VM_PUSH_PAIR(p);
 }
 
-VM_FUNCTION(push)
-{
-  /* push operated on the legacy VM_TYPE_LIST wrapper representation,
-     mutating its head pointer in place. With pair-based lists, the
-     idiomatic equivalent is (set! var (cons new var)) at the Scheme
-     level. The primitive is preserved as a stub so the primitive-ID
-     numbering stays stable across the compiler tables. */
-  vm_signal_error(thread, VM_ERROR_UNIMPLEMENTED);
-}
-
-VM_FUNCTION(pop)
-{
-  /* See note on push. */
-  vm_signal_error(thread, VM_ERROR_UNIMPLEMENTED);
-}
-
 VM_FUNCTION(car)
 {
   if(argv[0].type != VM_TYPE_PAIR || argv[0].value.pair == NULL) {

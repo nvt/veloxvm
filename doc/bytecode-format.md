@@ -15,18 +15,23 @@ Offset  Size  Description
 ------  ----  -----------
 0x00    1     File ID 1: 0x5E (94 decimal)
 0x01    1     File ID 2: 0xB5 (181 decimal)
-0x02    1     Bytecode version (currently 1)
+0x02    1     Bytecode version (currently 5; see `VM_BYTECODE_VERSION` in `include/vm-bytecode.h`)
 ```
 
 The magic number `0x5E 0xB5` (or `0xB55E` in little-endian short format) can be used to identify VeloxVM bytecode files with the `file` utility.
 
 ### File Structure
 
-After the header, the file contains three variable-length tables:
+After the header, the file contains three variable-length tables followed by a captures block:
 
 1. **String Table** - Contains all string literals used in the program
 2. **Symbol Table** - Contains symbol names for variables and procedures
 3. **Expression Table** (Form Table) - Contains the actual bytecode for all forms/expressions
+4. **Captures Block** - Free-variable lists for closures (see "Captures Block" below)
+
+### Endianness
+
+All multi-byte framing fields (table counts, item lengths, captures-entry fields, inline string/symbol/expression IDs) are stored in **little-endian** byte order. The loader reads them through an explicit LE helper (`read_u16_le` in `core/vm-loader.c`) so behavior is identical on big- and little-endian hosts. Integer-payload bytes inside `VM_TYPE_INTEGER` atoms remain big-endian for historical reasons; see the integer-encoding section.
 
 ### Table Encoding Format
 
@@ -63,6 +68,36 @@ The loader performs two passes:
 
 Compilers should be aware of target platform limits when generating bytecode.
 
+### Captures Block
+
+After the three tables, the file contains a captures block that records the free-variable list for each closure-producing lambda. The block is parsed by `core/vm-loader.c:read_program` and is indexed by expression ID.
+
+```
+Offset  Size  Description
+------  ----  -----------
+0x00    2     Entry count (E) — number of lambdas with captured variables
+0x02    var   Captures entries (E entries)
+```
+
+If `E == 0` the block is just the two-byte count and no captures array is allocated. Otherwise the loader allocates a sparse `vm_captures_t *` array sized to the expression table so entries can be looked up by `expr_id`.
+
+Each captures entry is encoded as:
+
+```
+Offset  Size  Description
+------  ----  -----------
+0x00    2     Entry length (L) in bytes — must be even and ≥ 4
+0x02    2     expr_id — index of the lambda's body in the expression table
+0x04    2*N   N symbol IDs of captured (free) variables, where N = (L - 2) / 2
+```
+
+Constraints enforced at load time:
+
+- `expr_id` must be less than the expression-table size.
+- An `expr_id` must not appear in more than one entry.
+- The capture count `N` must fit in a `uint8_t` (≤ 255 captures per lambda).
+- Entry length must be even and at least 4 bytes (a 2-byte `expr_id` plus at least one 2-byte captured symbol ID). Lambdas without free variables must not appear in this block.
+
 ## Bytecode Instruction Encoding
 
 ### Instruction Byte Layout
@@ -91,11 +126,11 @@ Object types (bits 2-0):
 - `0` - VM_TYPE_BOOLEAN
 - `1` - VM_TYPE_INTEGER
 - `2` - VM_TYPE_RATIONAL
-- `3` - VM_TYPE_REAL (if enabled)
+- `3` - VM_TYPE_REAL (decoded only on ports built with `VM_ENABLE_REALS`; rejected with a clear error otherwise)
 - `4` - VM_TYPE_STRING
 - `5` - VM_TYPE_SYMBOL
 - `6` - VM_TYPE_CHARACTER
-- `7` - (reserved for VM_TYPE_FORM when bit 7 = 1)
+- `7` - structurally unreachable as an atom: bit 7 already distinguishes ATOM from FORM, so a byte with bits 2-0 = 7 and bit 7 = 0 cannot be produced by any encoder. The value is kept aligned with `VM_TYPE_FORM` in the runtime enum.
 
 #### FORM Tokens (bit 7 = 1)
 
@@ -171,6 +206,18 @@ Strings are stored by reference to the string table:
 - Supports up to 32767 strings (15-bit ID)
 
 String objects are marked as immutable (VM_STRING_FLAG_IMMUTABLE) and ID-based (VM_STRING_FLAG_ID).
+
+### Real (VM_TYPE_REAL)
+
+```
+Byte 0, bits 6-3: unused
+Byte 0, bits 2-0: 3 (type = REAL)
+Bytes 1-4:        IEEE-754 single-precision value (4 bytes, little-endian)
+```
+
+The encoder writes 4 bytes of IEEE-754 single-precision in little-endian order. The loader reassembles the four bytes into a `uint32_t`, `memcpy`'s into a `float`, and upcasts to `vm_real_t` (which is `double`). The precision loss from single → double round-trip is implicit in the encoding; if it ever matters, switching the encoder to 8 bytes is a future format change.
+
+Ports compiled without `VM_ENABLE_REALS` (currently only Contiki-NG by default) reject this tag at load with a clear error message rather than silently truncating.
 
 ### Character (VM_TYPE_CHARACTER)
 
@@ -280,7 +327,7 @@ Note: Types 8-14 are runtime types created during execution and do not have dire
 
 ### Symbol-Based Instruction Encoding
 
-VeloxVM's 199 built-in instructions (see `doc/instruction-set.md`) are accessed through the symbol mechanism. Each built-in instruction corresponds to a core symbol that references an entry in the operators table defined in `core/vm-procedures.c`.
+VeloxVM's built-in instructions (currently 227; see `doc/primitives.md` and `core/vm-procedures.c` for the authoritative list) are accessed through the symbol mechanism. Each built-in instruction corresponds to a core symbol that references an entry in the operators table defined in `core/vm-procedures.c`.
 
 ### Core vs Application Symbols
 

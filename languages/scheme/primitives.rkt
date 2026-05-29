@@ -57,7 +57,7 @@
     boolean? port? not eq? eqv? equal?
     system-info load-program import get-devices print random time
     get-programs program-info exit
-    list cons push pop car cdr list-ref list-tail slice append remove reverse
+    list cons car cdr list-ref list-tail slice append remove reverse
     length null? list? pair? set-car! set-cdr! memq memv member
     assq assv assoc
     list-enumerate list-zip list-index
