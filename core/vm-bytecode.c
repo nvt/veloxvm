@@ -95,8 +95,24 @@ get_integer(vm_thread_t *thread)
     return 0;
   }
 
+  /* Reject non-minimal-width encodings (leading zero byte). */
+  if(nbytes > 1 && magnitude == 0) {
+    vm_signal_error(thread, VM_ERROR_BYTECODE);
+    vm_set_error_string(thread,
+                        "non-canonical integer (leading zero byte)");
+    return 0;
+  }
+
   while(--nbytes > 0) {
     magnitude = (magnitude << 8) | *thread->expr->ip++;
+  }
+
+  /* Reject negative zero. */
+  if(magnitude == 0 && is_negative) {
+    vm_signal_error(thread, VM_ERROR_BYTECODE);
+    vm_set_error_string(thread,
+                        "non-canonical integer (negative zero)");
+    return 0;
   }
 
   if(is_negative) {
