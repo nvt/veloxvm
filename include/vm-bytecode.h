@@ -53,6 +53,4 @@
 
 #define VM_ATOM_MASK 0x7
 
-#define VM_LOCAL_SYMBOL_OFFSET 128
-
 #endif /* !VM_BYTECODE_H */
