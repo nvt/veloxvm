@@ -279,29 +279,59 @@ read_program(const char *name)
   program->exec_count = NULL;
 #endif
 
-  if(extract_program_name(&program->name, name) == 0) {
-    VM_DEBUG(VM_DEBUG_LOW, "Failed to extract the program name from \"%s\"",
-             name);
-    goto error;
-  }
-
-  VM_DEBUG(VM_DEBUG_LOW, "Loading program \"%s\"", program->name);
-
-  if(VM_LOADER_READ(handle, buf, 3) != 3) {
+  if(VM_LOADER_READ(handle, buf, VM_HEADER_FIXED_SIZE) !=
+     VM_HEADER_FIXED_SIZE) {
     VM_DEBUG(VM_DEBUG_LOW, "Read error on program header");
     goto error;
   }
 
-  if(buf[0] != VM_FILE_ID1 || buf[1] != VM_FILE_ID2) {
+  if(buf[VM_HEADER_OFFSET_MAGIC1] != VM_FILE_ID1 ||
+     buf[VM_HEADER_OFFSET_MAGIC2] != VM_FILE_ID2) {
     VM_DEBUG(VM_DEBUG_LOW, "%s: invalid program header", name);
     goto error;
   }
 
-  if(buf[2] != VM_BYTECODE_VERSION) {
-    VM_DEBUG(VM_DEBUG_LOW, "%s: unsupported bytecode version %d",
-             name, buf[2]);
-    goto error;
+  {
+    uint16_t version =
+        (uint16_t)buf[VM_HEADER_OFFSET_VERSION]
+      | ((uint16_t)buf[VM_HEADER_OFFSET_VERSION + 1] << 8);
+    if(version != VM_BYTECODE_VERSION) {
+      VM_DEBUG(VM_DEBUG_LOW, "%s: unsupported bytecode version %u",
+               name, (unsigned)version);
+      goto error;
+    }
   }
+
+  uint32_t total_len =
+      (uint32_t)buf[VM_HEADER_OFFSET_TOTAL_LEN]
+    | ((uint32_t)buf[VM_HEADER_OFFSET_TOTAL_LEN + 1] << 8)
+    | ((uint32_t)buf[VM_HEADER_OFFSET_TOTAL_LEN + 2] << 16)
+    | ((uint32_t)buf[VM_HEADER_OFFSET_TOTAL_LEN + 3] << 24);
+
+  /* Read the variable-length program name. */
+  {
+    unsigned name_len = buf[VM_HEADER_OFFSET_NAME_LEN];
+    if(name_len > 0) {
+      char *header_name = VM_MALLOC(name_len + 1);
+      if(header_name == NULL) {
+        goto error;
+      }
+      if(VM_LOADER_READ(handle, header_name, name_len) !=
+         (vm_loader_offset_t)name_len) {
+        VM_DEBUG(VM_DEBUG_LOW, "Read error on program name");
+        VM_FREE(header_name);
+        goto error;
+      }
+      header_name[name_len] = '\0';
+      program->name = header_name;
+    } else if(extract_program_name(&program->name, name) == 0) {
+      VM_DEBUG(VM_DEBUG_LOW,
+               "Failed to extract the program name from \"%s\"", name);
+      goto error;
+    }
+  }
+
+  VM_DEBUG(VM_DEBUG_LOW, "Loading program \"%s\"", program->name);
 
   if(read_table(&program->strings, handle) == 0) {
     VM_DEBUG(VM_DEBUG_LOW, "Failed to read the string table");
@@ -418,6 +448,22 @@ read_program(const char *name)
     VM_DEBUG(VM_DEBUG_LOW, "Ignoring program %s because it lacks bytecode",
              name);
     goto error;
+  }
+
+  /* Truncation / padding check: the position after the last body byte
+     must equal the total length declared in the header. */
+  {
+    vm_loader_offset_t end_offset = VM_LOADER_SEEK_RELATIVE(handle, 0);
+    if(end_offset == (vm_loader_offset_t)-1) {
+      VM_DEBUG(VM_DEBUG_LOW, "loader:seek failed");
+      goto error;
+    }
+    if((uint32_t)end_offset != total_len) {
+      VM_DEBUG(VM_DEBUG_LOW,
+               "%s: total-length mismatch (header says %u, parsed %u)",
+               name, (unsigned)total_len, (unsigned)end_offset);
+      goto error;
+    }
   }
 
   VM_DEBUG(VM_DEBUG_MEDIUM, "Loading bytecode consisting of %u byte%s",
