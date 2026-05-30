@@ -35,14 +35,25 @@
 
 #include <stdint.h>
 
-/* The header consists of two bytes for the file ID and a byte for the
-   bytecode version. */
-#define VM_HEADER_SIZE 3
+/* v6 header layout (9 fixed bytes + N-byte program name):
+     0x00  2  Magic (VM_FILE_ID1, VM_FILE_ID2)
+     0x02  2  Bytecode version (uint16 LE)
+     0x04  4  Total file length in bytes (uint32 LE)
+     0x08  1  Program name length N (0..255)
+     0x09  N  Program name (UTF-8, no terminator)
+   The body (tables + captures + expression bytecode) follows the name. */
+#define VM_HEADER_FIXED_SIZE 9
+#define VM_HEADER_OFFSET_MAGIC1      0
+#define VM_HEADER_OFFSET_MAGIC2      1
+#define VM_HEADER_OFFSET_VERSION     2
+#define VM_HEADER_OFFSET_TOTAL_LEN   4
+#define VM_HEADER_OFFSET_NAME_LEN    8
+#define VM_HEADER_OFFSET_NAME        9
 
 #define VM_FILE_ID1 94
 #define VM_FILE_ID2 181
 
-#define VM_BYTECODE_VERSION 5
+#define VM_BYTECODE_VERSION 6
 
 #define VM_TOKEN_ATOM 0
 #define VM_TOKEN_FORM 1

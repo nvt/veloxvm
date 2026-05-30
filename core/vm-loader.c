@@ -253,7 +253,7 @@ read_program(const char *name)
 {
   vm_program_t *program;
   vm_loader_handle_t handle;
-  unsigned char buf[VM_HEADER_SIZE];
+  unsigned char buf[VM_HEADER_FIXED_SIZE];
   unsigned i;
   unsigned code_size;
 
