@@ -78,10 +78,17 @@ for i in range(3):
             self.assertTrue(output_path.exists())
             self.assertTrue(output_path.stat().st_size > 0)
 
-            # Check header
+            # Check header: magic (2) + version (2 LE) + total length (4 LE)
+            # + name length (1) + name bytes.
+            import struct
             with open(output_path, 'rb') as f:
-                header = f.read(3)
-                self.assertEqual(header, bytes([0x5E, 0xB5, 0x05]))
+                self.assertEqual(f.read(2), bytes([0x5E, 0xB5]))
+                self.assertEqual(struct.unpack('<H', f.read(2))[0], 6)
+                total_len = struct.unpack('<I', f.read(4))[0]
+                self.assertEqual(total_len, output_path.stat().st_size)
+                name_len = f.read(1)[0]
+                self.assertEqual(f.read(name_len).decode('utf-8'),
+                                 output_path.stem)
         finally:
             output_path.unlink()
 

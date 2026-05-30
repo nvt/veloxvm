@@ -79,7 +79,7 @@
 ;; Create new bytecode container
 (define (make-bytecode)
   (bytecode #x5EB5        ; Magic number
-            5             ; Version
+            6             ; Version
             '()           ; strings-rev
             (make-hash)   ; strings-index
             '()           ; symbols-rev
@@ -405,40 +405,59 @@
 ;; ============================================================================
 
 (define (write-bytecode-file filename bc)
+  ;; v6 header: 9 fixed bytes + N-byte program name.
+  ;; The program name is derived from the destination filename's basename.
+  (define prog-name
+    (let* ([p (if (path? filename) filename (string->path filename))]
+           [base (file-name-from-path p)])
+      (path->string (path-replace-extension base #""))))
+  (define name-bytes (string->bytes/utf-8 prog-name))
+  (define name-len (bytes-length name-bytes))
+  (when (> name-len 255)
+    (error 'write-bytecode-file
+           "Program name too long (~a bytes, max 255): ~a"
+           name-len prog-name))
+
+  ;; Build the body in memory so we can compute the total length for the
+  ;; header before flushing to disk.
+  (define body
+    (with-output-to-bytes
+     (lambda ()
+       (write-table (bytecode-strings bc) write-string-entry)
+       (write-table (bytecode-symbols bc) write-symbol-entry)
+       (write-table (bytecode-expressions bc) write-expr-entry)
+       ;; Captures section: count of {expr_id, [symbol_id, ...]} entries.
+       ;; compile-lambda populates bc's captures-list as it analyzes lambda
+       ;; bodies for free variables; here we serialize that out.
+       (let ([entries (bytecode-captures-list bc)])
+         (write-u16 (length entries))
+         (for ([entry entries])
+           (let* ([expr-id (car entry)]
+                  [sym-ids (cdr entry)]
+                  [entry-bytes (+ 2 (* 2 (length sym-ids)))])
+             (write-u16 entry-bytes)
+             (write-u16 expr-id)
+             (for ([sid sym-ids])
+               (write-u16 sid))))))))
+
+  (define total-len (+ 9 name-len (bytes-length body)))
+
   (with-output-to-file filename
     #:exists 'replace
     #:mode 'binary
     (lambda ()
-      ;; Magic number
+      ;; Magic (bytes 0-1, big-endian for `file(1)` compatibility)
       (write-bytes (integer->integer-bytes (bytecode-magic bc) 2 #f #t))
-
-      ;; Version
-      (write-byte (bytecode-version bc))
-
-      ;; String table
-      (write-table (bytecode-strings bc) write-string-entry)
-
-      ;; Symbol table
-      (write-table (bytecode-symbols bc) write-symbol-entry)
-
-      ;; Expression table
-      (write-table (bytecode-expressions bc) write-expr-entry)
-
-      ;; Captures section: count of {expr_id, [symbol_id, ...]} entries.
-      ;; Each entry is uint16-length-prefixed, then uint16 expr_id +
-      ;; uint16 symbol_id per captured free variable. compile-lambda
-      ;; populates bc's captures-list as it analyzes lambda bodies for
-      ;; free variables; here we serialize that out.
-      (let ([entries (bytecode-captures-list bc)])
-        (write-u16 (length entries))
-        (for ([entry entries])
-          (let* ([expr-id (car entry)]
-                 [sym-ids (cdr entry)]
-                 [entry-bytes (+ 2 (* 2 (length sym-ids)))])
-            (write-u16 entry-bytes)
-            (write-u16 expr-id)
-            (for ([sid sym-ids])
-              (write-u16 sid))))))))
+      ;; Version (bytes 2-3, uint16 LE)
+      (write-bytes (integer->integer-bytes (bytecode-version bc) 2 #f #f))
+      ;; Total file length (bytes 4-7, uint32 LE)
+      (write-bytes (integer->integer-bytes total-len 4 #f #f))
+      ;; Program name length (byte 8)
+      (write-byte name-len)
+      ;; Program name (bytes 9..9+N)
+      (write-bytes name-bytes)
+      ;; Body
+      (write-bytes body))))
 
 (define (write-table items write-item)
   (write-u16 (length items))

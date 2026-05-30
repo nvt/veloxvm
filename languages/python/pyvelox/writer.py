@@ -33,6 +33,7 @@ This module handles writing compiled bytecode to .vm binary files
 following the VeloxVM bytecode format specification.
 """
 
+import io
 import struct
 from pathlib import Path
 from typing import Union, List
@@ -41,37 +42,49 @@ from .bytecode import Bytecode
 
 def write_bytecode_file(path: Union[str, Path], bc: Bytecode):
     """
-    Write bytecode to a .vm file.
+    Write bytecode to a .vm file in the v6 format.
 
-    File format:
-    - Header (3 bytes): 0x5E, 0xB5, version
+    File layout:
+    - Header (9 fixed bytes + N-byte program name):
+        0x00  2  Magic (0x5E 0xB5)
+        0x02  2  Version (uint16 LE)
+        0x04  4  Total file length (uint32 LE)
+        0x08  1  Program name length N
+        0x09  N  Program name (UTF-8, no terminator)
     - String table: count (16-bit) + items (16-bit length + data)
     - Symbol table: count (16-bit) + items (16-bit length + data)
     - Expression table: count (16-bit) + items (16-bit length + data)
-    - Captures section: count (16-bit) + entries. Each entry is
-      (length:uint16, expr_id:uint16, symbol_id:uint16 ...). The entry
-      length is the byte count of the entry's payload, i.e.
-      2 + 2 * len(symbol_ids).
+    - Captures section: count (16-bit) + entries (length:uint16,
+      expr_id:uint16, symbol_id:uint16 ...).
 
     Args:
         path: Output file path
         bc: Bytecode container to write
     """
+    path = Path(path)
+    prog_name = path.stem.encode('utf-8')
+    if len(prog_name) > 255:
+        raise ValueError(f"Program name too long ({len(prog_name)} bytes, "
+                         f"max 255): {path.stem}")
+
+    # Build the body in memory so we can fill in the total-length header
+    # field before any bytes hit disk.
+    body = io.BytesIO()
+    _write_table(body, bc.symbol_table.strings, _encode_string_item)
+    _write_table(body, bc.symbol_table.symbols, _encode_string_item)
+    _write_table(body, bc.expressions, _encode_bytes_item)
+    _write_captures_section(body, bc.captures)
+    body_bytes = body.getvalue()
+
+    total_len = 9 + len(prog_name) + len(body_bytes)
+
     with open(path, 'wb') as f:
-        # Write header (3 bytes)
-        f.write(bytes([0x5E, 0xB5, bc.version]))
-
-        # Write string table
-        _write_table(f, bc.symbol_table.strings, _encode_string_item)
-
-        # Write symbol table
-        _write_table(f, bc.symbol_table.symbols, _encode_string_item)
-
-        # Write expression table
-        _write_table(f, bc.expressions, _encode_bytes_item)
-
-        # Write captures section
-        _write_captures_section(f, bc.captures)
+        f.write(bytes([0x5E, 0xB5]))            # Magic
+        f.write(struct.pack('<H', bc.version))  # Version (uint16 LE)
+        f.write(struct.pack('<I', total_len))   # Total length (uint32 LE)
+        f.write(struct.pack('<B', len(prog_name)))  # Name length
+        f.write(prog_name)                      # Name bytes
+        f.write(body_bytes)
 
 
 def _write_captures_section(f, captures):
@@ -150,12 +163,16 @@ def read_bytecode_file(path: Union[str, Path]) -> Bytecode:
     has the authoritative bytecode loader.
     """
     with open(path, 'rb') as f:
-        # Read header
+        # Read v6 fixed prefix (9 bytes)
         magic_bytes = f.read(2)
         if magic_bytes != bytes([0x5E, 0xB5]):
             raise ValueError(f"Invalid magic number: {magic_bytes.hex()}")
 
-        version = f.read(1)[0]
+        version = struct.unpack('<H', f.read(2))[0]
+        _total_len = struct.unpack('<I', f.read(4))[0]
+        name_len = struct.unpack('<B', f.read(1))[0]
+        if name_len > 0:
+            _ = f.read(name_len)  # consume program name
 
         # Create bytecode container
         bc = Bytecode()
