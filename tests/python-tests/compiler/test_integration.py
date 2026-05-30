@@ -92,6 +92,42 @@ for i in range(3):
         finally:
             output_path.unlink()
 
+    def test_loader_rejects_total_length_mismatch(self):
+        """A .vm file whose header lies about total length must be rejected."""
+        import struct
+        source = "print('hello')"
+        bc = compile_string(source)
+
+        with tempfile.NamedTemporaryFile(suffix='.vm', delete=False) as f:
+            output_path = Path(f.name)
+
+        vm_path = (Path(__file__).parent.parent.parent.parent
+                   / 'bin' / 'vm')
+        if not vm_path.exists():
+            self.skipTest(f"VeloxVM binary not found at {vm_path}")
+
+        try:
+            write_bytecode_file(output_path, bc)
+
+            # Corrupt the total-length field (offset 4..7) to claim 4 bytes
+            # more than the actual file size.
+            data = bytearray(output_path.read_bytes())
+            real_total = struct.unpack_from('<I', data, 4)[0]
+            struct.pack_into('<I', data, 4, real_total + 4)
+            output_path.write_bytes(bytes(data))
+
+            result = subprocess.run(
+                [str(vm_path), str(output_path)],
+                capture_output=True, text=True, timeout=5
+            )
+            # The loader prints to stderr and exits without running the
+            # program; the truncation message should appear there.
+            combined = result.stdout + result.stderr
+            self.assertIn("total-length mismatch", combined,
+                          msg=f"loader output was: {combined!r}")
+        finally:
+            output_path.unlink()
+
 
 class TestVeloxVMExecution(unittest.TestCase):
     """Test executing compiled programs on VeloxVM."""

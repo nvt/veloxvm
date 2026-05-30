@@ -8,17 +8,24 @@ VeloxVM uses a custom bytecode format designed for efficient storage and executi
 
 ### Magic Number and Header
 
-VeloxVM bytecode files (.vm) begin with a 3-byte header:
+VeloxVM bytecode files (.vm) begin with a 9-byte fixed prefix followed by an N-byte program name:
 
 ```
 Offset  Size  Description
 ------  ----  -----------
 0x00    1     File ID 1: 0x5E (94 decimal)
 0x01    1     File ID 2: 0xB5 (181 decimal)
-0x02    1     Bytecode version (currently 5; see `VM_BYTECODE_VERSION` in `include/vm-bytecode.h`)
+0x02    2     Bytecode version (uint16 LE; currently 6, see `VM_BYTECODE_VERSION` in `include/vm-bytecode.h`)
+0x04    4     Total file length in bytes (uint32 LE) — header + body
+0x08    1     Program name length (N, 0..255)
+0x09    N     Program name (UTF-8, no terminator)
 ```
 
 The magic number `0x5E 0xB5` (or `0xB55E` in little-endian short format) can be used to identify VeloxVM bytecode files with the `file` utility.
+
+The **total length** field is the size of the entire file in bytes including the header. The loader verifies it against the actual file size after parsing the body and rejects mismatches (truncation or padding).
+
+The **program name** is the canonical identity used by logs, profiler output, and the control plane. If N is 0 the loader falls back to deriving the name from the filename (with `.vm` stripped). Encoders typically populate the field from the source file's basename.
 
 ### File Structure
 
