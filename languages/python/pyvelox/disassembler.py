@@ -71,16 +71,24 @@ class Disassembler:
 
     def disassemble(self) -> str:
         """Disassemble the entire bytecode file."""
-        # Read header
+        # Read v6 header (9 fixed bytes + N-byte program name).
         magic1 = self.read_byte()
         magic2 = self.read_byte()
-        version = self.read_byte()
-
         if magic1 != 0x5E or magic2 != 0xB5:
             raise ValueError(f"Invalid magic bytes: 0x{magic1:02X}{magic2:02X}")
 
+        version = self.read_u16()
+        total_len = (self.read_byte() | (self.read_byte() << 8)
+                     | (self.read_byte() << 16) | (self.read_byte() << 24))
+        name_len = self.read_byte()
+        prog_name = self.read_bytes(name_len).decode('utf-8',
+                                                    errors='replace') \
+            if name_len > 0 else ''
+
         output = [f"; VeloxVM Bytecode Disassembly"]
-        output.append(f"; Magic: 0x{magic1:02X}{magic2:02X}, Version: {version}")
+        output.append(
+            f"; Magic: 0x{magic1:02X}{magic2:02X}, Version: {version}, "
+            f"Total length: {total_len}, Program: {prog_name!r}")
         output.append("")
 
         # Read string table
