@@ -125,13 +125,13 @@ vm_mempool_create(vm_mempool_t *pool, uint16_t obj_size,
   memset(pool->alloc_bitmap, 0, bitmap_size);
   memset(pool->ref_bitmap, 0, bitmap_size);
 
-  pool->heap = VM_MEMPOOL_ALLOC(obj_size * capacity);
+  pool->heap = VM_MEMPOOL_ALLOC((size_t)obj_size * capacity);
   if(pool->heap == 0) {
     VM_MEMPOOL_FREE(pool->alloc_bitmap);
     VM_MEMPOOL_FREE(pool->ref_bitmap);
     VM_DEBUG(VM_DEBUG_MEDIUM,
              "Failed to create a mempool heap of size %lu\n",
-             (unsigned long)(obj_size * capacity));
+             (unsigned long)((size_t)obj_size * capacity));
     return 0;
   }
 
