@@ -62,17 +62,79 @@ vm_thread_set_expr(vm_thread_t *thread, vm_expr_id_t expr_id)
   expr->end = expr->ip + VM_TABLE_LENGTH(thread->program->exprv, expr_id);
 }
 
+/* Return the body form id of the lambda or closure that `expr` invokes as
+   its operator, or ~0 if the operator is not an identifiable lambda. Tail-
+   call folding uses this to detect re-entry of the same lambda regardless
+   of which call site reached it. */
+static vm_expr_id_t
+lambda_form_id(const vm_expr_t *expr)
+{
+  if(expr->argc > 0) {
+    if(expr->argv[0].type == VM_TYPE_CLOSURE) {
+      return expr->argv[0].value.closure->form_id;
+    }
+    if(expr->argv[0].type == VM_TYPE_FORM &&
+       expr->argv[0].value.form.type == VM_FORM_LAMBDA) {
+      return expr->argv[0].value.form.id;
+    }
+  }
+  return (vm_expr_id_t)~0;
+}
+
 static void
 cut_tail_call_frames(vm_thread_t *thread)
 {
-  vm_expr_id_t lambda_expr_id;
+  vm_expr_id_t lambda_form;
+  int apply_frame;
   int i;
   int j;
 
-  lambda_expr_id = thread->expr->expr_id;
+  /* Detect tail recursion by lambda IDENTITY (its body form id) rather than
+     by the call-site expression id. A loop reached through several call
+     sites (e.g. a `cond` with a recursive call in more than one branch),
+     through a wrapper that was itself called in non-tail position, or via
+     mutual recursion all re-enter the *same* lambda; matching the form id
+     folds them where matching the call site silently fails (the frame is
+     not found, the stack grows, and deep recursion overflows). Form-id
+     matching is a strict superset of the previous call-site matching, so it
+     never folds a case the old code did not -- it only folds more. The
+     collapse below still reuses the matched activation's bind frame in
+     place, so bindings that escape into the body via the binding stack are
+     preserved (only the loop's own prior-iteration frames are freed). */
+  lambda_form = lambda_form_id(thread->expr);
+  if(lambda_form == (vm_expr_id_t)~0) {
+    /* Operator is not an identifiable lambda/closure; nothing to fold. */
+    return;
+  }
+
+  /* Fold only when the lambda about to run is ITSELF in tail position. Its
+     parent must be a transparent control form: flagged as a tail context
+     (if/begin/and/or/bind_function) and not a function application
+     (VM_EXPR_LAMBDA clear). A lambda evaluated as the operand of another
+     call, e.g. the inner (ack m (- n 1)) in (ack (- m 1) (ack m (- n 1))),
+     has a function-application parent and must not be folded even though it
+     re-enters the same lambda. The per-frame tail-chain check below cannot
+     catch this when the parent is the matched frame itself (no frames in
+     between), so it is gated here. */
+  if(thread->exprc < 2 ||
+     VM_IS_CLEAR(thread->exprv[thread->exprc - 2]->flags, VM_EXPR_TAIL_CALL) ||
+     VM_IS_SET(thread->exprv[thread->exprc - 2]->flags, VM_EXPR_LAMBDA)) {
+    return;
+  }
+
+  /* `apply` rewrites the call frame in place and the collapse re-reads its
+     call site to re-spread the argument list (which still references the
+     caller's bindings). That re-read depends on folding back to the same
+     call-site expression, so apply-rewritten frames keep the original
+     call-site (expr_id) matching. Ordinary lambda dispatch uses lambda-
+     identity (form id) matching, which folds the nested/multi-site/wrapper
+     cases the call-site match misses. */
+  apply_frame = VM_IS_SET(thread->expr->flags, VM_EXPR_REWRITTEN_BY_APPLY);
 
   for(i = thread->exprc - 2; i > 0; i--) {
-    if(thread->exprv[i]->expr_id == lambda_expr_id) {
+    if(apply_frame
+         ? (thread->exprv[i]->expr_id == thread->expr->expr_id)
+         : (lambda_form_id(thread->exprv[i]) == lambda_form)) {
       for(j = thread->exprc - 2; j > i; j--) {
         if(VM_IS_CLEAR(thread->exprv[j]->flags, VM_EXPR_TAIL_CALL)) {
           /* Unable to optimize the tail because one of the expressions
@@ -189,9 +251,17 @@ init_lambda_execution(vm_thread_t *thread, vm_expr_t *expr)
 
   VM_SET_FLAG(expr->flags, VM_EXPR_LAMBDA);
   if(thread->exprc >= 2 &&
-     VM_IS_SET(thread->exprv[thread->exprc - 2]->flags, VM_EXPR_TAIL_CALL)) {
-    /* If the calling expression is a tail call, then so is the next
-       lambda expression to be called. */
+     VM_IS_SET(thread->exprv[thread->exprc - 2]->flags, VM_EXPR_TAIL_CALL) &&
+     VM_IS_CLEAR(thread->exprv[thread->exprc - 2]->flags, VM_EXPR_LAMBDA)) {
+    /* Propagate tail position to the lambda being called only when the
+       parent frame is a transparent control form (if/begin/and/or/
+       bind_function) that flagged itself while dispatching its tail
+       sub-expression. If the parent is itself a function application
+       (VM_EXPR_LAMBDA set), this lambda is being evaluated as its operator
+       or one of its arguments, never a tail position even when the
+       enclosing call is itself a tail call. Without this guard a lambda
+       argument such as the inner call in (ack (- m 1) (ack m (- n 1)))
+       would be mis-tagged as tail and wrongly folded. */
     VM_SET_FLAG(expr->flags, VM_EXPR_TAIL_CALL);
   }
 }
