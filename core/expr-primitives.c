@@ -444,12 +444,37 @@ VM_FUNCTION(return)
 
 VM_FUNCTION(begin)
 {
-  /* Defer the evaluation of the arguments in order to set
-     the tail call flag when executing the last argument. */
-  VM_EVAL_SET_REQUESTED_RANGE(thread, 1, thread->expr->argc);
-  VM_SET_FLAG(thread->expr->flags, VM_EXPR_TAIL_CALL);
-  if(VM_EVAL_COMPLETED(thread, argc - 1)) {
+  int last_eval_arg;
+
+  if(argc == 0) {
+    /* (begin) evaluates to an unspecified value. */
+    VM_EVAL_STOP(thread);
+    return;
+  }
+
+  /* Evaluate the expressions one at a time, in order, using the same
+     sequential pattern as `and`/`or`. Only the FINAL expression is in tail
+     position; the leading ones run for effect, so the tail-call flag must
+     stay clear while they evaluate. Setting it for all of them (as a single
+     up-front request did) wrongly marks a non-last recursive call, such as
+     the first (f x) in (begin (f x) (g x)), as a tail call, so it gets
+     tail-folded and never returns. The value of `begin` is its last
+     expression. */
+  last_eval_arg = highest_bit_set(thread->expr->eval_completed);
+  if(last_eval_arg == argc - 1) {
     VM_PUSH(&argv[argc - 1]);
+    VM_EVAL_STOP(thread);
+  } else if(last_eval_arg == -1) {
+    if(argc == 1) {
+      VM_SET_FLAG(thread->expr->flags, VM_EXPR_TAIL_CALL);
+    }
+    VM_EVAL_ARG(thread, 0);
+  } else {
+    if(last_eval_arg + 2 == argc) {
+      /* About to evaluate the last expression, which is in tail position. */
+      VM_SET_FLAG(thread->expr->flags, VM_EXPR_TAIL_CALL);
+    }
+    VM_EVAL_ARG(thread, last_eval_arg + 1);
   }
 }
 
