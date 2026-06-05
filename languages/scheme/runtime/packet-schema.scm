@@ -184,7 +184,7 @@
     (if (integer? x) x (char->integer x))))
 
 (define (pkt-check-bytes value n name)
-  (unless (vector? value)
+  (unless (or (vector? value) (buffer? value))
     (pkt-error "expected byte vector" 'field name 'got value))
   (unless (= (vector-length value) n)
     (pkt-error "wrong vector length"
@@ -245,7 +245,7 @@
 
 (define (pkt-check-bytes-any value name)
   ;; Same as pkt-check-bytes but length isn't fixed up front.
-  (unless (vector? value)
+  (unless (or (vector? value) (buffer? value))
     (pkt-error "expected byte vector" 'field name 'got value))
   (pkt-check-each-byte value (vector-length value) name))
 
