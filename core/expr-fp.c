@@ -477,9 +477,14 @@ VM_FUNCTION(count)
     count_expr->flags = VM_EXPR_HAVE_OBJECTS;
     count_expr->argc = 2;
 
+    /* Append the running counter as a new stable slot. The frame holds
+       [operator, predicate, list]; the counter must go in the slot added
+       by the argc bump (frame argv[3], i.e. this function's argv[2], which
+       is where the re-entry path below reads it), NOT argv[2], which is the
+       list argument and would be clobbered. */
     current_expr->argc += 2;
-    current_expr->argv[2].type = VM_TYPE_INTEGER;
-    current_expr->argv[2].value.integer = 0;
+    current_expr->argv[3].type = VM_TYPE_INTEGER;
+    current_expr->argv[3].value.integer = 0;
   } else if(argc >= 4) {
     count_expr = thread->exprv[thread->exprc];
 
