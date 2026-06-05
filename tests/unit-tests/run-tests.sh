@@ -86,6 +86,19 @@ for test_file in $TEST_FILES; do
     # Run and capture output
     output=$(./bin/vm "$vm_file" 2>&1)
 
+    # The framework always prints a "Total:" summary line when a suite runs
+    # to completion. If it is absent, the program aborted before finishing
+    # (e.g. a stack overflow or unhandled error mid-suite). Count that as a
+    # failure -- otherwise a crashed suite reports as "✓ 0/0" and silently
+    # passes, masking real regressions.
+    if ! echo "$output" | grep -q "^Total:"; then
+        printf "${RED}✗ DID NOT COMPLETE (no summary -- crashed?)${NC}\n"
+        SUITES_RUN=$((SUITES_RUN + 1))
+        SUITES_FAILED=$((SUITES_FAILED + 1))
+        TOTAL_FAILED=$((TOTAL_FAILED + 1))
+        continue
+    fi
+
     # Extract statistics from output
     passed=$(echo "$output" | grep "^Passed:" | awk '{print $2}')
     failed=$(echo "$output" | grep "^Failed:" | awk '{print $2}')
