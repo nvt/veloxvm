@@ -33,7 +33,7 @@
 
 (require "reader.rkt")
 
-(provide lower-libraries)
+(provide lower-libraries library-search-paths)
 
 ;; ---------------------------------------------------------------------------
 ;; Feature set and known standard libraries
@@ -352,20 +352,87 @@
   (reverse result))
 
 ;; ---------------------------------------------------------------------------
+;; Library search path: loading file-based libraries by name
+;; ---------------------------------------------------------------------------
+
+;; Extra root directories to search for library files, beyond the source
+;; file's own directory and the current directory. Set from the compiler
+;; CLI (-I / --lib-dir). A library named (foo bar) is sought as the file
+;; foo/bar.sld (then foo/bar.scm) under each root. Like static linking
+;; generally, a found library is compiled into the program, not shared.
+(define library-search-paths (make-parameter '()))
+
+(define (source-dir-or-cwd source-file)
+  (if source-file
+      (or (path-only source-file) (current-directory))
+      (current-directory)))
+
+;; Locate the file defining library NAME, or #f. (foo bar) -> foo/bar.<ext>.
+(define (find-library-file name source-file)
+  (define comps (map (lambda (c) (format "~a" c)) name))
+  (define roots (append (list (source-dir-or-cwd source-file))
+                        (library-search-paths)
+                        (list (current-directory))))
+  (for*/or ([root (in-list roots)]
+            [ext (in-list '(".sld" ".scm"))])
+    (define file-comps
+      (append (drop-right comps 1)
+              (list (string-append (last comps) ext))))
+    (define p (apply build-path root file-comps))
+    (and (file-exists? p) p)))
+
+;; Load and register the library NAME (and any sibling define-library forms
+;; in the same file) from the search path. Includes inside the file resolve
+;; relative to the file itself.
+(define (load-library-file! name registry in-file-names source-file index-box)
+  (define file (find-library-file name source-file))
+  (unless file
+    (error 'import "cannot find library ~s on the search path" name))
+  (define forms (read-all-exprs (file->string file) (path->string file)))
+  (define defs (filter define-library-form? forms))
+  (unless (findf (lambda (f) (equal? (cadr f) name)) defs)
+    (error 'import "file ~a does not define library ~s" file name))
+  (for ([f defs])
+    (unless (hash-has-key? registry (cadr f))
+      (register-library! f registry file
+                         (append in-file-names (hash-keys registry))
+                         (unbox index-box))
+      (set-box! index-box (add1 (unbox index-box))))))
+
+;; Iteratively load every imported library that is neither standard nor
+;; already registered, following transitive imports to a fixpoint. Each
+;; load adds at least the requested library, so this terminates.
+(define (resolve-file-libraries! registry program-imports in-file-names
+                                 source-file index-box)
+  (let loop ()
+    (define all-imports
+      (append program-imports (append-map lib-imports (hash-values registry))))
+    (define missing
+      (remove-duplicates
+       (for/list ([iset (in-list all-imports)]
+                  #:when (let ([d (import-base iset)])
+                           (and (not (standard-library? d))
+                                (not (hash-has-key? registry d)))))
+         (import-base iset))))
+    (unless (null? missing)
+      (for ([name (in-list missing)])
+        (load-library-file! name registry in-file-names source-file index-box))
+      (loop))))
+
+;; ---------------------------------------------------------------------------
 ;; Top-level lowering
 ;; ---------------------------------------------------------------------------
 
 (define (lower-libraries exprs [source-file #f])
-  ;; Shallow pre-scan of library names so (library X) cond-expand tests and
-  ;; import validation are independent of source order.
-  (define known-libs
+  ;; Shallow pre-scan of in-file library names so (library X) cond-expand
+  ;; tests and import validation are independent of source order.
+  (define in-file-names
     (for/list ([f exprs] #:when (define-library-form? f)) (cadr f)))
 
   (define registry (make-hash))
-  (define lib-order '())       ; registered names, definition order (reversed)
   (define program-forms '())   ; non-library top-level forms (reversed)
   (define program-imports '()) ; top-level import sets (reversed)
-  (define next-index 0)
+  (define index-box (box 0))   ; unique index source for mangling
 
   (define (handle f)
     (cond
@@ -375,11 +442,12 @@
        (for ([path (cdr f)])
          (for-each handle (read-included-exprs path source-file)))]
       [(cond-expand-form? f)
-       (for-each handle (select-cond-expand-clause (cdr f) known-libs))]
+       (for-each handle (select-cond-expand-clause (cdr f) in-file-names))]
       [(define-library-form? f)
-       (register-library! f registry source-file known-libs next-index)
-       (set! next-index (add1 next-index))
-       (set! lib-order (cons (cadr f) lib-order))]
+       (register-library! f registry source-file
+                          (append in-file-names (hash-keys registry))
+                          (unbox index-box))
+       (set-box! index-box (add1 (unbox index-box)))]
       [(import-form? f)
        (set! program-imports (append (reverse (cdr f)) program-imports))]
       [else (set! program-forms (cons f program-forms))]))
@@ -388,7 +456,17 @@
   (set! program-imports (reverse program-imports))
   (set! program-forms (reverse program-forms))
 
-  ;; Validate each library's own imports (catches typos in deps).
+  ;; Load any imported library not defined in this file from the search path.
+  (resolve-file-libraries! registry program-imports in-file-names
+                           source-file index-box)
+
+  ;; Validate every import now that in-file and file-loaded libraries are
+  ;; all registered.
+  (define known-libs (append in-file-names (hash-keys registry)))
+  (for ([iset (in-list program-imports)])
+    (define dep (import-base iset))
+    (unless (library-known? dep known-libs)
+      (error 'import "unknown library: ~a" dep)))
   (for ([(name l) (in-hash registry)])
     (for ([iset (lib-imports l)])
       (define dep (import-base iset))
@@ -412,7 +490,10 @@
     (hash-remove! program-subst n))
 
   ;; Emit mangled library bodies (dependency order) then mangled program.
-  (define ordered (topo-sort-libraries registry (reverse lib-order)))
+  ;; Seed the sort with all registered libraries (in-file + file-loaded) in
+  ;; index order for a deterministic, dependency-correct emission.
+  (define seed (map lib-name (sort (hash-values registry) < #:key lib-index)))
+  (define ordered (topo-sort-libraries registry seed))
   (define lib-out
     (append-map (lambda (name)
                   (define l (hash-ref registry name))

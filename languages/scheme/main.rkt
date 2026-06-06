@@ -197,6 +197,10 @@
    [("--batch") manifest
                 "Compile every SRC[<tab>DEST] line in MANIFEST in one process"
                 (set! batch-file manifest)]
+   #:multi
+   [("-I" "--lib-dir") dir
+                "Add DIR to the R7RS library search path (repeatable)"
+                (library-search-paths (append (library-search-paths) (list dir)))]
    #:args sources
    (cond
      [batch-file
