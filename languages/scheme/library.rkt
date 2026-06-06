@@ -3,22 +3,33 @@
 ;; VeloxVM Scheme Compiler - R7RS Library System
 ;; Copyright (c) 2026, RISE Research Institutes of Sweden AB
 ;;
-;; Structural lowering. `define-library` / `import` / `export` /
-;; `cond-expand` are lowered to ordinary top-level forms in the single flat
-;; namespace the rest of the pipeline already uses. See
-;; doc/r7rs-library-system-design.md.
+;; Lowers R7RS define-library / import / export / cond-expand to ordinary
+;; top-level forms in the single flat namespace the rest of the pipeline
+;; uses. A pure source-to-source pass: no VM-core or bytecode changes.
+;; See doc/r7rs-library-system-design.md.
 ;;
-;; Scope and deliberate limitations:
-;;   - Flat namespace, no isolation: two libraries that define the same
-;;     internal name collide, exactly as two hand-written top-level defines
-;;     would. Name-mangling for real isolation is layered on separately.
-;;   - Permissive: imports validate the library name but do not hide
-;;     un-imported names; every visible binding stays visible.
-;;   - Import sets: `only` / `except` are accepted and ignored (harmless
-;;     under permissive resolution); `prefix` / `rename` are rejected
-;;     (ignoring them would silently miscompile references).
-;;   - Macros exported by a library become globally visible (the expander
-;;     registers them globally); per-library macro hygiene is handled separately.
+;; Structural lowering (flatten libraries, resolve cond-expand,
+;; validate imports).
+;;
+;; Name isolation by mangling. Each library's top-level
+;; definitions are alpha-renamed to unique symbols (e.g. helper$L0), and
+;; references are rewritten per a per-library substitution map. This is
+;; sound without local-scope analysis: consistently renaming every
+;; occurrence of an identifier within a library's forms to a fresh,
+;; unique spelling is whole-identifier alpha-conversion, which preserves
+;; binding/shadowing structure (shadowing is positional). The only
+;; positions that must be left alone are quoted data. With the
+;; substitution-map model the import sets only / except / prefix / rename
+;; fall out naturally and are supported for user libraries.
+;;
+;; Deliberate limitations:
+;;   - Macros: a library's define-syntax forms are not mangled and its
+;;     macros remain globally visible. A library that mixes exported (or
+;;     internal) macros with mangled value bindings may misbehave;
+;;     per-library macro hygiene is handled separately.
+;;   - Import sets on *standard* libraries (only/except/prefix/rename)
+;;     need a per-standard-library export list we do not yet carry, so
+;;     they are rejected; plain (import (scheme base)) is a no-op.
 
 (require "reader.rkt")
 
@@ -34,9 +45,9 @@
 (define library-features
   '(veloxvm r5rs r7rs-subset exact-closed ratios))
 
-;; R7RS standard library names the compiler recognises. These
-;; are no-ops on import: their bindings already exist as VM primitives or
-;; as the auto-prepended runtime prelude.
+;; R7RS standard library names the compiler recognises. On import these
+;; are no-ops: their bindings already exist as VM primitives or as the
+;; auto-prepended runtime prelude, so nothing is mangled or substituted.
 (define standard-libraries
   (list '(scheme base) '(scheme write) '(scheme char) '(scheme inexact)
         '(scheme complex) '(scheme cxr) '(scheme file) '(scheme read)
@@ -47,7 +58,14 @@
 ;; A registered library
 ;; ---------------------------------------------------------------------------
 
-(struct lib (name exports imports body) #:transparent)
+;; index    : unique integer, used to build mangled names
+;; exports  : list of export specs (symbol | (rename internal external))
+;; imports  : list of import sets
+;; body     : flattened top-level forms (post cond-expand + include)
+;; own      : list of names this library defines at top level (to mangle)
+;; mangle   : hash own-name -> mangled symbol
+;; exp-map  : list of (public-name . mangled-symbol) for exported names
+(struct lib (name index exports imports body own mangle exp-map) #:mutable #:transparent)
 
 ;; Library names are lists of symbols and/or exact integers, e.g.
 ;; (scheme base) or (srfi 1). Used directly as equal?-based hash keys.
@@ -56,13 +74,13 @@
        (pair? x)
        (andmap (lambda (e) (or (symbol? e) (exact-integer? e))) x)))
 
+(define (standard-library? name) (and (member name standard-libraries) #t))
+
 ;; ---------------------------------------------------------------------------
 ;; Form predicates
 ;; ---------------------------------------------------------------------------
 
-(define (tagged? form sym)
-  (and (pair? form) (eq? (car form) sym)))
-
+(define (tagged? form sym) (and (pair? form) (eq? (car form) sym)))
 (define (define-library-form? f) (tagged? f 'define-library))
 (define (cond-expand-form? f)    (tagged? f 'cond-expand))
 (define (import-form? f)         (tagged? f 'import))
@@ -100,36 +118,98 @@
       [(feature-present? (caar cs) known-libs) (cdar cs)]
       [else (loop (cdr cs))])))
 
-;; ---------------------------------------------------------------------------
-;; Import-set parsing
-;; ---------------------------------------------------------------------------
-
-;; Reduce an import set to the underlying library name. `only`/`except`
-;; wrap a set and are accepted (their filtering is a no-op under permissive
-;; resolution). `prefix`/`rename` change the spelling the program uses, so
-;; ignoring them would miscompile -- rejected.
-(define (import-set->name iset)
-  (cond
-    [(and (pair? iset) (memq (car iset) '(only except)))
-     (import-set->name (cadr iset))]
-    [(and (pair? iset) (memq (car iset) '(prefix rename)))
-     (error 'import
-            "import set '~a' is not supported: ~a"
-            (car iset) iset)]
-    [(library-name? iset) iset]
-    [else (error 'import "malformed import set: ~a" iset)]))
-
 (define (library-known? name known-libs)
-  (or (and (member name standard-libraries) #t)
-      (and (member name known-libs) #t)))
+  (or (standard-library? name) (and (member name known-libs) #t)))
+
+;; ---------------------------------------------------------------------------
+;; Collecting a body's top-level definition names
+;; ---------------------------------------------------------------------------
+
+;; The name a (define ...) target introduces, peeling curried defines.
+(define (define-target-name target)
+  (cond [(symbol? target) target]
+        [(pair? target) (define-target-name (car target))]
+        [else #f]))
+
+;; Names in a formals list (proper, improper, or a bare rest symbol).
+(define (formals->names formals)
+  (cond [(symbol? formals) (list formals)]
+        [(pair? formals) (cons (car formals) (formals->names (cdr formals)))]
+        [else '()]))
+
+;; The top-level names introduced by a define-record-type form:
+;; the type name, constructor, predicate, and each accessor/mutator.
+(define (record-type-names f)
+  ;; (define-record-type NAME (CTOR field ...) PRED (field ACC [MUT]) ...)
+  (define names '())
+  (define (add! x) (when (symbol? x) (set! names (cons x names))))
+  (when (>= (length f) 4)
+    (add! (define-target-name (list-ref f 1)))       ; type name
+    (let ([ctor (list-ref f 2)])                      ; constructor
+      (when (pair? ctor) (add! (car ctor))))
+    (add! (list-ref f 3))                             ; predicate
+    (for ([spec (drop f 4)])                          ; field specs
+      (when (pair? spec)
+        (when (>= (length spec) 2) (add! (list-ref spec 1)))  ; accessor
+        (when (>= (length spec) 3) (add! (list-ref spec 2)))))) ; mutator
+  (reverse names))
+
+(define (defined-names-of f)
+  (cond
+    [(not (pair? f)) '()]
+    [(eq? (car f) 'define)
+     (let ([n (define-target-name (and (pair? (cdr f)) (cadr f)))])
+       (if n (list n) '()))]
+    [(eq? (car f) 'define-values)
+     (if (pair? (cdr f)) (formals->names (cadr f)) '())]
+    [(eq? (car f) 'define-record-type) (record-type-names f)]
+    [(eq? (car f) 'begin) (append-map defined-names-of (cdr f))]
+    ;; define-syntax: a macro keyword, not a value binding -- not mangled.
+    [else '()]))
+
+(define (collect-defined-names forms) (append-map defined-names-of forms))
+
+;; ---------------------------------------------------------------------------
+;; Substitution (alpha-renaming) walk
+;; ---------------------------------------------------------------------------
+
+(define (symbol-append a b)
+  (string->symbol (string-append (symbol->string a) (symbol->string b))))
+
+;; Rewrite every symbol occurrence found in `subst`, except inside quoted
+;; data. define-syntax / let-syntax / letrec-syntax forms are left
+;; untouched (macros are not mangled here).
+(define (subst-walk form subst)
+  (cond
+    [(symbol? form) (hash-ref subst form form)]
+    [(not (pair? form)) form]
+    [(memq (car form) '(quote define-syntax let-syntax letrec-syntax)) form]
+    [(eq? (car form) 'quasiquote) (list 'quasiquote (qq-walk (cadr form) subst 1))]
+    [else (cons (subst-walk (car form) subst)
+                (subst-walk (cdr form) subst))]))
+
+;; Quasiquote-aware walk: substitute only inside unquote / unquote-splicing
+;; at the matching nesting level; leave literal template data alone.
+(define (qq-walk form subst level)
+  (cond
+    [(not (pair? form)) form]
+    [(eq? (car form) 'unquote)
+     (if (= level 1)
+         (list 'unquote (subst-walk (cadr form) subst))
+         (list 'unquote (qq-walk (cadr form) subst (sub1 level))))]
+    [(eq? (car form) 'unquote-splicing)
+     (if (= level 1)
+         (list 'unquote-splicing (subst-walk (cadr form) subst))
+         (list 'unquote-splicing (qq-walk (cadr form) subst (sub1 level))))]
+    [(eq? (car form) 'quasiquote)
+     (list 'quasiquote (qq-walk (cadr form) subst (add1 level)))]
+    [else (cons (qq-walk (car form) subst level)
+                (qq-walk (cdr form) subst level))]))
 
 ;; ---------------------------------------------------------------------------
 ;; Library registration
 ;; ---------------------------------------------------------------------------
 
-;; Process a list of library declarations, accumulating into mutable boxes.
-;; Declarations: export, import, begin, include, include-ci,
-;; include-library-declarations, cond-expand.
 (define (process-declarations decls source-file known-libs
                               exports-box imports-box body-box)
   (define (add-exports! specs) (set-box! exports-box (append (unbox exports-box) specs)))
@@ -141,13 +221,11 @@
       [(tagged? d 'import) (add-imports! (cdr d))]
       [(tagged? d 'begin)  (add-body! (cdr d))]
       [(include-form? d)
-       ;; (include "f" ...) / (include-ci "f" ...): splice each file's
-       ;; expressions into the body. include-ci is treated as include
-       ;; (no case folding -- a documented limitation).
+       ;; (include "f" ...) / (include-ci "f" ...). include-ci is
+       ;; treated as include (no case folding -- a documented limitation).
        (for ([path (cdr d)])
          (add-body! (read-included-exprs path source-file)))]
       [(tagged? d 'include-library-declarations)
-       ;; Splice declarations (not expressions) from each file, recursively.
        (for ([path (cdr d)])
          (process-declarations (read-included-exprs path source-file)
                                source-file known-libs
@@ -158,7 +236,7 @@
                              exports-box imports-box body-box)]
       [else (error 'define-library "unknown library declaration: ~a" d)])))
 
-(define (register-library! form registry source-file known-libs)
+(define (register-library! form registry source-file known-libs index)
   (define name (cadr form))
   (unless (library-name? name)
     (error 'define-library "invalid library name: ~a" name))
@@ -167,18 +245,94 @@
   (define body-box (box '()))
   (process-declarations (cddr form) source-file known-libs
                         exports-box imports-box body-box)
+  (define body (unbox body-box))
+  (define own (remove-duplicates (collect-defined-names body)))
+  ;; Mangle map: own-name -> own-name$L<index>.
+  (define mangle (make-hash))
+  (define suffix (string->symbol (format "$L~a" index)))
+  (for ([n own]) (hash-set! mangle n (symbol-append n suffix)))
+  ;; Export map: public-name -> mangled. Supports (rename internal external).
+  (define exp-map
+    (for/list ([spec (unbox exports-box)])
+      (define-values (internal external)
+        (cond
+          [(symbol? spec) (values spec spec)]
+          [(and (tagged? spec 'rename) (= (length spec) 3)) (values (cadr spec) (caddr spec))]
+          [else (error 'export "malformed export spec: ~a" spec)]))
+      (unless (hash-has-key? mangle internal)
+        (error 'export "library ~a exports undefined name: ~a" name internal))
+      (cons external (hash-ref mangle internal))))
   (hash-set! registry name
-             (lib name (unbox exports-box) (unbox imports-box) (unbox body-box))))
+             (lib name index (unbox exports-box) (unbox imports-box)
+                  body own mangle exp-map)))
+
+;; ---------------------------------------------------------------------------
+;; Import-set resolution -> substitution entries (public-name . target)
+;; ---------------------------------------------------------------------------
+
+;; Underlying library name of an import set (peeling only/except/prefix/rename).
+(define (import-base iset)
+  (if (and (pair? iset) (memq (car iset) '(only except prefix rename)))
+      (import-base (cadr iset))
+      iset))
+
+;; Resolve an import set to a list of (public-name . target-symbol) pairs.
+;; Standard libraries contribute no entries (their names resolve directly);
+;; an import-set operator on a standard library is rejected.
+(define (resolve-import-set iset registry)
+  (define base (import-base iset))
+  (define is-standard (standard-library? base))
+  (cond
+    [(library-name? iset)
+     (cond
+       [is-standard '()]
+       [(hash-ref registry iset #f) => lib-exp-map]
+       [else (error 'import "unknown library: ~a" iset)])]
+    [(and (pair? iset) is-standard)
+     (error 'import
+            "import set '~a' on standard library ~a needs an export list: ~a"
+            (car iset) base iset)]
+    [(tagged? iset 'only)
+     (let ([inner (resolve-import-set (cadr iset) registry)]
+           [ids (cddr iset)])
+       (for ([id ids])
+         (unless (assq id inner)
+           (error 'import "(only ...) names ~a not exported by ~a" id base)))
+       (filter (lambda (p) (memq (car p) ids)) inner))]
+    [(tagged? iset 'except)
+     (let ([inner (resolve-import-set (cadr iset) registry)]
+           [ids (cddr iset)])
+       (filter (lambda (p) (not (memq (car p) ids))) inner))]
+    [(tagged? iset 'prefix)
+     (let ([inner (resolve-import-set (cadr iset) registry)]
+           [p (caddr iset)])
+       (map (lambda (pr) (cons (symbol-append p (car pr)) (cdr pr))) inner))]
+    [(tagged? iset 'rename)
+     (let* ([inner (resolve-import-set (cadr iset) registry)]
+            [renames (cddr iset)])  ; each (from to)
+       (map (lambda (pr)
+              (let ([r (assq (car pr) (map (lambda (x) (cons (car x) (cadr x))) renames))])
+                (if r (cons (cdr r) (cdr pr)) pr)))
+            inner))]
+    [else (error 'import "malformed import set: ~a" iset)]))
+
+;; Merge import entries into a substitution hash, flagging conflicts where
+;; one name would resolve to two different bindings.
+(define (merge-import-entries! subst entries context)
+  (for ([pr entries])
+    (define name (car pr))
+    (define target (cdr pr))
+    (cond
+      [(and (hash-has-key? subst name) (not (eq? (hash-ref subst name) target)))
+       (error 'import "~a: ~a imported with conflicting bindings" context name)]
+      [else (hash-set! subst name target)])))
 
 ;; ---------------------------------------------------------------------------
 ;; Dependency ordering
 ;; ---------------------------------------------------------------------------
 
-;; Emit libraries so each is defined before any (registered) library that
-;; imports it. Standard-library imports are ignored as edges. Cyclic user
-;; imports are an error.
 (define (topo-sort-libraries registry order)
-  (define visited (make-hash))   ; name -> 'done
+  (define visited (make-hash))
   (define in-progress (make-hash))
   (define result '())
   (define (visit name)
@@ -188,11 +342,9 @@
        (error 'define-library "circular library import involving ~a" name)]
       [else
        (hash-set! in-progress name #t)
-       (define l (hash-ref registry name))
-       (for ([iset (lib-imports l)])
-         (define dep (import-set->name iset))
-         (when (hash-has-key? registry dep)
-           (visit dep)))
+       (for ([iset (lib-imports (hash-ref registry name))])
+         (define dep (import-base iset))
+         (when (hash-has-key? registry dep) (visit dep)))
        (hash-remove! in-progress name)
        (hash-set! visited name 'done)
        (set! result (cons name result))]))
@@ -203,9 +355,6 @@
 ;; Top-level lowering
 ;; ---------------------------------------------------------------------------
 
-;; Lower all library/import/cond-expand forms in a top-level expression
-;; list to a flat list of ordinary forms. `source-file` is used to resolve
-;; includes inside libraries and cond-expand clauses.
 (define (lower-libraries exprs [source-file #f])
   ;; Shallow pre-scan of library names so (library X) cond-expand tests and
   ;; import validation are independent of source order.
@@ -213,38 +362,63 @@
     (for/list ([f exprs] #:when (define-library-form? f)) (cadr f)))
 
   (define registry (make-hash))
-  (define lib-order '())     ; registered names, definition order (reversed)
-  (define program-forms '()) ; non-library top-level forms (reversed)
+  (define lib-order '())       ; registered names, definition order (reversed)
+  (define program-forms '())   ; non-library top-level forms (reversed)
+  (define program-imports '()) ; top-level import sets (reversed)
+  (define next-index 0)
 
   (define (handle f)
     (cond
       [(include-form? f)
-       ;; Top-level includes are normally expanded by the reader already;
-       ;; this covers includes revealed by selecting a cond-expand clause.
+       ;; Covers includes revealed by selecting a cond-expand clause;
+       ;; ordinary top-level includes are expanded by the reader already.
        (for ([path (cdr f)])
          (for-each handle (read-included-exprs path source-file)))]
       [(cond-expand-form? f)
        (for-each handle (select-cond-expand-clause (cdr f) known-libs))]
       [(define-library-form? f)
-       (register-library! f registry source-file known-libs)
+       (register-library! f registry source-file known-libs next-index)
+       (set! next-index (add1 next-index))
        (set! lib-order (cons (cadr f) lib-order))]
       [(import-form? f)
-       ;; Top-level program import: validate names, then drop.
-       (for ([iset (cdr f)])
-         (define name (import-set->name iset))
-         (unless (library-known? name known-libs)
-           (error 'import "unknown library: ~a" name)))]
+       (set! program-imports (append (reverse (cdr f)) program-imports))]
       [else (set! program-forms (cons f program-forms))]))
 
   (for-each handle exprs)
+  (set! program-imports (reverse program-imports))
+  (set! program-forms (reverse program-forms))
 
-  ;; Validate each library's own imports too (catches typos in deps).
+  ;; Validate each library's own imports (catches typos in deps).
   (for ([(name l) (in-hash registry)])
     (for ([iset (lib-imports l)])
-      (define dep (import-set->name iset))
+      (define dep (import-base iset))
       (unless (library-known? dep known-libs)
         (error 'import "library ~a imports unknown library: ~a" name dep))))
 
+  ;; Build each library's substitution: imports first, own names override.
+  (define (library-subst l)
+    (define subst (make-hash))
+    (for ([iset (lib-imports l)])
+      (merge-import-entries! subst (resolve-import-set iset registry) (lib-name l)))
+    (for ([(name mangled) (in-hash (lib-mangle l))]) (hash-set! subst name mangled))
+    subst)
+
+  ;; Build the program's substitution from top-level imports, then drop any
+  ;; name the program defines itself (a program-level define shadows it).
+  (define program-subst (make-hash))
+  (for ([iset program-imports])
+    (merge-import-entries! program-subst (resolve-import-set iset registry) "program"))
+  (for ([n (collect-defined-names program-forms)])
+    (hash-remove! program-subst n))
+
+  ;; Emit mangled library bodies (dependency order) then mangled program.
   (define ordered (topo-sort-libraries registry (reverse lib-order)))
-  (append (append-map (lambda (name) (lib-body (hash-ref registry name))) ordered)
-          (reverse program-forms)))
+  (define lib-out
+    (append-map (lambda (name)
+                  (define l (hash-ref registry name))
+                  (define s (library-subst l))
+                  (map (lambda (form) (subst-walk form s)) (lib-body l)))
+                ordered))
+  (define prog-out
+    (map (lambda (form) (subst-walk form program-subst)) program-forms))
+  (append lib-out prog-out))
