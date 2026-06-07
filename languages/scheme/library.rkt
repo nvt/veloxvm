@@ -22,11 +22,21 @@
 ;; substitution-map model the import sets only / except / prefix / rename
 ;; fall out naturally and are supported for user libraries.
 ;;
+;; Macros participate in mangling. A library's define-syntax
+;; names are treated as top-level definitions and mangled like values, and
+;; the substitution walk no longer skips macro forms, so a macro template's
+;; references to its library's own (possibly non-exported) bindings are
+;; rewritten consistently. Because the expander is global and keyed by
+;; name, mangling macro names to unique symbols yields per-library macro
+;; isolation for free (a non-importer never names m$L<index>) and lets
+;; export / import sets (only/except/prefix/rename) apply to macros exactly
+;; as they do to values -- with no expander changes.
+;;
 ;; Deliberate limitations:
-;;   - Macros: a library's define-syntax forms are not mangled and its
-;;     macros remain globally visible. A library that mixes exported (or
-;;     internal) macros with mangled value bindings may misbehave;
-;;     per-library macro hygiene is handled separately.
+;;   - Macro hygiene edges: syntax-rules literal identifiers are matched by
+;;     spelling, so a library binding (or import) whose name coincides with
+;;     a macro literal can interact badly. This is the existing expander's
+;;     hygiene gap, not introduced here.
 ;;   - Import sets on *standard* libraries (only/except/prefix/rename)
 ;;     need a per-standard-library export list we do not yet carry, so
 ;;     they are rejected; plain (import (scheme base)) is a no-op.
@@ -164,7 +174,10 @@
      (if (pair? (cdr f)) (formals->names (cadr f)) '())]
     [(eq? (car f) 'define-record-type) (record-type-names f)]
     [(eq? (car f) 'begin) (append-map defined-names-of (cdr f))]
-    ;; define-syntax: a macro keyword, not a value binding -- not mangled.
+    ;; define-syntax: the macro keyword is a top-level definition; mangling
+    ;; it isolates the macro per library and lets export/import sets apply.
+    [(eq? (car f) 'define-syntax)
+     (if (and (pair? (cdr f)) (symbol? (cadr f))) (list (cadr f)) '())]
     [else '()]))
 
 (define (collect-defined-names forms) (append-map defined-names-of forms))
@@ -177,13 +190,17 @@
   (string->symbol (string-append (symbol->string a) (symbol->string b))))
 
 ;; Rewrite every symbol occurrence found in `subst`, except inside quoted
-;; data. define-syntax / let-syntax / letrec-syntax forms are left
-;; untouched (macros are not mangled here).
+;; data. Macro forms (define-syntax / let-syntax / letrec-syntax) ARE
+;; walked: a template's free references to library bindings, and macro
+;; keywords that are library names, get rewritten. syntax-rules pattern
+;; variables, literals, and the ellipsis are left alone because they do not
+;; appear in `subst` (a library name colliding with a literal is the known
+;; expander hygiene edge, not handled here).
 (define (subst-walk form subst)
   (cond
     [(symbol? form) (hash-ref subst form form)]
     [(not (pair? form)) form]
-    [(memq (car form) '(quote define-syntax let-syntax letrec-syntax)) form]
+    [(eq? (car form) 'quote) form]
     [(eq? (car form) 'quasiquote) (list 'quasiquote (qq-walk (cadr form) subst 1))]
     [else (cons (subst-walk (car form) subst)
                 (subst-walk (cdr form) subst))]))
