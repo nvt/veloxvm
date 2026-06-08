@@ -5,6 +5,7 @@
 
 (require racket/runtime-path
          "reader.rkt"
+         "library.rkt"   ; R7RS define-library / import / cond-expand lowering
          "expander.rkt"  ; Macro expansion
          "rewriter.rkt"
          "letrec-lifting.rkt"  ; Lift single self-recursive letrec to top level
@@ -65,7 +66,9 @@
 ;; source-file: optional path for resolving include directives.
 (define (compile-string source-code [source-file #f])
   (opt-stats-reset!)
-  (let* ([user-exprs (read-all-exprs source-code source-file)]
+  (let* ([user-exprs (lower-libraries
+                       (read-all-exprs source-code source-file)
+                       source-file)]
          ;; Prepend the runtime-library prelude. Dead-define elimination
          ;; later in the pipeline drops anything the user doesn't use.
          [exprs (append prelude-exprs user-exprs)]
@@ -194,6 +197,10 @@
    [("--batch") manifest
                 "Compile every SRC[<tab>DEST] line in MANIFEST in one process"
                 (set! batch-file manifest)]
+   #:multi
+   [("-I" "--lib-dir") dir
+                "Add DIR to the R7RS library search path (repeatable)"
+                (library-search-paths (append (library-search-paths) (list dir)))]
    #:args sources
    (cond
      [batch-file

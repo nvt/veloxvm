@@ -9,6 +9,7 @@
 
 (provide read-all-exprs
          read-expr
+         read-included-exprs
          include-search-paths)
 
 ;; Compiler-side search path used as a fallback when an (include "X")
@@ -51,11 +52,17 @@
 ;; pattern/template lists that look like expressions but are matched, not
 ;; evaluated. (Quasiquote with embedded unquote-include is a corner case
 ;; we don't attempt to support.)
+;; define-library and cond-expand are skipped here so the library pass
+;; (library.rkt) owns include resolution inside them: cond-expand must
+;; pick a clause before its includes are read (a blind splice would pull
+;; files from dead branches), and a library's includes are declarations
+;; that the library pass reads via read-included-exprs.
 (define (skip-include-walk? head)
   (and (symbol? head)
        (memq head '(quote quasiquote
                           define-syntax let-syntax letrec-syntax
-                          syntax-rules))))
+                          syntax-rules
+                          define-library cond-expand))))
 
 ;; Walk the children of a form via cons-based traversal so the walker
 ;; copes with improper lists (e.g. the (FUNC . REST) formals in
@@ -131,6 +138,19 @@
                                                     resolved-path
                                                     new-included)])
       included-exprs)))
+
+;; Read and return the expressions of an included file, resolving the
+;; path exactly as the reader's own (include ...) handling does (source-
+;; relative first, then the configured search paths). Used by the library
+;; pass for include / include-ci / include-library-declarations, which
+;; are skipped by the in-reader include walker. Nested (include ...)
+;; forms in the file are expanded by read-all-exprs as usual.
+(define (read-included-exprs include-path source-file)
+  (let ([resolved (resolve-include-path include-path source-file)])
+    (unless (file-exists? resolved)
+      (error 'include "File not found: ~a (resolved to: ~a)"
+             include-path resolved))
+    (read-all-exprs (file->string resolved) resolved)))
 
 ;; Resolve include path. Absolute paths are used verbatim. Relative paths
 ;; resolve against the including file's directory first; if that file
