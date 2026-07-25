@@ -99,9 +99,14 @@ get_index(vm_hash_table_t *table, vm_hash_key_t key, vm_hash_index_t *index)
   }
 
   /* We haven't found the key after the first hash, so try to find it in
-     a slot obtained from the second hash function. */
+     a slot obtained from the second hash function. The probe wraps around
+     the end of the table: without the modulo, a secondary index within
+     VM_HASH_LINEAR_PROBING_LIMIT slots of the end walks past both the
+     used bitmap and the pair array, which VM_HASH_TABLE allocates as
+     exactly-sized adjacent statics. */
   tmp_index = (*index + calculate_hash2(key)) % table->size;
-  for(i = 0; i < VM_HASH_LINEAR_PROBING_LIMIT; i++, tmp_index++) {
+  for(i = 0; i < VM_HASH_LINEAR_PROBING_LIMIT;
+      i++, tmp_index = (tmp_index + 1) % table->size) {
     if(!VM_HASH_SLOT_USED(table, tmp_index)) {
       /* The key was not found, so set the index to the first empty slot
 	 of the pair of slots obtained with the two hash functionsa. */
@@ -174,7 +179,12 @@ vm_hash_delete(vm_hash_table_t *table, vm_hash_key_t key)
 {
   vm_hash_index_t index;
 
-  if(!get_index(table, key, &index)) {
+  /* On a miss, get_index still reports success and returns the slot the
+     key would be inserted into, so check the slot before clearing it.
+     Clearing an unused slot decrements items below zero, which leaves
+     VM_HASH_IS_FULL permanently true, and reports a key as removed that
+     was never stored. */
+  if(!get_index(table, key, &index) || !VM_HASH_SLOT_USED(table, index)) {
     return 0;
   }
 
