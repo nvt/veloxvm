@@ -68,13 +68,20 @@ static const char *error_messages[] = {
   "Integer overflow"
 };
 
-static const char *
-error_message(vm_error_type_t error_type)
+const char *
+vm_error_message(vm_error_type_t error_type)
 {
   if(error_type >= VM_ARRAY_SIZE(error_messages)) {
     return "unknown error";
   }
   return error_messages[error_type];
+}
+#else
+const char *
+vm_error_message(vm_error_type_t error_type)
+{
+  (void)error_type;
+  return "";
 }
 #endif /* VM_ERROR_MESSAGES */
 
@@ -127,7 +134,7 @@ vm_print_error(vm_thread_t *thread)
   vm_thread_print_ip(thread, thread->expr);
 
 #if VM_ERROR_MESSAGES
-  VM_PRINTF(": %s", error_message(thread->error.error_type));
+  VM_PRINTF(": %s", vm_error_message(thread->error.error_type));
 
   if(thread->error.error_obj.type != VM_TYPE_NONE) {
     VM_PRINTF(": ");

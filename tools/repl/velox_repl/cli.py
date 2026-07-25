@@ -35,7 +35,7 @@ from velox_repl.core import (
     ReplSession,
 )
 from velox_repl.render import render_for
-from velox_repl.vm import VmClient
+from velox_repl.vm import VmClient, VmCrash, VmError
 
 # coap_transport pulls in aiocoap which can be slow to import. Defer
 # until we know the user actually wants the CoAP transport.
@@ -95,6 +95,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
     except OSError as e:
         print(f"velox-repl: spawn error: {e}", file=sys.stderr)
+        return 1
+    except (VmCrash, VmError) as e:
+        print(f"velox-repl: connection failed: {e}", file=sys.stderr)
         return 1
 
     # Optional handshake. Older VMs and stubs that don't implement INFO
