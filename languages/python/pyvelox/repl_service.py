@@ -109,6 +109,7 @@ class _Snapshot:
         "preamble", "emitted_helpers",
         "renamed_vars", "default_nodes", "default_bytes",
         "vararg_funcs", "defined_classes",
+        "module_bindings",
         "scope_stack", "boxed_stack",
         "loop_depth", "exception_handler_vars", "enclosing_class_stack",
     )
@@ -132,6 +133,7 @@ class _Snapshot:
         self.default_bytes = {k: list(v) for k, v in t._default_bytes.items()}
         self.vararg_funcs = dict(t._vararg_funcs)
         self.defined_classes = set(t._defined_classes)
+        self.module_bindings = set(t._module_bindings)
         self.scope_stack = [set(s) for s in t.scope_stack]
         self.boxed_stack = [set(s) for s in t.boxed_stack]
         self.loop_depth = t._loop_depth
@@ -160,6 +162,7 @@ class _Snapshot:
         t._default_bytes = {k: list(v) for k, v in self.default_bytes.items()}
         t._vararg_funcs = dict(self.vararg_funcs)
         t._defined_classes = set(self.defined_classes)
+        t._module_bindings = set(self.module_bindings)
         t.scope_stack = [set(s) for s in self.scope_stack]
         t.boxed_stack = [set(s) for s in self.boxed_stack]
         t._loop_depth = self.loop_depth

@@ -6,6 +6,8 @@ Tests unusual inputs, boundary conditions, and error handling.
 
 import unittest
 import ast
+import contextlib
+import io
 import sys
 from pathlib import Path
 
@@ -17,6 +19,7 @@ from pyvelox.bytecode import Bytecode
 from pyvelox.compiler import compile_string
 from pyvelox.encoder import encode_integer
 from pyvelox.errors import PyveloxCompileError
+from pyvelox.primitives import VM_PRIMITIVES
 
 
 class TestBoundaryValues(unittest.TestCase):
@@ -562,6 +565,105 @@ class TestCallDispatchRegistry(unittest.TestCase):
             'y = max(1, 2, 3)\n'
         )
         self.assertGreater(len(bc.expressions), 0)
+
+    def test_vm_primitive_call_is_not_renamed_by_class_probe(self):
+        # Class-construction detection used to call binding_name() while
+        # probing every ordinary callee. For a VM primitive that mutated the
+        # rename map and emitted an unbound py_-prefixed application symbol.
+        warnings = io.StringIO()
+        with contextlib.redirect_stderr(warnings):
+            bc = compile_string('result = system_info()\n')
+        self.assertNotIn('py_system_info', bc.symbol_table.symbols)
+        self.assertNotIn('system_info', bc.symbol_table.symbols)
+        self.assertEqual(warnings.getvalue(), '')
+
+    def test_vm_primitive_call_inside_function_is_not_renamed(self):
+        warnings = io.StringIO()
+        with contextlib.redirect_stderr(warnings):
+            bc = compile_string(
+                'def info():\n'
+                '    return system_info()\n'
+                'result = info()\n')
+        self.assertNotIn('py_system_info', bc.symbol_table.symbols)
+        self.assertEqual(warnings.getvalue(), '')
+
+    def test_vm_primitive_call_inside_lambda_is_not_renamed(self):
+        warnings = io.StringIO()
+        with contextlib.redirect_stderr(warnings):
+            bc = compile_string(
+                'info = lambda: system_info()\n'
+                'result = info()\n')
+        self.assertNotIn('py_system_info', bc.symbol_table.symbols)
+        self.assertEqual(warnings.getvalue(), '')
+
+    def test_vm_primitive_first_class_reference_is_not_renamed(self):
+        warnings = io.StringIO()
+        with contextlib.redirect_stderr(warnings):
+            bc = compile_string(
+                'info = system_info\n'
+                'result = info()\n')
+        self.assertNotIn('py_system_info', bc.symbol_table.symbols)
+        self.assertEqual(warnings.getvalue(), '')
+
+    def test_vm_primitive_callback_is_not_renamed(self):
+        warnings = io.StringIO()
+        with contextlib.redirect_stderr(warnings):
+            bc = compile_string('result = map(print, [1, 2])\n')
+        self.assertNotIn('py_print', bc.symbol_table.symbols)
+        self.assertEqual(warnings.getvalue(), '')
+
+    def test_primitive_shadowing_function_uses_user_binding(self):
+        warnings = io.StringIO()
+        with contextlib.redirect_stderr(warnings):
+            bc = compile_string(
+                'def system_info():\n'
+                '    return 7\n'
+                'result = system_info()\n')
+        self.assertIn('py_system_info', bc.symbol_table.symbols)
+        self.assertIn("renamed to 'py_system_info'", warnings.getvalue())
+
+    def test_builtin_handler_yields_to_visible_user_binding(self):
+        warnings = io.StringIO()
+        with contextlib.redirect_stderr(warnings):
+            bc = compile_string(
+                'def print(value):\n'
+                '    return value\n'
+                'result = print(7)\n')
+        self.assertIn('py_print', bc.symbol_table.symbols)
+        self.assertIn("renamed to 'py_print'", warnings.getvalue())
+
+    def test_all_primitive_loads_are_non_mutating(self):
+        # Exhaustively pin the distinction between looking up a primitive and
+        # declaring a user binding. Seven VM names are Python keywords and
+        # cannot occur as ast.Name nodes; every other primitive must resolve
+        # without changing the collision registry.
+        import keyword
+        translator = PythonTranslator(Bytecode())
+        for name in VM_PRIMITIVES:
+            if not name.isidentifier() or keyword.iskeyword(name):
+                continue
+            self.assertEqual(translator.resolve_name(name), name)
+        self.assertEqual(translator.renamed_vars, {})
+
+    def test_parameter_shadow_does_not_leak_after_function_scope(self):
+        bc = Bytecode()
+        translator = PythonTranslator(bc)
+        translator.translate_module(ast.parse(
+            'def invoke(system_info):\n'
+            '    return system_info()\n'))
+        self.assertEqual(translator.resolve_name('system_info'),
+                         'system_info')
+
+    def test_incremental_function_definition_does_not_poison_later_form(self):
+        # Mirrors the long-lived translator used by pyvelox-repl-server.
+        bc = Bytecode()
+        translator = PythonTranslator(bc)
+        translator.translate_module(ast.parse(
+            'def info():\n'
+            '    return system_info()\n'))
+        later = translator.translate_module(ast.parse('system_info()\n'))
+        self.assertNotIn('py_system_info', bc.symbol_table.symbols)
+        self.assertIsInstance(later, bytes)
 
     def test_method_dispatch_compiles(self):
         from pyvelox.compiler import compile_string

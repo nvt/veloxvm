@@ -1039,7 +1039,7 @@ class _BuiltinHandlers:
                 raise NotImplementedError("List comprehension only supports simple variable targets")
 
             var_name = gen.target.id
-            safe_var = self.get_safe_name(var_name)
+            safe_var = self.binding_name(var_name)
 
             # Apply filters if any
             result_iter = iter_bytes
@@ -1077,7 +1077,7 @@ class _BuiltinHandlers:
                     raise NotImplementedError("List comprehension only supports simple variable targets")
 
                 var_name = gen.target.id
-                safe_var = self.get_safe_name(var_name)
+                safe_var = self.binding_name(var_name)
                 iter_bytes = self.translate_expr_with_ref(gen.iter)
 
                 if i == 0:
@@ -1105,7 +1105,7 @@ class _BuiltinHandlers:
 
             # Finally, map the element expression over the cartesian product
             # Extract all variables and create the final lambda
-            all_vars = [self.get_safe_name(g.target.id) for g in reversed(gens)]
+            all_vars = [self.binding_name(g.target.id) for g in reversed(gens)]
 
             # This is complex - for now just raise an error
             raise NotImplementedError("Multiple generators in list comprehension not yet fully implemented")

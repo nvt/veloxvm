@@ -89,7 +89,7 @@ class _ClosureAnalysis:
 
         def record_target(target, inner_local: Set[str]) -> None:
             if isinstance(target, ast.Name):
-                safe = self.get_safe_name(target.id)
+                safe = self.binding_name(target.id)
                 if safe in local_names and safe not in inner_local:
                     mutated.add(safe)
             elif isinstance(target, ast.Tuple):
@@ -100,7 +100,10 @@ class _ClosureAnalysis:
                  inner_local: Set[str]) -> None:
             if isinstance(node, ast.Name):
                 if isinstance(node.ctx, ast.Load):
-                    safe = self.get_safe_name(node.id)
+                    # A load is not a declaration. In particular, merely
+                    # mentioning a VM primitive inside a function must not
+                    # manufacture a py_-prefixed free variable.
+                    safe = self.resolve_name(node.id)
                     if safe not in bound and safe not in seen:
                         seen.add(safe)
                         free.append(safe)
@@ -120,7 +123,7 @@ class _ClosureAnalysis:
                 return
 
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                inner_params = {self.get_safe_name(a.arg)
+                inner_params = {self.binding_name(a.arg)
                                 for a in node.args.args}
                 inner_locals = self.collect_assigned_vars(node.body)
                 new_bound = bound | inner_params | inner_locals
@@ -130,7 +133,7 @@ class _ClosureAnalysis:
                 return
 
             if isinstance(node, ast.Lambda):
-                inner_params = {self.get_safe_name(a.arg)
+                inner_params = {self.binding_name(a.arg)
                                 for a in node.args.args}
                 walk(node.body,
                      bound | inner_params,
@@ -167,30 +170,40 @@ class _ClosureAnalysis:
         nonlocal_names: Set[str] = set()
         global_names: Set[str] = set()
 
+        def add_target(target) -> None:
+            if isinstance(target, ast.Name):
+                assigned.add(self.binding_name(target.id))
+            elif isinstance(target, (ast.Tuple, ast.List)):
+                for elt in target.elts:
+                    add_target(elt)
+
         def visit_node(node):
             if isinstance(node, ast.Nonlocal):
                 for name in node.names:
-                    nonlocal_names.add(self.get_safe_name(name))
+                    nonlocal_names.add(self.binding_name(name))
                 return
             if isinstance(node, ast.Global):
                 for name in node.names:
-                    global_names.add(self.get_safe_name(name))
+                    global_names.add(self.binding_name(name))
                 return
             if isinstance(node, ast.Assign):
                 for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        assigned.add(self.get_safe_name(target.id))
+                    add_target(target)
             elif isinstance(node, ast.AugAssign):
                 if isinstance(node.target, ast.Name):
-                    assigned.add(self.get_safe_name(node.target.id))
+                    assigned.add(self.binding_name(node.target.id))
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 # A nested def binds its name in the enclosing
                 # function's scope; we don't recurse into the def's
                 # body — that's a separate scope.
-                assigned.add(self.get_safe_name(node.name))
+                assigned.add(self.binding_name(node.name))
+            elif isinstance(node, ast.ClassDef):
+                # Module-level classes are bindings too. Nested classes are
+                # rejected later, but recording the name here is harmless and
+                # keeps module predeclaration complete.
+                assigned.add(self.binding_name(node.name))
             elif isinstance(node, ast.For):
-                if isinstance(node.target, ast.Name):
-                    assigned.add(self.get_safe_name(node.target.id))
+                add_target(node.target)
                 for stmt in node.body:
                     visit_node(stmt)
                 for stmt in node.orelse:
@@ -210,7 +223,7 @@ class _ClosureAnalysis:
                     visit_node(stmt)
                 for handler in node.handlers:
                     if handler.name:
-                        assigned.add(self.get_safe_name(handler.name))
+                        assigned.add(self.binding_name(handler.name))
                     for stmt in handler.body:
                         visit_node(stmt)
                 for stmt in node.orelse:
