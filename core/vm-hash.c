@@ -30,6 +30,7 @@
  * Author: Nicolas Tsiftes <nvt@acm.org>
  */
 
+#include <limits.h>
 #include <string.h>
 
 #include "vm.h"
@@ -55,10 +56,13 @@ calculate_hash(vm_hash_key_t key)
   vm_hash_index_t hash;
   unsigned i;
 
-  /* Bernstein's hash function. */
+  /* Bernstein's hash function, over the bytes of the pointer. The shift
+     must be by whole bytes: a shift of i rather than i * CHAR_BIT reads
+     the low bits repeatedly and never reaches bit 15 and above, which
+     for aligned pointers leaves about ten bits of usable entropy. */
   hash = 0;
   for(i = 0; i < sizeof(key); i++) {
-    hash += hash * 33 + (((intptr_t)key >> i) & 0xff);
+    hash += hash * 33 + (((uintptr_t)key >> (i * CHAR_BIT)) & 0xff);
   }
 
   return hash;
@@ -70,10 +74,12 @@ calculate_hash2(vm_hash_key_t key)
   vm_hash_index_t hash;
   unsigned i;
 
-  /* Jenkin's hash function. */
+  /* Jenkins' one-at-a-time hash, over the bytes of the pointer, shifted
+     by whole bytes as in calculate_hash. The trailing xor with the key
+     mixes the high bits back in regardless. */
   hash = 0;
   for(i = 0; i < sizeof(key); i++) {
-    hash += ((intptr_t)key >> i) & 0xff;
+    hash += ((uintptr_t)key >> (i * CHAR_BIT)) & 0xff;
     hash += (hash << 10);
     hash ^= (hash >> 6);
   }
@@ -81,7 +87,7 @@ calculate_hash2(vm_hash_key_t key)
   hash ^= (hash >> 11);
   hash += (hash << 15);
 
-  return hash ^ (intptr_t)key;
+  return hash ^ (uintptr_t)key;
 }
 
 static int
