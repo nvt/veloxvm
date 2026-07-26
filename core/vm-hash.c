@@ -105,14 +105,13 @@ get_index(vm_hash_table_t *table, vm_hash_key_t key, vm_hash_index_t *index)
   }
 
   /* We haven't found the key after the first hash, so try to find it in
-     a slot obtained from the second hash function. The probe wraps around
-     the end of the table: without the modulo, a secondary index within
-     VM_HASH_LINEAR_PROBING_LIMIT slots of the end walks past both the
-     used bitmap and the pair array, which VM_HASH_TABLE allocates as
-     exactly-sized adjacent statics. */
+     a slot obtained from the second hash function. The probe has to wrap
+     around the end of the table: VM_HASH_TABLE allocates the used bitmap
+     and the pair array as exactly-sized adjacent statics, so a secondary
+     index within VM_HASH_LINEAR_PROBING_LIMIT slots of the end would
+     otherwise walk past both. */
   tmp_index = (*index + calculate_hash2(key)) % table->size;
-  for(i = 0; i < VM_HASH_LINEAR_PROBING_LIMIT;
-      i++, tmp_index = (tmp_index + 1) % table->size) {
+  for(i = 0; i < VM_HASH_LINEAR_PROBING_LIMIT; i++) {
     if(!VM_HASH_SLOT_USED(table, tmp_index)) {
       /* The key was not found, so set the index to the first empty slot
 	 of the pair of slots obtained with the two hash functionsa. */
@@ -124,6 +123,15 @@ get_index(vm_hash_table_t *table, vm_hash_key_t key, vm_hash_index_t *index)
       /* The key was found by using linear probing. */
       *index = tmp_index;
       return 1;
+    }
+
+    /* Wrap with a comparison rather than a modulo: tmp_index is below
+       table->size on entry and advances by one, so the two are
+       equivalent here. table->size is a runtime value, so a modulo would
+       compile to a division on a loop the GC runs constantly, and
+       Cortex-M0/M0+ has no divide instruction to compile it to. */
+    if(++tmp_index == table->size) {
+      tmp_index = 0;
     }
   }
 
