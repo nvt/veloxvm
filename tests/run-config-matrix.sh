@@ -1,34 +1,32 @@
 #!/bin/bash
 #
 # Runs the config-sensitive test suites across the memory tiers the VM is
-# actually deployed at, rebuilding the VM for each one.
+# deployed at, rebuilding the VM for each one.
 #
-# Why this exists: the default POSIX build sets VM_GC_MIN_ALLOCATED to
-# half of a 10 MB heap, so the collector barely runs during a suite pass.
-# test-gc-deep-spine allocates ~11 MB and drives 3 sweeps at the default
-# tier against 705 at 32 kB -- the same bytecode, two orders of magnitude
-# apart in how much of the memory manager actually executes. 32 kB is
-# also the tier the Contiki-NG port ships at for non-Zoul targets.
+# The default POSIX build sets VM_GC_MIN_ALLOCATED to half of a 10 MB
+# heap, so the collector barely runs during a suite pass. From the same
+# bytecode, test-gc-deep-spine allocates ~11 MB and drives 3 sweeps at
+# the default tier against 705 at 32 kB. 32 kB is also the tier the
+# Contiki-NG port ships at for non-Zoul targets.
 #
 # The mid tier additionally shrinks the GC mark work list to 64 slots so
 # the expand-in-place path taken when it saturates gets exercised; at the
 # default 4096 that path never runs.
 #
-# What this does NOT catch, stated plainly so the green result is not
-# read as more than it is: the unit suites pass at both tiers even with
-# every GC fix on this branch reverted. The probe-chain defect in
-# doc/gc-analysis.md 10.1 is detected today only by running a program
-# with sustained allocation against live structure --
-# benchmarks/bin/tree-walk.vm at the mid tier fails with a corrupted type
-# tag ("Argument types"), and passes once the mark bit moves out of the
-# hash table. Add it here as a smoke check when that lands; it cannot go
-# in while it is a known failure.
+# The suites alone are a weak instrument for GC defects, having passed at
+# both tiers with every GC fix in this history reverted. The third
+# configuration below is the one that catches them: it builds with
+# VM_GC_VALIDATE, which checks every marked pointer against the set of
+# live allocations, and it is what found the vm_box_create ordering bug.
+# Violations do not fail a suite, so the output is scanned for them
+# explicitly, and the sweep covers apps/ and benchmarks/ too, since the
+# unit suites alone report nothing with that bug reintroduced.
 #
-# Not included: an 8 kB / 6 kB tier. It cannot complete the unit suite
-# today -- test-numeric-r7rs does not finish -- because list construction
-# allocates proportionally to list length (see doc/gc-analysis.md 9.5).
-# Add the tier here once that is fixed; it is the one that most closely
-# matches a Zoul deployment.
+# Not included: an 8 kB / 6 kB tier, which is the closest match to a Zoul
+# deployment but cannot complete the unit suite today, as
+# test-numeric-r7rs does not finish when list construction allocates
+# proportionally to list length (see doc/gc-analysis.md 9.5). Add the
+# tier here once that is fixed.
 #
 # Usage: tests/run-config-matrix.sh
 # Exits non-zero if any suite fails in any configuration.
@@ -50,6 +48,11 @@ CONFIGS=(
     "default|"
     "mid-tier-32k|-DVM_HEAP_SIZE=32768 -DVM_OBJECT_POOL_SIZE=16384 -DVM_MARK_STACK_SIZE=64"
 )
+
+# Built and run separately: the check is not "did the suite pass" but
+# "did the collector touch a pointer it does not own", which needs the
+# output scanned rather than the exit status read.
+VALIDATE_DEFINES="-DVM_GC_VALIDATE=1 -DVM_HEAP_SIZE=32768 -DVM_OBJECT_POOL_SIZE=16384"
 
 # Suites whose outcome depends on the memory configuration. The
 # primitives suite compares source tables against doc/primitives.md and
@@ -98,6 +101,50 @@ for config in "${CONFIGS[@]}"; do
         fi
     done
 done
+
+echo ""
+echo -e "${BLUE}========================================${NC}"
+echo -e "${BLUE}Configuration: gc-validate${NC}"
+echo "  DEFINES: $VALIDATE_DEFINES"
+echo -e "${BLUE}========================================${NC}"
+make clean >/dev/null 2>&1
+if make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)" \
+        DEFINES="$VALIDATE_DEFINES" >/dev/null 2>&1; then
+    VALIDATE_LOG="$(mktemp -t veloxvm-gc-validate.XXXXXX)"
+    ./tests/unit-tests/run-tests.sh >"$VALIDATE_LOG" 2>&1
+    suite_rc=$?
+
+    # The unit suites are not sufficient here. With the vm_box_create
+    # ordering bug reintroduced they report no violation at all, because
+    # nothing in them boxes a value at a moment when the object pool is
+    # full. apps/ and benchmarks/ do, which is where that bug actually
+    # surfaced, so the corpus is swept as well.
+    corpus=0
+    for prog in apps/*/bin/*.vm benchmarks/bin/*.vm; do
+        [ -f "$prog" ] || continue
+        corpus=$((corpus + 1))
+        timeout 30 ./bin/vm "$prog" >>"$VALIDATE_LOG" 2>&1
+    done
+    echo "  swept $corpus compiled programs under validation"
+
+    violations=$(grep -c "GC VALIDATION" "$VALIDATE_LOG" || true)
+    printf '  %-12s ' "mark-ownership"
+    if [ "$suite_rc" -eq 0 ] && [ "$violations" -eq 0 ]; then
+        echo -e "${GREEN}PASS${NC} (no unowned pointers reached the mark phase)"
+        RESULTS+=("gc-validate|mark-ownership|PASS")
+    else
+        echo -e "${RED}FAIL${NC} ($violations unowned-pointer violations)"
+        grep "GC VALIDATION" "$VALIDATE_LOG" | sort -u | head -5
+        echo "    full log: $VALIDATE_LOG"
+        RESULTS+=("gc-validate|mark-ownership|FAIL")
+        FAILURES=$((FAILURES + 1))
+    fi
+    [ "$violations" -eq 0 ] && rm -f "$VALIDATE_LOG"
+else
+    echo -e "${RED}  BUILD FAILED${NC}"
+    RESULTS+=("gc-validate|build|FAIL")
+    FAILURES=$((FAILURES + 1))
+fi
 
 echo ""
 echo -e "${BLUE}========================================${NC}"
