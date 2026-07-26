@@ -217,17 +217,27 @@ vm_box_create(vm_obj_t *obj, const vm_obj_t *value)
 {
   vm_box_t *box;
 
-  obj->type = VM_TYPE_BOX;
-  obj->value.box = vm_alloc(sizeof(vm_box_t));
-  if(obj->value.box == NULL) {
+  /* Allocate before tagging obj. Writing obj->type first would leave
+     the destination claiming to be a box while ->value.box still held
+     whatever the slot held before, and vm_alloc may run a collection,
+     whose mark phase would then follow that stale pointer as a box. The
+     multi-step constructors above use vm_gc_disable against the same
+     hazard; ordering the stores is enough for a single allocation, and
+     leaves vm_alloc free to collect and retry. */
+  box = vm_alloc(sizeof(vm_box_t));
+  if(box == NULL) {
     return NULL;
   }
-  box = obj->value.box;
+
   if(value != NULL) {
     memcpy(&box->value, value, sizeof(vm_obj_t));
   } else {
     box->value.type = VM_TYPE_NONE;
   }
+
+  obj->value.box = box;
+  obj->type = VM_TYPE_BOX;
+
   return box;
 }
 
