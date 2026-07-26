@@ -1,24 +1,33 @@
-;; Crash probe: right-nested cons spine vs recursive marker.
+;; Crash probe: right-nested cons spine vs. the GC mark phase.
 ;;
-;; Builds a right-nested cons spine of `depth` cells, keeps it live,
-;; then runs allocation pressure to force GC. mark_object recurses
-;; once per cell of the spine (vm-memory.c:170-178). On targets with
-;; small native C stacks (Zoul: ~2 kB), the recursion overflows
-;; somewhere around depth 40. On POSIX (8 MB native stack), any
-;; practical depth survives -- run this on real hardware to see the
-;; effect.
+;; Builds a right-nested cons spine of `depth` cells, keeps it live, and
+;; then allocates until a collection runs with the spine reachable. The
+;; result is a binary signal: the VM either completes or aborts. Since
+;; the marker walks cdr spines from a work list (core/vm-memory.c), one
+;; slot however deep the spine is, any depth the heap can hold should
+;; complete on any target. Raise `depth` and re-run after touching the
+;; mark phase.
 ;;
-;; Use as a binary signal: did the VM complete or abort? Sweep
-;; `depth` upward across runs (60, 80, 100, 200, 500, ...) until the
-;; crash point is found.
+;; Two conditions decide whether a run means anything:
 ;;
-;; After linearization, all values of `depth` up to the live mark-
-;; bearing object count should complete successfully on every target.
-;; This file then becomes a regression test rather than a probe.
+;;   - The spine has to be long enough to cross VM_GC_MIN_ALLOCATED
+;;     (half the heap) while it is still live, or no sweep happens, the
+;;     marker never runs, and the probe passes without testing anything.
+;;     At the POSIX default heap that takes ~150k cells.
+;;   - An optimizing compiler turns a recursive marker's cdr descent
+;;     into a jump, which pushes the fault well past where it would
+;;     otherwise appear. Against a recursive marker at -O3 under
+;;     `ulimit -s 512`, the boundary sat between 150k and 200k cells;
+;;     with the ~2 kB native stack of a Zoul it arrives three orders of
+;;     magnitude sooner.
+;;
+;; On hosted targets, then, lower the stack limit (`ulimit -s 512`) and
+;; keep the depth in the hundreds of thousands. On real hardware the
+;; default depth below is already far past the edge.
 
 (print "=== Crash-spine probe ===\n")
 
-(define depth 200)
+(define depth 200000)
 (define pressure-iters 200)
 (define throwaway-size 100)
 

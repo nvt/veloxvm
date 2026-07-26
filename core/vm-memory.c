@@ -193,9 +193,77 @@ mark_memory(void *ptr)
   }
 }
 
-static void
-mark_object(vm_obj_t *obj)
+/*
+ * The mark phase uses an explicit work list rather than the C call
+ * stack, for the same reason that bytecode execution keeps its own
+ * expression-frame stack: thread depth should be bounded by
+ * VM_CONTEXT_STACK_SIZE, not by a native stack that is a couple of
+ * kilobytes on the smaller targets.
+ *
+ * Entries are vm_obj_t pointers into live containers: a pair's car, a
+ * vector element, a capture slot. Duplicates are allowed, since the pop
+ * handler applies the memory_is_marked guard, so each object is expanded
+ * once and cycles terminate there.
+ */
+static vm_obj_t *mark_stack[VM_MARK_STACK_SIZE];
+static unsigned mark_top;
+
+static void mark_expand(vm_obj_t *obj);
+
+/*
+ * Scalars (integers, characters, booleans, nil, symbols carried by ID)
+ * own no heap memory and have nothing to descend into. Filtering them
+ * out before they reach the work list is what keeps it shallow in
+ * practice: a vector of ten thousand integers pushes nothing.
+ */
+static int
+is_heap_bearing(vm_obj_type_t type)
 {
+  switch(type) {
+  case VM_TYPE_PAIR:
+  case VM_TYPE_VECTOR:
+  case VM_TYPE_BOX:
+  case VM_TYPE_CLOSURE:
+  case VM_TYPE_STRING:
+  case VM_TYPE_PORT:
+  case VM_TYPE_RATIONAL:
+  case VM_TYPE_EXTERNAL:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+static void
+mark_push(vm_obj_t *obj)
+{
+  if(obj == NULL || !is_heap_bearing(obj->type)) {
+    return;
+  }
+
+  if(mark_top == VM_MARK_STACK_SIZE) {
+    /* The work list is saturated. Expand this reference in place rather
+       than drop it, since dropping one leaves a reachable object
+       unmarked for the sweep to free. Expanding in place recurses, so
+       a structure wide enough to saturate the list is marked on the
+       native stack after all, but only along the branch that overflowed.
+       mark_stack_peak and mark_overflows in the memory stats report when
+       that happens and what to size VM_MARK_STACK_SIZE against. */
+    mem_stats.mark_overflows++;
+    mark_expand(obj);
+    return;
+  }
+
+  mark_stack[mark_top++] = obj;
+  if(mark_top > mem_stats.mark_stack_peak) {
+    mem_stats.mark_stack_peak = mark_top;
+  }
+}
+
+static void
+mark_expand(vm_obj_t *obj)
+{
+  vm_pair_t *pair;
   int k;
 
   /* We need to mark only the object types that involve heap memory. */
@@ -204,10 +272,21 @@ mark_object(vm_obj_t *obj)
      mark_memory(obj->value.rational);
      break;
   case VM_TYPE_PAIR:
-    if(obj->value.pair != NULL && !memory_is_marked(obj->value.pair)) {
-      mark_memory(obj->value.pair);
-      mark_object(&obj->value.pair->car);
-      mark_object(&obj->value.pair->cdr);
+    /* Walk the cdr spine with a loop rather than a push per link. A
+       proper list is a right-nested chain, so this is the shape that
+       used to drive the marker off the native stack; iterating it costs
+       one work-list slot no matter how long the list is. Only the car
+       of each link, and a non-pair (improper) tail, become work items.
+       The empty list is VM_TYPE_PAIR with a NULL payload, which ends
+       the loop along with the already-marked check that breaks cycles. */
+    for(pair = obj->value.pair;
+        pair != NULL && !memory_is_marked(pair);
+        pair = pair->cdr.type == VM_TYPE_PAIR ? pair->cdr.value.pair : NULL) {
+      mark_memory(pair);
+      mark_push(&pair->car);
+      if(pair->cdr.type != VM_TYPE_PAIR) {
+        mark_push(&pair->cdr);
+      }
     }
     break;
   case VM_TYPE_PORT:
@@ -237,7 +316,7 @@ mark_object(vm_obj_t *obj)
               !memory_is_marked(obj->value.vector->elements)) {
       mark_memory(obj->value.vector->elements);
       for(k = 0; k < obj->value.vector->length; k++) {
-        mark_object(&obj->value.vector->elements[k]);
+        mark_push(&obj->value.vector->elements[k]);
       }
     }
     mark_memory(obj->value.vector);
@@ -252,7 +331,7 @@ mark_object(vm_obj_t *obj)
   case VM_TYPE_BOX:
     if(obj->value.box != NULL && !memory_is_marked(obj->value.box)) {
       mark_memory(obj->value.box);
-      mark_object(&obj->value.box->value);
+      mark_push(&obj->value.box->value);
     }
     break;
   case VM_TYPE_CLOSURE:
@@ -262,7 +341,7 @@ mark_object(vm_obj_t *obj)
          !memory_is_marked(obj->value.closure->captures)) {
         mark_memory(obj->value.closure->captures);
         for(k = 0; k < obj->value.closure->capture_count; k++) {
-          mark_object(&obj->value.closure->captures[k]);
+          mark_push(&obj->value.closure->captures[k]);
         }
       }
     }
@@ -270,6 +349,26 @@ mark_object(vm_obj_t *obj)
   default:
     break;
   }
+}
+
+static void
+mark_drain(void)
+{
+  while(mark_top > 0) {
+    mark_expand(mark_stack[--mark_top]);
+  }
+}
+
+/*
+ * Mark one root and everything reachable from it. Draining after each
+ * root, rather than pushing all roots first, keeps the work list down to
+ * a single root's subgraph.
+ */
+static void
+mark_root(vm_obj_t *obj)
+{
+  mark_push(obj);
+  mark_drain();
 }
 
 static void
@@ -284,17 +383,17 @@ mark_thread_references(vm_thread_t *thread)
     expr = thread->exprv[i];
 
     for(j = 0; j < expr->argc; j++) {
-      mark_object(&expr->argv[j]);
+      mark_root(&expr->argv[j]);
     }
 
     for(j = 0; j < expr->bindc; j++) {
       VM_DEBUG(VM_DEBUG_HIGH, "GC: Mark bind %d,%d", i, j);
-      mark_object(&expr->bindv[j].obj);
+      mark_root(&expr->bindv[j].obj);
     }
   }
 
   for(i = 0; i < VM_TABLE_SIZE(thread->program->symbols); i++) {
-    mark_object(&thread->program->symbol_bindings[i]);
+    mark_root(&thread->program->symbol_bindings[i]);
   }
 
   /* Mark the per-program captures metadata. The captures pointer array
@@ -315,14 +414,14 @@ mark_thread_references(vm_thread_t *thread)
     }
   }
 
-  mark_object(&thread->result);
+  mark_root(&thread->result);
   /* error.error_obj holds the most recent thrown/raised value, populated
      by vm_set_error_string / vm_set_error_object; specific_obj is the
      SRFI-18-style thread-local cell read by (thread-specific). Both can
      point at heap-allocated strings or vectors that no other root
      references. */
-  mark_object(&thread->error.error_obj);
-  mark_object(&thread->specific_obj);
+  mark_root(&thread->error.error_obj);
+  mark_root(&thread->specific_obj);
 }
 
 void *
@@ -752,6 +851,11 @@ vm_memory_profile_print(void)
      lifecycled and is unaffected. */
   vm_gc_force();
 #endif
+
+  printf("MEM mark_stack peak %lu cap %u overflows %llu\n",
+         (unsigned long)mem_stats.mark_stack_peak,
+         (unsigned)VM_MARK_STACK_SIZE,
+         (unsigned long long)mem_stats.mark_overflows);
 
   printf("MEM allocs %lu mempool_fwd %lu alloc_bytes %lu manual_deallocs %lu gc_deallocs %lu gc_invoc %lu peak_heap_allocs %lu\n",
          (unsigned long)mem_stats.allocations,

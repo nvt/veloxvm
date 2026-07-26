@@ -111,6 +111,13 @@
 #define VM_GC_MIN_ALLOCATED (VM_HEAP_SIZE / 2)
 #endif
 
+/* Slots in the GC mark work list, one vm_obj_t pointer each. Sized
+   against the 100 kB heap above; overflow falls back to expanding in
+   place rather than failing. */
+#ifndef VM_MARK_STACK_SIZE
+#define VM_MARK_STACK_SIZE 512
+#endif
+
 /* Deallocation of dynamic memory when exiting is only needed in host
    environments that do not do so automatically for system processes. */
 #ifndef VM_DEALLOCATE_AT_EXIT
