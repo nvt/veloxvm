@@ -309,6 +309,13 @@ mark_expand(vm_obj_t *obj)
     }
     break;
   case VM_TYPE_VECTOR:
+    /* vm_vector_create tags obj before it can know that the allocation
+       succeeded, so a construction that failed partway reaches the
+       marker as a vector with a NULL header. Without this check, the
+       reads below would dereference it. */
+    if(obj->value.vector == NULL) {
+      break;
+    }
     if(obj->value.vector->bytes != NULL &&
        !memory_is_marked(obj->value.vector->bytes)) {
       mark_memory(obj->value.vector->bytes);
