@@ -41,7 +41,8 @@
 ;;     need a per-standard-library export list we do not yet carry, so
 ;;     they are rejected; plain (import (scheme base)) is a no-op.
 
-(require "reader.rkt")
+(require racket/runtime-path
+         "reader.rkt")
 
 (provide lower-libraries library-search-paths)
 
@@ -372,12 +373,16 @@
 ;; Library search path: loading file-based libraries by name
 ;; ---------------------------------------------------------------------------
 
-;; Extra root directories to search for library files, beyond the source
-;; file's own directory and the current directory. Set from the compiler
+;; Root directories to search for library files, beyond the source file's
+;; own directory and the current directory. Extendable from the compiler
 ;; CLI (-I / --lib-dir). A library named (foo bar) is sought as the file
 ;; foo/bar.sld (then foo/bar.scm) under each root. Like static linking
 ;; generally, a found library is compiled into the program, not shared.
-(define library-search-paths (make-parameter '()))
+;; The default root is the compiler's own runtime/ directory, which the
+;; reader already searches for (include ...), so a library shipped with
+;; the compiler such as (velox sort) imports by name without -I.
+(define-runtime-path library-runtime-dir "runtime")
+(define library-search-paths (make-parameter (list library-runtime-dir)))
 
 (define (source-dir-or-cwd source-file)
   (if source-file
