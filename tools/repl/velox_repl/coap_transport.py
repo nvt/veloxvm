@@ -67,7 +67,11 @@ def _parse_frames(payload: bytes) -> list[Frame]:
         (length,) = struct.unpack("!H", payload[pos + 1:pos + 3])
         body = payload[pos + 3:pos + 3 + length]
         if len(body) < length:
-            raise VmCrash(f"CoAP frame body truncated at offset {pos}")
+            preview = payload[pos:pos + 16].hex()
+            raise VmCrash(
+                f"CoAP frame body truncated at offset {pos}: declared "
+                f"{length} bytes, received {len(body)} "
+                f"(payload {preview})")
         try:
             frames.append(Frame(FrameType(ftype), body))
         except ValueError as e:
@@ -102,6 +106,7 @@ class CoapVmClient:
         self._context: Optional[Context] = None
         self._observe_task: Optional[asyncio.Task] = None
         self._loop_ready = threading.Event()
+        self._observe_ready = threading.Event()
 
         # Queue of asynchronously-received frames from /events. Drained
         # by run() (and ignored otherwise -- mid-turn IO_OUT bytes are
@@ -113,6 +118,7 @@ class CoapVmClient:
         # has died (RST, timeout). Sync methods convert this into
         # VmCrash on their next request.
         self._dead = False
+        self._observe_error: Optional[str] = None
 
         # Last error string from a failed info() call, surfaced via
         # the diagnostics property for the driver to render.
@@ -134,17 +140,35 @@ class CoapVmClient:
         if not self._loop_ready.is_set():
             raise VmCrash(f"{self.name}: failed to start CoAP context")
 
-        # The CoAP-side VM persists across driver connections (a Contiki-NG
-        # device is long-lived; only the host-side driver process comes and
-        # goes). The compiler in this driver process starts at watermarks
-        # zero, so the device must too -- otherwise the first APPLY would
-        # fail with a start_id mismatch. Issue a RESET on connect to put
-        # the VM into a known fresh state. Failures are non-fatal here so
-        # an old VM that doesn't support RESET still works.
+        # A device is long-lived while host clients come and go. Reset before
+        # subscribing so the device can discard any stale observer left by a
+        # client that disappeared without completing CoAP cancellation.
         try:
             self.reset()
         except (VmError, VmCrash):
+            # Older REPL frontends may not support RESET. Keep compatibility
+            # and let the INFO/APPLY exchange report any real mismatch.
             pass
+
+        assert self._loop is not None
+        asyncio.run_coroutine_threadsafe(
+            self._async_start_observation(), self._loop
+        ).result(timeout=self.request_timeout)
+        # RUN results arrive only on the observation. Do not advertise a
+        # usable client until the server has accepted that observation;
+        # otherwise a fast failure races with RESET/INFO and degrades into
+        # the unhelpful "vm: not running" message.
+        self._observe_ready.wait(timeout=self.request_timeout)
+        if not self._observe_ready.is_set():
+            self.stop()
+            raise VmCrash(
+                f"{self.name}: timed out establishing CoAP observation")
+        if self._dead:
+            detail = self._observe_error or "unknown error"
+            self.stop()
+            raise VmCrash(
+                f"{self.name}: failed to establish CoAP observation: "
+                f"{detail}")
 
     def stop(self) -> None:
         if self._loop is None:
@@ -167,6 +191,7 @@ class CoapVmClient:
         self._loop_thread = None
         self._context = None
         self._observe_task = None
+        self._observe_ready.clear()
 
     def is_alive(self) -> bool:
         return (self._loop is not None and not self._dead and
@@ -287,7 +312,9 @@ class CoapVmClient:
     def _post_frame(self, frame: Frame, *,
                     mark_dead_on_failure: bool = True) -> Optional[Frame]:
         if not self.is_alive():
-            raise VmCrash(f"{self.name}: not running")
+            detail = (f": CoAP observation failed: {self._observe_error}"
+                      if self._observe_error else "")
+            raise VmCrash(f"{self.name}: not running{detail}")
         coro = self._async_post(_encode_frame(frame))
         try:
             response_payload = asyncio.run_coroutine_threadsafe(
@@ -317,8 +344,11 @@ class CoapVmClient:
         try:
             self._loop.run_until_complete(self._async_start())
         except Exception as e:
+            self._observe_error = (
+                str(e) or f"{type(e).__name__} without an error message")
             self._dead = True
             self._loop_ready.set()
+            self._observe_ready.set()
             return
         self._loop_ready.set()
         try:
@@ -336,7 +366,9 @@ class CoapVmClient:
 
     async def _async_start(self) -> None:
         self._context = await Context.create_client_context()
-        self._observe_task = self._loop.create_task(self._observe_loop())
+
+    async def _async_start_observation(self) -> None:
+        self._observe_task = asyncio.create_task(self._observe_loop())
 
     async def _async_stop(self) -> None:
         if self._observe_task is not None:
@@ -365,22 +397,28 @@ class CoapVmClient:
         protocol_request = self._context.request(request)
         try:
             response = await protocol_request.response
+            if not response.code.is_successful():
+                detail = bytes(response.payload).decode(
+                    "utf-8", errors="replace")
+                raise VmCrash(
+                    f"events observation rejected with {response.code}"
+                    + (f": {detail}" if detail else ""))
             self._dispatch_observation(bytes(response.payload))
+            self._observe_ready.set()
             async for notification in protocol_request.observation:
                 self._dispatch_observation(bytes(notification.payload))
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as e:
+            self._observe_error = (
+                str(e) or f"{type(e).__name__} without an error message")
             self._dead = True
+            self._observe_ready.set()
 
     def _dispatch_observation(self, payload: bytes) -> None:
         if not payload:
             return
-        try:
-            frames = _parse_frames(payload)
-        except VmCrash:
-            self._dead = True
-            return
+        frames = _parse_frames(payload)
         for frame in frames:
             self._events.put(frame)
 

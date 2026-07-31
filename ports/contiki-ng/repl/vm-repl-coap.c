@@ -422,6 +422,14 @@ cmd_post_handler(coap_message_t *request, coap_message_t *response,
   }
   case FT_RESET: {
     vm_program_t *new_program;
+    /* A host process can disappear before completing RFC 7641
+       cancellation, and its next connection will generally use a new UDP
+       source port. Since this frontend exposes one shared REPL program,
+       RESET is also the ownership hand-off point: discard every old
+       /repl/events subscription before the new client subscribes. Without
+       this, repeated reconnects eventually exhaust COAP_MAX_OBSERVERS and
+       the node replies "TooManyObservers". */
+    coap_remove_observer_by_uri(NULL, "repl/events");
     if(repl_program != NULL) {
       vm_repl_program_destroy(repl_program);
       repl_program = NULL;
@@ -578,10 +586,17 @@ emit_result(void)
     enqueue_event(FT_RESULT, scratch, n);
   } else {
     /* Error. */
-    uint8_t buf[2];
+    const char *msg = vm_error_message(error.error_type);
+    size_t msg_len = strlen(msg);
+    uint8_t buf[EVENT_PAYLOAD_MAX];
+    if(msg_len > sizeof(buf) - 1) {
+      msg_len = sizeof(buf) - 1;
+    }
     buf[0] = (uint8_t)error.error_type;
-    buf[1] = 0;
-    enqueue_event(FT_ERROR, buf, 1);
+    if(msg_len > 0) {
+      memcpy(buf + 1, msg, msg_len);
+    }
+    enqueue_event(FT_ERROR, buf, msg_len + 1);
   }
 }
 

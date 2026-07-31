@@ -176,6 +176,10 @@ typedef struct vm_error {
 #endif
 } vm_error_t;
 
+/* Stable human-readable description for a VM error type. Returns an empty
+   string when error messages are disabled in the selected port. */
+const char *vm_error_message(vm_error_type_t error_type);
+
 typedef struct vm_thread {
   vm_expr_t *exprv[VM_CONTEXT_STACK_SIZE];
   vm_obj_t result;
