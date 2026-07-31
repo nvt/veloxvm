@@ -57,7 +57,6 @@
 #include <string.h>
 
 #include "vm.h"
-#include "vm-hash.h"
 #include "vm-log.h"
 #include "vm-mempool.h"
 
@@ -98,19 +97,48 @@ pause_bucket(uint64_t ns)
 /* Pool slot size must accommodate every type that the small-allocation
    path forwards through it. vm_pair_t (32 B on 64-bit) is the largest;
    vm_list_item_t (24 B) and smaller types pay padding per slot. */
+/* Set to 1 to check every marked pointer against the allocation list.
+   O(live) per mark, so it is a debugging aid rather than a build
+   default; see the ownership contract on memory_is_marked. */
+#ifndef VM_GC_VALIDATE
+#define VM_GC_VALIDATE 0
+#endif
+
 #define VM_POOL_ELEMENT_SIZE    sizeof(vm_pair_t)
 #define VM_MAX_POOL_ALLOCATIONS (VM_OBJECT_POOL_SIZE / VM_POOL_ELEMENT_SIZE)
-#define VM_MAX_HEAP_ALLOCATIONS (VM_HEAP_SIZE / VM_POOL_ELEMENT_SIZE)
 
 /*
- * This hash table holds references to all current memory
- * allocations. It is used by the mark-and-sweep GC algorithm to mark
- * allocations that are referenced by VM threads. The key of the hash
- * table is the address of the object, whilst the value is a boolean
- * indicating whether the object is currently referenced by any VM
- * thread. The GC algorithm * clears the value after each iteration.
+ * Every heap-tier allocation carries a header holding its mark bit, its
+ * payload size, and its links in the list of live heap allocations.
+ * Marking is thus a store rather than a lookup in a pointer-keyed hash
+ * table, freeing is an unlink, and the sweep walks the allocations that
+ * exist rather than every slot of a table sized for the worst case.
  */
-VM_HASH_TABLE(allocations, VM_MAX_HEAP_ALLOCATIONS);
+typedef struct vm_heap_header {
+  struct vm_heap_header *next;
+  struct vm_heap_header *prev;
+  uint32_t size;
+  uint8_t marked;
+} vm_heap_header_t;
+
+/*
+ * The payload begins immediately after the header, so the header size
+ * decides the payload alignment. Rounding that size up through a union
+ * with the strictest scalar types keeps the payload aligned for every
+ * type the VM stores there, including vm_obj_t.
+ */
+typedef union vm_heap_cell {
+  vm_heap_header_t header;
+  void *align_ptr;
+  double align_double;
+  long align_long;
+} vm_heap_cell_t;
+
+#define VM_HEAP_HEADER_SIZE sizeof(vm_heap_cell_t)
+
+static vm_heap_header_t *heap_list_head;
+static unsigned heap_live_items;
+static size_t heap_live_bytes;
 
 /*
  * Smaller allocations are placed in an object pool, which has a lower
@@ -146,57 +174,199 @@ static vm_ext_object_t *ext_object_list_head = NULL;
  */
 static vm_port_t *port_list_head = NULL;
 
-static void
-free_vm_memory(void *ptr)
+static vm_heap_header_t *
+heap_header(void *ptr)
 {
-  if(vm_mempool_is_stored(&object_pool, ptr)) {
-    vm_mempool_free(&object_pool, ptr);
+  return (vm_heap_header_t *)((char *)ptr - VM_HEAP_HEADER_SIZE);
+}
+
+static void
+heap_unlink(vm_heap_header_t *header)
+{
+  if(header->prev == NULL) {
+    heap_list_head = header->next;
   } else {
-    VM_FREE(ptr);
+    header->prev->next = header->next;
+  }
+  if(header->next != NULL) {
+    header->next->prev = header->prev;
   }
 }
 
+#if VM_GC_VALIDATE
+/*
+ * Walk the allocation list looking for ptr. Only used to assert the
+ * ownership contract below; O(live) per call, so it is compiled out
+ * unless VM_GC_VALIDATE is set.
+ */
+static int
+heap_owns(void *ptr)
+{
+  vm_heap_header_t *header;
+
+  for(header = heap_list_head; header != NULL; header = header->next) {
+    if((char *)header + VM_HEAP_HEADER_SIZE == (char *)ptr) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static void
+assert_gc_owned(void *ptr)
+{
+  if(!vm_mempool_is_stored(&object_pool, ptr) && !heap_owns(ptr)) {
+    VM_DEBUG(VM_DEBUG_LOW,
+             "GC: mark of pointer %p that the GC does not own", ptr);
+    VM_PRINTF("GC VALIDATION: unowned pointer %p reached the mark phase\n",
+              ptr);
+  }
+}
+#else
+#define assert_gc_owned(ptr)
+#endif
+
+static void
+free_vm_memory(void *ptr)
+{
+  vm_heap_header_t *header;
+
+  if(vm_mempool_is_stored(&object_pool, ptr)) {
+    vm_mempool_free(&object_pool, ptr);
+    return;
+  }
+
+  header = heap_header(ptr);
+  heap_unlink(header);
+  heap_live_items--;
+  heap_live_bytes -= header->size;
+  VM_FREE(header);
+}
+
+/*
+ * Both of the following require a pointer the GC owns: pool-resident,
+ * or returned by the heap path of vm_alloc. For anything else they
+ * would read a header in front of an object the allocator never handed
+ * out, so the mark walk must not reach a pointer the VM did not
+ * allocate. Statically allocated ports are the case to watch, and are
+ * kept out by marking a port only when VM_PORT_FLAG_HEAP says
+ * vm_port_register accepted it. Building with VM_GC_VALIDATE checks
+ * every mark against the allocation list.
+ */
 static int
 memory_is_marked(void *ptr)
 {
-  int r;
-  vm_hash_value_t value;
-
-  /* Pool-resident objects are tracked via the pool's ref bitmap, not the
-     heap allocations hash. Cyclic structures such as a recursive closure
-     capturing itself rely on this check returning true to terminate the
-     mark walk. */
-  if(vm_mempool_is_marked(&object_pool, ptr)) {
+  /* A constructor that fails partway leaves its destination tagged
+     (STRING, VECTOR, CLOSURE) with a NULL payload, so the marker can be
+     handed one. NULL has no header to read, and there is nothing to
+     descend into or to free, so report it as already handled. */
+  if(ptr == NULL) {
     return 1;
   }
 
-  r = vm_hash_lookup(&allocations, ptr, &value);
-  return r && value > 0;
+  /* Pool-resident objects are tracked via the pool's ref bitmap. Cyclic
+     structures such as a recursive closure capturing itself rely on this
+     check returning true to terminate the mark walk. */
+  if(vm_mempool_is_marked(&object_pool, ptr)) {
+    return 1;
+  }
+  if(vm_mempool_is_stored(&object_pool, ptr)) {
+    return 0;
+  }
+
+  assert_gc_owned(ptr);
+  return heap_header(ptr)->marked;
 }
 
 static void
 mark_memory(void *ptr)
 {
+  if(ptr == NULL) {
+    return;
+  }
+
   if(vm_mempool_mark(&object_pool, ptr)) {
     return;
   }
 
-  /* Pure update -- vm_hash_set returns 0 for unknown keys. The mark
-     walk can land on pointers the GC does not own (statically
-     allocated ports, buffers in the program's string table, ...);
-     those are silently skipped instead of being registered as if
-     they were heap allocations. */
-  if(vm_hash_set(&allocations, ptr, 1)) {
-    VM_DEBUG(VM_DEBUG_HIGH, "GC: Mark pointer %p", ptr);
-  } else {
-    VM_DEBUG(VM_DEBUG_MEDIUM, "GC: Skip mark of untracked pointer %p", ptr);
+  assert_gc_owned(ptr);
+  heap_header(ptr)->marked = 1;
+  VM_DEBUG(VM_DEBUG_HIGH, "GC: Mark pointer %p", ptr);
+}
+
+/*
+ * The mark phase uses an explicit work list rather than the C call
+ * stack, for the same reason that bytecode execution keeps its own
+ * expression-frame stack: thread depth should be bounded by
+ * VM_CONTEXT_STACK_SIZE, not by a native stack that is a couple of
+ * kilobytes on the smaller targets.
+ *
+ * Entries are vm_obj_t pointers into live containers: a pair's car, a
+ * vector element, a capture slot. Duplicates are allowed, since the pop
+ * handler applies the memory_is_marked guard, so each object is expanded
+ * once and cycles terminate there.
+ */
+static vm_obj_t *mark_stack[VM_MARK_STACK_SIZE];
+static unsigned mark_top;
+
+static void mark_expand(vm_obj_t *obj);
+
+/*
+ * Scalars (integers, characters, booleans, nil, symbols carried by ID)
+ * own no heap memory and have nothing to descend into. Filtering them
+ * out before they reach the work list is what keeps it shallow in
+ * practice: a vector of ten thousand integers pushes nothing.
+ */
+static int
+is_heap_bearing(vm_obj_type_t type)
+{
+  switch(type) {
+  case VM_TYPE_PAIR:
+  case VM_TYPE_VECTOR:
+  case VM_TYPE_BOX:
+  case VM_TYPE_CLOSURE:
+  case VM_TYPE_STRING:
+  case VM_TYPE_PORT:
+  case VM_TYPE_RATIONAL:
+  case VM_TYPE_EXTERNAL:
+    return 1;
+  default:
+    return 0;
   }
 }
 
 static void
-mark_object(vm_obj_t *obj)
+mark_push(vm_obj_t *obj)
 {
+  if(obj == NULL || !is_heap_bearing(obj->type)) {
+    return;
+  }
+
+  if(mark_top == VM_MARK_STACK_SIZE) {
+    /* The work list is saturated. Expand this reference in place rather
+       than drop it, since dropping one leaves a reachable object
+       unmarked for the sweep to free. Expanding in place recurses, so
+       a structure wide enough to saturate the list is marked on the
+       native stack after all, but only along the branch that overflowed.
+       mark_stack_peak and mark_overflows in the memory stats report when
+       that happens and what to size VM_MARK_STACK_SIZE against. */
+    mem_stats.mark_overflows++;
+    mark_expand(obj);
+    return;
+  }
+
+  mark_stack[mark_top++] = obj;
+  if(mark_top > mem_stats.mark_stack_peak) {
+    mem_stats.mark_stack_peak = mark_top;
+  }
+}
+
+static void
+mark_expand(vm_obj_t *obj)
+{
+  vm_pair_t *pair;
   int k;
+
 
   /* We need to mark only the object types that involve heap memory. */
   switch(obj->type) {
@@ -204,14 +374,29 @@ mark_object(vm_obj_t *obj)
      mark_memory(obj->value.rational);
      break;
   case VM_TYPE_PAIR:
-    if(obj->value.pair != NULL && !memory_is_marked(obj->value.pair)) {
-      mark_memory(obj->value.pair);
-      mark_object(&obj->value.pair->car);
-      mark_object(&obj->value.pair->cdr);
+    /* Walk the cdr spine with a loop rather than a push per link. A
+       proper list is a right-nested chain, so iterating it costs one
+       work-list slot however long the list is; only the car of each
+       link, and a non-pair (improper) tail, become work items. The
+       empty list is VM_TYPE_PAIR with a NULL payload, which ends the
+       loop along with the already-marked check that breaks cycles. */
+    for(pair = obj->value.pair;
+        pair != NULL && !memory_is_marked(pair);
+        pair = pair->cdr.type == VM_TYPE_PAIR ? pair->cdr.value.pair : NULL) {
+      mark_memory(pair);
+      mark_push(&pair->car);
+      if(pair->cdr.type != VM_TYPE_PAIR) {
+        mark_push(&pair->cdr);
+      }
     }
     break;
   case VM_TYPE_PORT:
-    if(!memory_is_marked(obj->value.port)) {
+    /* Only heap-allocated ports carry a GC header. The native port's
+       stdin/stdout singletons are static and never registered, so
+       reading a header in front of them would address whatever the
+       linker placed there. */
+    if(obj->value.port != NULL && obj->value.port->heap_allocated &&
+       !memory_is_marked(obj->value.port)) {
       mark_memory(obj->value.port);
     }
     break;
@@ -230,6 +415,13 @@ mark_object(vm_obj_t *obj)
     }
     break;
   case VM_TYPE_VECTOR:
+    /* vm_vector_create tags obj before it can know that the allocation
+       succeeded, so a construction that failed partway reaches the
+       marker as a vector with a NULL header. Without this check, the
+       reads below would dereference it. */
+    if(obj->value.vector == NULL) {
+      break;
+    }
     if(obj->value.vector->bytes != NULL &&
        !memory_is_marked(obj->value.vector->bytes)) {
       mark_memory(obj->value.vector->bytes);
@@ -237,7 +429,7 @@ mark_object(vm_obj_t *obj)
               !memory_is_marked(obj->value.vector->elements)) {
       mark_memory(obj->value.vector->elements);
       for(k = 0; k < obj->value.vector->length; k++) {
-        mark_object(&obj->value.vector->elements[k]);
+        mark_push(&obj->value.vector->elements[k]);
       }
     }
     mark_memory(obj->value.vector);
@@ -252,7 +444,7 @@ mark_object(vm_obj_t *obj)
   case VM_TYPE_BOX:
     if(obj->value.box != NULL && !memory_is_marked(obj->value.box)) {
       mark_memory(obj->value.box);
-      mark_object(&obj->value.box->value);
+      mark_push(&obj->value.box->value);
     }
     break;
   case VM_TYPE_CLOSURE:
@@ -262,7 +454,7 @@ mark_object(vm_obj_t *obj)
          !memory_is_marked(obj->value.closure->captures)) {
         mark_memory(obj->value.closure->captures);
         for(k = 0; k < obj->value.closure->capture_count; k++) {
-          mark_object(&obj->value.closure->captures[k]);
+          mark_push(&obj->value.closure->captures[k]);
         }
       }
     }
@@ -270,6 +462,26 @@ mark_object(vm_obj_t *obj)
   default:
     break;
   }
+}
+
+static void
+mark_drain(void)
+{
+  while(mark_top > 0) {
+    mark_expand(mark_stack[--mark_top]);
+  }
+}
+
+/*
+ * Mark one root and everything reachable from it. Draining after each
+ * root, rather than pushing all roots first, keeps the work list down to
+ * a single root's subgraph.
+ */
+static void
+mark_root(vm_obj_t *obj)
+{
+  mark_push(obj);
+  mark_drain();
 }
 
 static void
@@ -284,17 +496,17 @@ mark_thread_references(vm_thread_t *thread)
     expr = thread->exprv[i];
 
     for(j = 0; j < expr->argc; j++) {
-      mark_object(&expr->argv[j]);
+      mark_root(&expr->argv[j]);
     }
 
     for(j = 0; j < expr->bindc; j++) {
       VM_DEBUG(VM_DEBUG_HIGH, "GC: Mark bind %d,%d", i, j);
-      mark_object(&expr->bindv[j].obj);
+      mark_root(&expr->bindv[j].obj);
     }
   }
 
   for(i = 0; i < VM_TABLE_SIZE(thread->program->symbols); i++) {
-    mark_object(&thread->program->symbol_bindings[i]);
+    mark_root(&thread->program->symbol_bindings[i]);
   }
 
   /* Mark the per-program captures metadata. The captures pointer array
@@ -315,25 +527,64 @@ mark_thread_references(vm_thread_t *thread)
     }
   }
 
-  mark_object(&thread->result);
+  mark_root(&thread->result);
   /* error.error_obj holds the most recent thrown/raised value, populated
      by vm_set_error_string / vm_set_error_object; specific_obj is the
      SRFI-18-style thread-local cell read by (thread-specific). Both can
      point at heap-allocated strings or vectors that no other root
      references. */
-  mark_object(&thread->error.error_obj);
-  mark_object(&thread->specific_obj);
+  mark_root(&thread->error.error_obj);
+  mark_root(&thread->specific_obj);
+}
+
+/*
+ * Allocate on the heap tier: one block holding the GC header followed by
+ * the payload, linked into the list of live heap allocations. Returns
+ * the payload address, which is what the rest of the VM sees.
+ */
+static void *
+heap_alloc(unsigned size)
+{
+  vm_heap_header_t *header;
+
+  /* Nothing else bounds the heap tier now that allocations are not
+     entered into a fixed-size table, so hold to VM_HEAP_SIZE here. A
+     runaway program then fails with VM_ERROR_HEAP rather than growing
+     until the host allocator gives up. */
+  if(heap_live_bytes + size > VM_HEAP_SIZE) {
+    return NULL;
+  }
+
+  header = VM_MALLOC(VM_HEAP_HEADER_SIZE + size);
+  if(header == NULL) {
+    return NULL;
+  }
+
+  header->marked = 0;
+  header->size = size;
+  header->prev = NULL;
+  header->next = heap_list_head;
+  if(heap_list_head != NULL) {
+    heap_list_head->prev = header;
+  }
+  heap_list_head = header;
+
+  heap_live_items++;
+  heap_live_bytes += size;
+  if(heap_live_items > mem_stats.peak_heap_allocations) {
+    mem_stats.peak_heap_allocations = heap_live_items;
+  }
+
+  return (char *)header + VM_HEAP_HEADER_SIZE;
 }
 
 void *
 vm_alloc(unsigned size)
 {
   vm_thread_t *thread;
-  int put_in_hash;
   void *ptr;
 
   thread = vm_current_thread();
-  put_in_hash = 1;
 
   if(size <= VM_POOL_ELEMENT_SIZE) {
     size = VM_POOL_ELEMENT_SIZE;
@@ -342,37 +593,26 @@ vm_alloc(unsigned size)
       /* Try to allocate memory in the regular heap if
          the memory pool is full. */
       vm_gc();
-      ptr = VM_MALLOC(size);
+      ptr = heap_alloc(size);
     } else {
-      /* Don't insert the allocated object into the hash table because
-         the memory pool handles garbage collection by itself. */
-      put_in_hash = 0;
+      /* Pool slots carry their mark in the pool's own bitmap and need
+         no header. */
       mem_stats.mempool_forwards++;
     }
   } else {
-    ptr = VM_MALLOC(size);
+    ptr = heap_alloc(size);
   }
 
   if(ptr == NULL) {
     /* The allocation failed; try to run the garbage collector and then
        make another attempt at allocating the object on the heap. */
     vm_gc();
-    ptr = VM_MALLOC(size);
+    ptr = heap_alloc(size);
     if(ptr == NULL) {
       if(thread != NULL) {
         vm_signal_error(thread, VM_ERROR_HEAP);
       }
       return NULL;
-    }
-  }
-
-  if(put_in_hash) {
-    if(!vm_hash_insert(&allocations, ptr, 0)) {
-      free_vm_memory(ptr);
-      return NULL;
-    }
-    if(allocations.items > mem_stats.peak_heap_allocations) {
-      mem_stats.peak_heap_allocations = allocations.items;
     }
   }
 
@@ -396,21 +636,22 @@ vm_free(void *ptr)
 {
   VM_DEBUG(VM_DEBUG_HIGH, "GC: Free ptr %p", ptr);
 
-  if(ptr == NULL ||
-     (!vm_mempool_is_stored(&object_pool, ptr) &&
-      !vm_hash_delete(&allocations, ptr))) {
+  if(ptr == NULL) {
     VM_DEBUG(VM_DEBUG_MEDIUM, "GC: Attempt to deallocate unknown memory! (%p)",
              ptr);
-  } else {
-    free_vm_memory(ptr);
-    mem_stats.manual_deallocations++;
+    return;
   }
+
+  /* No membership test is needed: the caller hands back a pointer that
+     vm_alloc returned, and the header in front of it carries what is
+     needed to unlink and release it. */
+  free_vm_memory(ptr);
+  mem_stats.manual_deallocations++;
 }
 
 void
 vm_free_all(void)
 {
-  unsigned i;
   unsigned deallocated;
   vm_ext_object_t *box;
   vm_port_t *port;
@@ -437,13 +678,15 @@ vm_free_all(void)
     }
   }
 
-  for(i = deallocated = 0; i < allocations.size; i++) {
-    if(VM_HASH_SLOT_USED(&allocations, i)) {
-      free_vm_memory(allocations.pairs[i].key);
-      VM_HASH_SLOT_SET_UNUSED(&allocations, i);
-      deallocated++;
-    }
+  deallocated = 0;
+  while(heap_list_head != NULL) {
+    vm_heap_header_t *header = heap_list_head;
+    heap_list_head = header->next;
+    VM_FREE(header);
+    deallocated++;
   }
+  heap_live_items = 0;
+  heap_live_bytes = 0;
 
   deallocated += object_pool.items;
   vm_mempool_destroy(&object_pool);
@@ -473,9 +716,9 @@ vm_gc_enable(void)
  * before the upcoming heap sweep frees the box itself.
  *
  * We unlink finalized boxes from the list but do not free the box
- * memory here -- that happens in the heap sweep that runs immediately
- * after, since the box was registered in the heap allocations hash by
- * vm_alloc and is what the mark bit is keyed on.
+ * memory here. That happens in the heap sweep that runs immediately
+ * after, since the box is a vm_alloc allocation and carries the mark
+ * bit in its own header.
  */
 static void
 finalize_unmarked_ext_objects(void)
@@ -536,6 +779,7 @@ vm_port_register(vm_port_t *port)
     return;
   }
   port->has_peek = 0;
+  port->heap_allocated = 1;
   port->next = port_list_head;
   port_list_head = port;
 }
@@ -546,6 +790,7 @@ do_gc(int force)
   unsigned i;
   unsigned deallocated;
   vm_thread_t *thread;
+  vm_heap_header_t *header;
   void *free_ptr;
 #if VM_PAUSE_PROFILING
   uint64_t pause_start;
@@ -591,22 +836,27 @@ do_gc(int force)
      underlying fd / opaque_desc. */
   finalize_unmarked_ports();
 
-  /* Sweep phase: deallocate all unreferenced objects allocated on the heap. */
-  for(i = deallocated = 0; i < allocations.size; i++) {
-    if(VM_HASH_SLOT_USED(&allocations, i) && allocations.pairs[i].value == 0) {
-      /* Free the memory if it has been allocated and stored in the hash
-         table, but no references to it could be found. */
-      free_ptr = allocations.pairs[i].key;
-      VM_DEBUG(VM_DEBUG_HIGH, "GC: Free allocation %d, address %p",
-               i, free_ptr);
-      VM_HASH_SLOT_SET_UNUSED(&allocations, i);
-      deallocated++;
-      free_vm_memory(free_ptr);
-    }
+  /* Sweep phase: walk the list of live heap allocations, releasing the
+     ones the mark phase did not reach and clearing the mark on the ones
+     it did. The cost is proportional to the number of allocations rather
+     than to the size of the heap. */
+  deallocated = 0;
+  header = heap_list_head;
+  while(header != NULL) {
+    vm_heap_header_t *next = header->next;
 
-    /* Clear the value for the next invocation of the GC algorithm
-       before moving on to the next object to process. */
-    allocations.pairs[i].value = 0;
+    if(header->marked) {
+      header->marked = 0;
+    } else {
+      free_ptr = (char *)header + VM_HEAP_HEADER_SIZE;
+      VM_DEBUG(VM_DEBUG_HIGH, "GC: Free allocation at address %p", free_ptr);
+      heap_unlink(header);
+      heap_live_items--;
+      heap_live_bytes -= header->size;
+      VM_FREE(header);
+      deallocated++;
+    }
+    header = next;
   }
 
   deallocated += force ? vm_mempool_gc_force(&object_pool)
@@ -616,7 +866,7 @@ do_gc(int force)
 
   VM_DEBUG(VM_DEBUG_HIGH, "GC: Deallocated %d of %u objects",
            deallocated,
-           (unsigned)(allocations.items + object_pool.items + deallocated));
+           (unsigned)(heap_live_items + object_pool.items + deallocated));
 
   /* Reset memory allocation counter. */
   allocated_since_gc = 0;
@@ -753,6 +1003,11 @@ vm_memory_profile_print(void)
   vm_gc_force();
 #endif
 
+  printf("MEM mark_stack peak %lu cap %u overflows %llu\n",
+         (unsigned long)mem_stats.mark_stack_peak,
+         (unsigned)VM_MARK_STACK_SIZE,
+         (unsigned long long)mem_stats.mark_overflows);
+
   printf("MEM allocs %lu mempool_fwd %lu alloc_bytes %lu manual_deallocs %lu gc_deallocs %lu gc_invoc %lu peak_heap_allocs %lu\n",
          (unsigned long)mem_stats.allocations,
          (unsigned long)mem_stats.mempool_forwards,
@@ -803,8 +1058,8 @@ vm_memory_init(void)
            "Heap size %u, object pool size %u, pool element size %u",
            VM_HEAP_SIZE, VM_OBJECT_POOL_SIZE, VM_POOL_ELEMENT_SIZE);
   VM_DEBUG(VM_DEBUG_MEDIUM,
-           "Max heap allocations: %u, max pool allocations %u",
-           VM_MAX_HEAP_ALLOCATIONS, VM_MAX_POOL_ALLOCATIONS);
+           "Heap header %u bytes per allocation, max pool allocations %u",
+           (unsigned)VM_HEAP_HEADER_SIZE, VM_MAX_POOL_ALLOCATIONS);
 
   return vm_mempool_create(&object_pool, VM_POOL_ELEMENT_SIZE,
                            VM_MAX_POOL_ALLOCATIONS);

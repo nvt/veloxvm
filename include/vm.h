@@ -230,6 +230,12 @@ typedef struct vm_memory_stats {
   uint64_t mempool_forwards;
   uint64_t gc_invocations;
   uint32_t peak_heap_allocations;
+  /* Deepest the GC mark work list has been, and the number of times a
+     push found it full and expanded in place instead. Overflows mean
+     VM_MARK_STACK_SIZE is undersized for the workload, and the peak is
+     what to size it against. */
+  uint32_t mark_stack_peak;
+  uint64_t mark_overflows;
 #if VM_PAUSE_PROFILING
   uint64_t gc_pause_ns_total;
   uint64_t gc_pause_ns_max;

@@ -30,6 +30,7 @@
  * Author: Nicolas Tsiftes <nvt@acm.org>
  */
 
+#include <limits.h>
 #include <string.h>
 
 #include "vm.h"
@@ -55,10 +56,13 @@ calculate_hash(vm_hash_key_t key)
   vm_hash_index_t hash;
   unsigned i;
 
-  /* Bernstein's hash function. */
+  /* Bernstein's hash function, over the bytes of the pointer. The shift
+     must be by whole bytes: a shift of i rather than i * CHAR_BIT reads
+     the low bits repeatedly and never reaches bit 15 and above, which
+     for aligned pointers leaves about ten bits of usable entropy. */
   hash = 0;
   for(i = 0; i < sizeof(key); i++) {
-    hash += hash * 33 + (((intptr_t)key >> i) & 0xff);
+    hash += hash * 33 + (((uintptr_t)key >> (i * CHAR_BIT)) & 0xff);
   }
 
   return hash;
@@ -70,10 +74,12 @@ calculate_hash2(vm_hash_key_t key)
   vm_hash_index_t hash;
   unsigned i;
 
-  /* Jenkin's hash function. */
+  /* Jenkins' one-at-a-time hash, over the bytes of the pointer, shifted
+     by whole bytes as in calculate_hash. The trailing xor with the key
+     mixes the high bits back in regardless. */
   hash = 0;
   for(i = 0; i < sizeof(key); i++) {
-    hash += ((intptr_t)key >> i) & 0xff;
+    hash += ((uintptr_t)key >> (i * CHAR_BIT)) & 0xff;
     hash += (hash << 10);
     hash ^= (hash >> 6);
   }
@@ -81,7 +87,7 @@ calculate_hash2(vm_hash_key_t key)
   hash ^= (hash >> 11);
   hash += (hash << 15);
 
-  return hash ^ (intptr_t)key;
+  return hash ^ (uintptr_t)key;
 }
 
 static int
@@ -99,9 +105,13 @@ get_index(vm_hash_table_t *table, vm_hash_key_t key, vm_hash_index_t *index)
   }
 
   /* We haven't found the key after the first hash, so try to find it in
-     a slot obtained from the second hash function. */
+     a slot obtained from the second hash function. The probe has to wrap
+     around the end of the table: VM_HASH_TABLE allocates the used bitmap
+     and the pair array as exactly-sized adjacent statics, so a secondary
+     index within VM_HASH_LINEAR_PROBING_LIMIT slots of the end would
+     otherwise walk past both. */
   tmp_index = (*index + calculate_hash2(key)) % table->size;
-  for(i = 0; i < VM_HASH_LINEAR_PROBING_LIMIT; i++, tmp_index++) {
+  for(i = 0; i < VM_HASH_LINEAR_PROBING_LIMIT; i++) {
     if(!VM_HASH_SLOT_USED(table, tmp_index)) {
       /* The key was not found, so set the index to the first empty slot
 	 of the pair of slots obtained with the two hash functionsa. */
@@ -113,6 +123,15 @@ get_index(vm_hash_table_t *table, vm_hash_key_t key, vm_hash_index_t *index)
       /* The key was found by using linear probing. */
       *index = tmp_index;
       return 1;
+    }
+
+    /* Wrap with a comparison rather than a modulo: tmp_index is below
+       table->size on entry and advances by one, so the two are
+       equivalent here. table->size is a runtime value, so a modulo would
+       compile to a division on a loop the GC runs constantly, and
+       Cortex-M0/M0+ has no divide instruction to compile it to. */
+    if(++tmp_index == table->size) {
+      tmp_index = 0;
     }
   }
 
@@ -174,7 +193,12 @@ vm_hash_delete(vm_hash_table_t *table, vm_hash_key_t key)
 {
   vm_hash_index_t index;
 
-  if(!get_index(table, key, &index)) {
+  /* On a miss, get_index still reports success and returns the slot the
+     key would be inserted into, so check the slot before clearing it.
+     Clearing an unused slot decrements items below zero, which leaves
+     VM_HASH_IS_FULL permanently true, and reports a key as removed that
+     was never stored. */
+  if(!get_index(table, key, &index) || !VM_HASH_SLOT_USED(table, index)) {
     return 0;
   }
 

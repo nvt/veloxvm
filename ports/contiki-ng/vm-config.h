@@ -194,6 +194,24 @@
 #endif
 #endif
 
+/* Slots in the GC mark work list, one vm_obj_t pointer each. The list
+   keeps the mark phase off the native stack, which is a couple of
+   kilobytes on Zoul. Scalars never reach it and cdr spines are walked
+   iteratively, so the peak follows the widest fanout in the live data
+   rather than its size. Overflow is safe, since the push expands in
+   place instead, so the 64 slots on Zoul buy the common case for 256 B
+   rather than sizing for the worst one. mark_stack_peak in the memory
+   stats reports what a workload needs. */
+#ifndef VM_MARK_STACK_SIZE
+#if CONTIKI_TARGET_ZOUL
+#define VM_MARK_STACK_SIZE 64
+#elif CONTIKI_TARGET_NATIVE
+#define VM_MARK_STACK_SIZE 2048
+#else
+#define VM_MARK_STACK_SIZE 256
+#endif
+#endif
+
 /* Size of the heapmem zone dedicated to the VM. All VM_MALLOC / VM_FREE /
    VM_REALLOC traffic flows through this zone, so it must be large enough
    to cover the Scheme heap, object pool, and frame pool plus any slack

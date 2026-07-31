@@ -138,6 +138,16 @@
 #define VM_GC_AGGRESSIVE 1
 #endif
 
+/* Slots in the GC mark work list, one vm_obj_t pointer each. Scalars
+   are filtered out before they are pushed and cdr spines are walked
+   iteratively, so the peak follows the widest fanout in the live data
+   rather than its size. Overflow is not fatal, since the push expands
+   in place instead, but a hosted process can afford to put the list far
+   out of reach. */
+#ifndef VM_MARK_STACK_SIZE
+#define VM_MARK_STACK_SIZE 4096
+#endif
+
 #ifndef VM_GC_MIN_ALLOCATED
 #define VM_GC_MIN_ALLOCATED (VM_HEAP_SIZE / 2)
 #endif

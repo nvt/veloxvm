@@ -165,6 +165,11 @@ typedef struct vm_port {
   struct vm_port *next;
   int fd;
   uint8_t flags;
+  /* Non-zero once vm_port_register has accepted this port, which happens
+     only for ports obtained from vm_alloc. The GC checks it before
+     marking, since a statically allocated port has no GC header in front
+     of it. This is a separate byte because flags is full. */
+  uint8_t heap_allocated;
   /* One-character pushback for peek-char. has_peek is non-zero when
      peek_char holds a buffered character that the next read-char should
      consume. */
