@@ -231,7 +231,7 @@ class _MethodHandlers:
                 "list.pop(index) not yet supported, use pop() without args")
 
         lst_token = encode_symbol(
-            self.get_safe_name(list_expr.id), self.bc)
+            self.binding_name(list_expr.id), self.bc)
 
         n_name = self.bc.get_unique_var_name("_pop_n")
         n_token = encode_symbol(n_name, self.bc)

@@ -194,6 +194,73 @@ print(result)
         self.assertEqual(returncode, 0)
         self.assertIn("42", stdout)
 
+    def test_execute_primitive_call_inside_function(self):
+        source = """
+def info():
+    return system_info()
+
+print(info())
+"""
+        stdout, stderr, returncode = self.compile_and_run(source)
+
+        self.assertEqual(returncode, 0, msg=stderr)
+        self.assertIn("VeloxVM", stdout)
+        self.assertNotIn("Undefined symbol", stdout + stderr)
+
+    def test_execute_first_class_primitive(self):
+        source = """
+operation = add
+print(operation(20, 22))
+"""
+        stdout, stderr, returncode = self.compile_and_run(source)
+
+        self.assertEqual(returncode, 0, msg=stderr)
+        self.assertIn("42", stdout)
+
+    def test_execute_shadowed_builtin(self):
+        source = """
+def print(value):
+    return value + 1
+
+result = print(41)
+display(result)
+"""
+        stdout, stderr, returncode = self.compile_and_run(source)
+
+        self.assertEqual(returncode, 0, msg=stderr)
+        self.assertIn("42", stdout)
+
+    def test_execute_primitive_named_class(self):
+        source = """
+class vector:
+    def __init__(self, value):
+        self.value = value
+
+item = vector(42)
+print(item.value)
+"""
+        stdout, stderr, returncode = self.compile_and_run(source)
+
+        self.assertEqual(returncode, 0, msg=stderr)
+        self.assertIn("42", stdout)
+
+    def test_local_binding_shadows_primitive_named_class(self):
+        source = """
+class vector:
+    def __init__(self, value):
+        self.value = value
+
+def invoke(vector):
+    return vector()
+
+factory = lambda: 42
+print(invoke(factory))
+"""
+        stdout, stderr, returncode = self.compile_and_run(source)
+
+        self.assertEqual(returncode, 0, msg=stderr)
+        self.assertIn("42", stdout)
+
     def test_execute_for_loop(self):
         """Test executing for loop."""
         source = """

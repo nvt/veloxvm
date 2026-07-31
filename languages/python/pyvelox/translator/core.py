@@ -126,6 +126,10 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
     def __init__(self, bc: Bytecode, source_lines: Optional[List[str]] = None):
         self.bc = bc
         self.scope_stack: List[Set[str]] = [set()]  # Stack of scopes, outermost first
+        # Bindings declared anywhere in the current module. Kept separate
+        # from scope_stack[0], which tracks bindings already emitted at
+        # runtime and therefore controls define-vs-set lowering.
+        self._module_bindings: Set[str] = set()
         # Per-scope set of boxed names. Parallel to scope_stack; entry i lists
         # the names in scope_stack[i] that live in heap-allocated boxes
         # (because they are both captured by an inner function AND mutated).
@@ -173,7 +177,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         # Names that resolve to a class object at module top level.
         # Populated by translate_class_def, consulted by translate_call
         # to choose between regular function dispatch and instance
-        # construction. Tracks safe names (post get_safe_name).
+        # construction. Tracks safe names (post binding_name).
         self._defined_classes: Set[str] = set()
         # Stack of (enclosing-class-safe-name, self-param-safe-name)
         # pairs maintained while compiling method bodies. translate_call
@@ -192,12 +196,15 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         """Check if a name conflicts with a VM primitive."""
         return get_primitive_id(name) is not None
 
-    def get_safe_name(self, name: str) -> str:
+    def binding_name(self, name: str) -> str:
         """
-        Get a safe variable name, renaming if it conflicts with a VM primitive.
+        Declare a user binding and return its bytecode-safe name.
 
-        If the name conflicts with a VM primitive, it will be renamed with the
-        prefix 'py_' and a warning will be emitted.
+        This method is intentionally mutating: assignments, parameters,
+        function definitions, and other binding sites call it to register a
+        real user binding. Read sites must use resolve_name() instead. Keeping
+        declaration separate from resolution prevents an ordinary reference
+        to a VM primitive from accidentally creating a py_-prefixed binding.
 
         Args:
             name: Original Python variable name
@@ -218,6 +225,35 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             return safe_name
 
         return name
+
+    def resolve_name(self, name: str) -> str:
+        """Resolve a name without creating a binding.
+
+        VM primitives remain core symbols unless a py_-renamed user binding
+        is visible in the current lexical scope. Non-primitive names are
+        unchanged. ``renamed_vars`` records the deterministic spelling of
+        declared collisions, while ``scope_stack`` decides whether that
+        declaration is actually visible here.
+        """
+        if not self.is_vm_primitive(name):
+            return name
+        safe_name = self.renamed_vars.get(name, f'py_{name}')
+        if (safe_name in self._module_bindings
+                or any(safe_name in scope
+                       for scope in reversed(self.scope_stack))):
+            return safe_name
+        return name
+
+    def _resolves_to_class(self, safe_name: str) -> bool:
+        """Whether ``safe_name`` currently denotes a module class.
+
+        Classes are module-only in the supported subset. A local parameter,
+        assignment, or nested function with the same safe name shadows that
+        class and must use ordinary call dispatch.
+        """
+        return (safe_name in self._defined_classes
+                and not any(safe_name in scope
+                            for scope in self.scope_stack[1:]))
 
     def encodes_as_single_token(self, expr: ast.expr) -> bool:
         """True if `expr` lowers to a single bytecode token (an atom
@@ -265,6 +301,12 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         Returns:
             Compiled bytecode (to be stored in expression 0)
         """
+        # Register module bindings before translating bodies. This gives
+        # functions Python's global late-binding behaviour even when a
+        # primitive-shadowing definition appears later in the source.
+        self._module_bindings.update(
+            self.collect_assigned_vars(module.body))
+
         # Pre-pass: validate every function/lambda signature and
         # record positional defaults. Doing it before any per-statement
         # translation means call sites in earlier code can resolve
@@ -335,8 +377,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                 "supported. Drop the defaults or the rest parameter.")
 
         if args.vararg is not None and not is_lambda:
-            self._vararg_funcs[self.get_safe_name(node.name)] = (
-                self.get_safe_name(args.vararg.arg))
+            self._vararg_funcs[self.binding_name(node.name)] = (
+                self.binding_name(args.vararg.arg))
 
         if not args.defaults:
             return
@@ -363,7 +405,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             self._validate_literal_default(default_node)
             nodes.append(default_node)
 
-        self._default_nodes[self.get_safe_name(node.name)] = nodes
+        self._default_nodes[self.binding_name(node.name)] = nodes
 
     def _validate_literal_default(self, default_node: ast.expr) -> None:
         """Default values must be literal constants — anything else
@@ -642,7 +684,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
 
     def translate_name(self, node: ast.Name) -> bytes:
         """Translate a variable reference."""
-        safe_name = self.get_safe_name(node.id)
+        safe_name = self.resolve_name(node.id)
         return self._emit_name_load(safe_name)
 
     def translate_assign(self, node: ast.Assign) -> bytes:
@@ -708,7 +750,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         if not all(isinstance(elt, ast.Name) for elt in target.elts):
             raise NotImplementedError(
                 "Tuple unpacking only supports simple variable names")
-        target_names = [self.get_safe_name(elt.id) for elt in target.elts]
+        target_names = [self.binding_name(elt.id) for elt in target.elts]
         value_bytes = self.translate_expr_with_ref(value_expr)
 
         current_scope = self.scope_stack[-1]
@@ -735,6 +777,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             defines.append(create_inline_call(
                 'define', [encode_symbol(name, self.bc), list_ref], self.bc))
             current_scope.add(name)
+            if len(self.scope_stack) == 1:
+                self._defined_classes.discard(name)
         return create_inline_call('begin', defines, self.bc)
 
     def _assign_simple(self, target: ast.Name,
@@ -748,11 +792,13 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
           heap box because an inner closure captures and mutates it,
           route through `box-set!` instead.
         """
-        safe_name = self.get_safe_name(target.id)
+        safe_name = self.binding_name(target.id)
         value_bytes = self.translate_expr_with_ref(value_expr)
         sym = encode_symbol(safe_name, self.bc)
 
         current_scope = self.scope_stack[-1]
+        if len(self.scope_stack) == 1:
+            self._defined_classes.discard(safe_name)
         in_outer_scope = any(safe_name in scope
                              for scope in self.scope_stack[:-1])
 
@@ -772,7 +818,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             raise NotImplementedError("Aug assignment only supports simple variables")
 
         var_name = node.target.id
-        safe_name = self.get_safe_name(var_name)
+        safe_name = self.binding_name(var_name)
 
         # Map operator
         op_map = {
@@ -829,7 +875,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             raise NotImplementedError(
                 f"{label} only supports simple variable targets")
         var_token = encode_symbol(
-            self.get_safe_name(receiver.id), self.bc)
+            self.binding_name(receiver.id), self.bc)
         new_value = build_new_value(var_token)
         return create_inline_call('set', [var_token, new_value], self.bc)
 
@@ -958,9 +1004,14 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         name and emits bind_function_rest -- the rest formal soaks up
         trailing actuals as a list at runtime.
         """
-        safe_func_name = self.get_safe_name(node.name)
-        safe_params = [self.get_safe_name(a.arg) for a in node.args.args]
-        rest_name = (self.get_safe_name(node.args.vararg.arg)
+        safe_func_name = self.binding_name(node.name)
+        self.scope_stack[-1].add(safe_func_name)
+        # A later function definition replaces a class binding of the same
+        # name for subsequent call sites.
+        if len(self.scope_stack) == 1:
+            self._defined_classes.discard(safe_func_name)
+        safe_params = [self.binding_name(a.arg) for a in node.args.args]
+        rest_name = (self.binding_name(node.args.vararg.arg)
                      if node.args.vararg is not None else None)
         all_params = safe_params + [rest_name] if rest_name else safe_params
 
@@ -1057,14 +1108,14 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             # themselves.
             if base.id == 'Exception':
                 self._emit_exception_class()
-            base_safe = self.get_safe_name(base.id)
+            base_safe = self.resolve_name(base.id)
             if base_safe not in self._defined_classes:
                 raise NotImplementedError(
                     f"Base class '{base.id}' must be a class defined "
                     f"earlier in the same module.")
             parent_bytes = encode_symbol(base_safe, self.bc)
 
-        safe_class_name = self.get_safe_name(node.name)
+        safe_class_name = self.binding_name(node.name)
 
         # The body must be a flat sequence of method defs (plus
         # optional pass / docstring). For @dataclass we additionally
@@ -1301,7 +1352,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             # Fast path: fixed-arity init.
             body_calls: List[bytes] = []
             for fname, _default in fields:
-                safe_fname = self.get_safe_name(fname)
+                safe_fname = self.binding_name(fname)
                 body_calls.append(create_inline_call(
                     '_pyvelox_set_attr',
                     [sym_self(),
@@ -1314,7 +1365,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                     else create_inline_call(
                         'begin', body_calls, self.bc))
             params = ['self'] + [
-                self.get_safe_name(f) for f, _ in fields]
+                self.binding_name(f) for f, _ in fields]
             return self._emit_lambda(
                 params, body, is_function=True)
 
@@ -1391,8 +1442,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                 source_lines=self._source_lines,
             ) from exc
 
-        safe_params = [self.get_safe_name(a.arg) for a in node.args.args]
-        rest_name = (self.get_safe_name(node.args.vararg.arg)
+        safe_params = [self.binding_name(a.arg) for a in node.args.args]
+        rest_name = (self.binding_name(node.args.vararg.arg)
                      if node.args.vararg is not None else None)
         all_params = safe_params + [rest_name] if rest_name else safe_params
 
@@ -1447,7 +1498,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         # time.
         self._emit_oop_helpers()
         self._emitted_helpers.add('Exception')
-        self._defined_classes.add(self.get_safe_name('Exception'))
+        self._defined_classes.add(self.binding_name('Exception'))
 
         sym_self = lambda: encode_symbol('self', self.bc)
         sym_args = lambda: encode_symbol('args', self.bc)
@@ -1504,7 +1555,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             self.bc)
         define_exc = create_inline_call(
             'define',
-            [encode_symbol(self.get_safe_name('Exception'), self.bc),
+            [encode_symbol(self.binding_name('Exception'), self.bc),
              class_vector],
             self.bc)
         self._preamble.extend(define_exc)
@@ -2009,8 +2060,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         `lambda *args: ...` extends the formal list with the rest
         name and emits bind_function_rest, same as a def.
         """
-        safe_params = [self.get_safe_name(a.arg) for a in node.args.args]
-        rest_name = (self.get_safe_name(node.args.vararg.arg)
+        safe_params = [self.binding_name(a.arg) for a in node.args.args]
+        rest_name = (self.binding_name(node.args.vararg.arg)
                      if node.args.vararg is not None else None)
         all_params = safe_params + [rest_name] if rest_name else safe_params
         # _analyze_body takes a statement list; wrap the body in an
@@ -2075,7 +2126,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                 self.bc)
         return create_inline_call(
             '_pyvelox_make_instance',
-            [encode_symbol(self.get_safe_name(class_name), self.bc),
+            [encode_symbol(self.resolve_name(class_name), self.bc),
              arg_list],
             self.bc)
 
@@ -2120,7 +2171,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         self._emit_oop_helpers()
         return create_inline_call(
             '_pyvelox_invoke',
-            [encode_symbol(self.get_safe_name(recv_name), self.bc),
+            [encode_symbol(self.resolve_name(recv_name), self.bc),
              arg_list],
             self.bc)
 
@@ -2443,6 +2494,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         # encoded operator to emit.
         if isinstance(node.func, ast.Name):
             callee_name = node.func.id
+            resolved_callee_name = self.resolve_name(callee_name)
             # Reject bare super() / super(args) -- only super().method(args)
             # is supported, which is intercepted on the Attribute path
             # above. Reaching the Name path means the user wrote super()
@@ -2455,7 +2507,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                     "form `super(Class, self)` is not supported either.")
             # Special-case 2: known built-ins.
             handler_name = self._BUILTIN_HANDLERS.get(callee_name)
-            if handler_name is not None:
+            if (handler_name is not None
+                    and resolved_callee_name == callee_name):
                 return getattr(self, handler_name)(node.args)
             # Special-case 2b: instance construction. `Foo(args)` for
             # a name registered by translate_class_def lowers through
@@ -2464,8 +2517,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             # lookup that translate_class_def already did at class-def
             # time is replayed here so a class shadowed by a later
             # `def foo` still dispatches as the function.
-            if (self.get_safe_name(callee_name) in self._defined_classes
-                    and callee_name not in self.renamed_vars):
+            if self._resolves_to_class(resolved_callee_name):
                 return self._translate_instance_construction(
                     callee_name, node.args, starred_idxs)
             # Special-case 2c: `cls(args)` inside a classmethod body.
@@ -2477,19 +2529,11 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             if self._is_classmethod_recv_call(callee_name):
                 return self._translate_classmethod_self_call(
                     callee_name, node.args, starred_idxs)
-            # Resolve the callee carefully: when a user binding shadows
-            # a primitive (tracked in renamed_vars by get_safe_name),
-            # call the user's py_-prefixed function; otherwise, if the
-            # name matches a primitive, emit the primitive ID directly
-            # instead of going through the variable path (which would
-            # rename thread_sleep -> py_thread_sleep and produce an
-            # unbound app symbol).
-            if callee_name in self.renamed_vars:
-                func_bytes = encode_symbol(self.renamed_vars[callee_name], self.bc)
-            elif self.is_vm_primitive(callee_name):
-                func_bytes = encode_symbol(callee_name, self.bc)
-            else:
-                func_bytes = self.translate_expr(node.func)
+            # resolved_callee_name is either the visible user binding or the
+            # original name (including a core primitive). It is deliberately
+            # non-mutating, so closure analysis and ordinary calls cannot
+            # manufacture a py_-prefixed symbol.
+            func_bytes = encode_symbol(resolved_callee_name, self.bc)
         else:
             # Compound callee (e.g. ((f x) y), or (obj.method() ...)).
             # Lift to a form-ref so the runtime sees a single token —
@@ -2525,7 +2569,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         # The pre-pass restricts defaults to literals, so reusing the
         # same bytes at every call site is safe.
         if callee_name is not None:
-            defaults = self._get_function_defaults(self.get_safe_name(callee_name))
+            defaults = self._get_function_defaults(
+                self.resolve_name(callee_name))
             if defaults is not None:
                 n_provided = len(arg_bytes)
                 n_total = len(defaults)
@@ -2889,14 +2934,14 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         body_bytes = self._translate_loop_body(node.body)
 
         if isinstance(node.target, ast.Name):
-            safe_param = self.get_safe_name(node.target.id)
+            safe_param = self.binding_name(node.target.id)
             body_lambda = self._emit_lambda(
                 [safe_param], self._hoist(body_bytes))
         elif isinstance(node.target, ast.Tuple):
             if not all(isinstance(elt, ast.Name) for elt in node.target.elts):
                 raise NotImplementedError(
                     "For loop tuple unpacking only supports simple variable names")
-            target_names = [self.get_safe_name(elt.id) for elt in node.target.elts]
+            target_names = [self.binding_name(elt.id) for elt in node.target.elts]
 
             # Nested-lambda shape:
             #   (for_each (lambda (_item)
@@ -3116,8 +3161,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             return encode_boolean(True)
         if isinstance(type_node, ast.Name):
             class_name = type_node.id
-            safe = self.get_safe_name(class_name)
-            if safe not in self._defined_classes:
+            safe = self.resolve_name(class_name)
+            if not self._resolves_to_class(safe):
                 raise NotImplementedError(
                     f"`except {class_name}:` requires {class_name} to "
                     f"be a class defined earlier in the same module. "
@@ -3164,7 +3209,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         # Wrap in immediate-lambda so the user's `as e:` name is in
         # scope only for this clause's body.
         bind_lambda_ref = self._emit_lambda(
-            [self.get_safe_name(bound_name)], body_bytes,
+            [self.binding_name(bound_name)], body_bytes,
             is_function=True)
         return create_inline_call(
             bind_lambda_ref,
@@ -3285,7 +3330,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                 # caught value through unchanged.
                 return create_inline_call(
                     'raise',
-                    [encode_symbol(self.get_safe_name(node.exc.id), self.bc)],
+                    [encode_symbol(self.resolve_name(node.exc.id), self.bc)],
                     self.bc)
             return create_inline_call(
                 'raise',
@@ -3325,8 +3370,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         """
         if type_name == 'Exception':
             self._emit_exception_class()
-        safe = self.get_safe_name(type_name)
-        if safe in self._defined_classes and type_name not in self.renamed_vars:
+        safe = self.resolve_name(type_name)
+        if self._resolves_to_class(safe):
             return self._translate_instance_construction(
                 type_name, arg_nodes, [])
         return self._make_exception_obj(type_name, arg_nodes)
