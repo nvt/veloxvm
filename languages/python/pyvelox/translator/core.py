@@ -179,6 +179,28 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         # to choose between regular function dispatch and instance
         # construction. Tracks safe names (post binding_name).
         self._defined_classes: Set[str] = set()
+        # Static view of each finished class, used to resolve __init__
+        # at compile time instead of walking the method alist at run
+        # time. Keyed by safe class name.
+        #
+        # _class_parent maps a class to its base's safe name (None for
+        # a root class), so the resolver can walk the chain the same
+        # way _pyvelox_lookup_method does.
+        #
+        # _class_own_init holds the lambda form-ref for the class's own
+        # __init__ closure, or None when the class defines none. A
+        # class is entered in these maps only once its methods are
+        # fully compiled -- a constructor call inside the class's own
+        # body therefore falls back to the runtime path, which is what
+        # we want since the ref doesn't exist yet.
+        #
+        # _class_opaque_init lists classes whose __init__ can't be
+        # referenced directly (a @classmethod/@staticmethod __init__,
+        # whose alist entry is a wrapper rather than the real closure).
+        # Those keep using the runtime lookup.
+        self._class_parent: Dict[str, Optional[str]] = {}
+        self._class_own_init: Dict[str, Optional[bytes]] = {}
+        self._class_opaque_init: Set[str] = set()
         # Stack of (enclosing-class-safe-name, self-param-safe-name)
         # pairs maintained while compiling method bodies. translate_call
         # consults the top of the stack when it sees `super().m(args)`
@@ -254,6 +276,40 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         return (safe_name in self._defined_classes
                 and not any(safe_name in scope
                             for scope in self.scope_stack[1:]))
+
+    def _resolve_static_init(self, safe_class: str
+                             ) -> "tuple[str, Optional[bytes]]":
+        """Resolve which __init__ a `safe_class` construction runs,
+        without deferring to the runtime method walk.
+
+        Returns one of:
+        - ('none', None)        no __init__ anywhere in the chain
+        - ('direct', ref)       `ref` is the __init__ closure's form-ref
+        - ('dynamic', None)     not statically resolvable; the caller
+                                must fall back to _pyvelox_make_instance
+
+        The walk mirrors _pyvelox_lookup_method: first class in the
+        chain that defines the name wins. Any class along the way that
+        we have no record of (still being defined, or with an opaque
+        __init__) makes the whole resolution dynamic, since a base we
+        can't inspect might supply the __init__ a subclass lacks.
+        """
+        seen: Set[str] = set()
+        cls: Optional[str] = safe_class
+        while cls is not None:
+            # Cycles are impossible in the supported subset (a base
+            # must already be defined), but a malformed chain must not
+            # hang the compiler.
+            if cls in seen or cls not in self._class_own_init:
+                return ('dynamic', None)
+            if cls in self._class_opaque_init:
+                return ('dynamic', None)
+            seen.add(cls)
+            own = self._class_own_init[cls]
+            if own is not None:
+                return ('direct', own)
+            cls = self._class_parent.get(cls)
+        return ('none', None)
 
     def encodes_as_single_token(self, expr: ast.expr) -> bool:
         """True if `expr` lowers to a single bytecode token (an atom
@@ -1205,6 +1261,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         # don't emit a `define` for them -- only the class object's
         # define at the bottom.
         method_pairs: List[bytes] = []
+        own_init_ref: Optional[bytes] = None
         for kind, method_node in method_entries:
             real_lambda = self._compile_method_lambda(
                 method_node,
@@ -1212,6 +1269,17 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                 kind=kind)
             method_lambda = self._wrap_method_for_kind(
                 real_lambda, kind)
+            if method_node.name == '__init__':
+                # Record the *unwrapped* closure so construction sites
+                # can call it directly. A @classmethod/@staticmethod
+                # __init__ is stored wrapped, so calling the real
+                # lambda would skip the wrapper's receiver juggling --
+                # mark the class opaque and let those go through the
+                # runtime path instead.
+                if kind == 'instance':
+                    own_init_ref = real_lambda
+                else:
+                    self._class_opaque_init.add(safe_class_name)
             pair = create_inline_call(
                 'cons',
                 [create_inline_call(
@@ -1229,6 +1297,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         if dataclass_fields:
             init_lambda = self._synthesize_dataclass_init(
                 dataclass_fields)
+            own_init_ref = init_lambda
             init_pair = create_inline_call(
                 'cons',
                 [create_inline_call(
@@ -1239,6 +1308,15 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             method_pairs.append(self._hoist(init_pair))
 
         method_alist = create_inline_call('list', method_pairs, self.bc)
+
+        # The class is only now complete enough for construction sites
+        # to resolve its __init__ statically. Registering it earlier
+        # would hand out a form-ref for a closure whose body is still
+        # being compiled (a constructor call inside one of its own
+        # methods); those keep using the runtime lookup.
+        self._class_parent[safe_class_name] = (
+            base_safe if node.bases else None)
+        self._class_own_init[safe_class_name] = own_init_ref
 
         class_vector = create_inline_call(
             'vector',
@@ -1542,6 +1620,11 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                 [encode_symbol('__init__', self.bc)], self.bc),
              init_lambda_ref],
             self.bc)
+        # Same static registration a user class gets, so `Exception(x)`
+        # and subclasses that inherit this __init__ resolve directly.
+        self._class_parent[self.binding_name('Exception')] = None
+        self._class_own_init[self.binding_name('Exception')] = (
+            init_lambda_ref)
         method_alist = create_inline_call(
             'list', [self._hoist(init_pair)], self.bc)
         class_vector = create_inline_call(
@@ -1885,6 +1968,46 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             self.bc)
         self._preamble.extend(define_make)
 
+        # _pyvelox_make_instance_direct(class, init, args)
+        # The variant used when the compiler already knows which
+        # __init__ a construction runs (see _resolve_static_init). It
+        # takes the closure as an argument, so there is no method-alist
+        # walk, and no guard is needed either: the guard only existed
+        # to turn "lookup found no __init__" into "return the instance
+        # unchanged", a case we resolve statically now. Exceptions
+        # raised by __init__ itself propagate, exactly as they did
+        # through the old handler's re-raise branch.
+        sym_init = lambda: encode_symbol('init', self.bc)
+        direct_alloc = create_inline_call(
+            'vector',
+            [create_inline_call(
+                'quote',
+                [encode_symbol(self.INSTANCE_TAG, self.bc)], self.bc),
+             sym_class(),
+             create_inline_call('list', [], self.bc)],
+            self.bc)
+        direct_apply = create_inline_call(
+            'apply',
+            [sym_init(),
+             create_inline_call(
+                 'cons', [sym_instance(), sym_args()], self.bc)],
+            self.bc)
+        direct_body = create_inline_call(
+            'begin', [direct_apply, sym_instance()], self.bc)
+        direct_let_lambda = self._emit_lambda(
+            ['instance'], direct_body, is_function=True)
+        direct_make_body = create_inline_call(
+            direct_let_lambda, [direct_alloc], self.bc)
+        direct_lambda_ref = self._emit_lambda(
+            ['class', 'init', 'args'], direct_make_body,
+            is_function=True)
+        define_direct = create_inline_call(
+            'define',
+            [encode_symbol('_pyvelox_make_instance_direct', self.bc),
+             direct_lambda_ref],
+            self.bc)
+        self._preamble.extend(define_direct)
+
         # _pyvelox_isinstance(instance, class)
         # True iff instance is a tagged pyinstance whose class chain
         # contains class. Walks parent slots until it finds a match
@@ -2105,11 +2228,36 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         starred value onto the prefix at the call site, mirroring the
         forwarding-via-apply path. No call-site default-padding here:
         any defaults declared by a synthesised __init__ are handled
-        inside that closure via its own argc dispatch."""
+        inside that closure via its own argc dispatch.
+
+        Which __init__ runs is resolved at compile time where possible
+        (_resolve_static_init). A class with no __init__ in its chain,
+        constructed with no arguments, lowers to the bare instance
+        allocation; a statically known __init__ goes through
+        _pyvelox_make_instance_direct, which skips both the method-alist
+        walk and the missing-__init__ guard. Anything unresolved falls
+        back to _pyvelox_make_instance."""
         if starred_idxs and starred_idxs[0] != len(arg_nodes) - 1:
             raise NotImplementedError(
                 "Positional arguments after *-argument are not "
                 "supported in class instantiation either.")
+        safe_class = self.resolve_name(class_name)
+        init_kind, init_ref = self._resolve_static_init(safe_class)
+        if init_kind == 'none' and not arg_nodes:
+            # No __init__ to run and no arguments to evaluate for
+            # effect: the construction *is* the allocation. Argument-
+            # bearing calls stay on the helper path, which keeps
+            # evaluating them (and, as before, ignoring their values)
+            # rather than silently dropping their side effects.
+            self._emit_oop_helpers()
+            return create_inline_call(
+                'vector',
+                [create_inline_call(
+                    'quote',
+                    [encode_symbol(self.INSTANCE_TAG, self.bc)], self.bc),
+                 encode_symbol(safe_class, self.bc),
+                 create_inline_call('list', [], self.bc)],
+                self.bc)
         if starred_idxs:
             fixed_nodes = arg_nodes[:-1]
             rest_value = self.translate_expr_with_ref(
@@ -2124,9 +2272,14 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                 'list',
                 [self.translate_expr_with_ref(a) for a in arg_nodes],
                 self.bc)
+        if init_kind == 'direct':
+            return create_inline_call(
+                '_pyvelox_make_instance_direct',
+                [encode_symbol(safe_class, self.bc), init_ref, arg_list],
+                self.bc)
         return create_inline_call(
             '_pyvelox_make_instance',
-            [encode_symbol(self.resolve_name(class_name), self.bc),
+            [encode_symbol(safe_class, self.bc),
              arg_list],
             self.bc)
 

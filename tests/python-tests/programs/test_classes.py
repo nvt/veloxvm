@@ -265,6 +265,49 @@ expect("C.b (from B's init)", c.b, 2)
 expect("C.c (own init)", c.c, 3)
 
 
+# ============================================================
+# Construction paths the compiler resolves statically.
+# ============================================================
+
+# No __init__ anywhere in the chain: construction lowers to a bare
+# allocation, with no init call to make. Methods and attribute
+# attachment must still work on the result.
+class NoInit:
+    def label(self):
+        return "no-init"
+
+
+class NoInitChild(NoInit):
+    pass
+
+
+plain = NoInitChild()
+expect("no-init subclass method", plain.label(), "no-init")
+plain.tag = 7
+expect("no-init subclass attribute", plain.tag, 7)
+
+
+# Constructing a class from inside its own method body. The class
+# isn't statically resolvable while its own methods are still being
+# compiled, so this keeps taking the runtime-lookup path -- it has to
+# build a working instance all the same.
+class Node:
+    def __init__(self, v):
+        self.v = v
+        self.link = None
+
+    def prepend(self, v):
+        head = Node(v)
+        head.link = self
+        return head
+
+
+tail = Node(1)
+head = tail.prepend(2)
+expect("self-constructing method", head.v, 2)
+expect("self-constructed link", head.link.v, 1)
+
+
 if failures > 0:
     print("FAILURES:", failures)
     raise SystemExit(1)
