@@ -49,7 +49,7 @@ source line; the CLI prints the same and exits non-zero.
 | `nonlocal`, `global` | Yes | Recognised by the scope analyser. |
 | `try` / `except` / `raise` | Yes | Multiple `except` clauses with type filters: `except SomeClass as e:` matches if `_pyvelox_isinstance(e, SomeClass)`. `except:` and `except Exception:` are catch-all aliases that absorb both the pyinstance and the legacy `#(py-exception ...)` shape. The class named in a typed clause must be defined earlier in the module; tuple filters (`except (A, B):`) aren't yet supported, and a catch-all clause that shadows later typed clauses is refused so unreachable code doesn't sneak in. `raise X(args...)` lowers as instance construction when `X` is a defined class (or `Exception` itself, which is auto-injected); otherwise as a tagged 3-vector. Handlers read `e.type`, `e.args`, `str(e)`, `f"{e}"` the same way regardless of which shape was raised. `raise e` on a bound name re-raises the caught object unchanged. |
 | `with` (context managers) | No | |
-| `class` | Partial | `class Foo: def __init__/methods` and `class Bar(Foo): ...` lower to tagged class vectors. Instance construction `Foo(args)` runs `__init__`; classes without `__init__` (in their own body or any ancestor) still construct. `self.x = v` / `self.x` / `obj.method(args)` work. `super().method(args)` walks from the enclosing class's parent. `isinstance(obj, Cls)` walks the class chain. Refused: multiple inheritance, forward-reference base classes, `@classmethod` / `@staticmethod` / `@property` / decorators, class-level attributes, nested classes, dunder operator overloading (`__add__` etc.), `__getattr__` / `__setattr__` / descriptors, metaclasses, bare `super()` standalone, `super(Class, self)` 2-arg form, `isinstance` with a tuple second arg. Method names that collide with `_METHOD_HANDLERS` (`get`, `append`, `upper`, etc.) are shadowed by the builtin handler. |
+| `class` | Partial | `class Foo: def __init__/methods` and `class Bar(Foo): ...` lower to tagged class vectors. Instance construction `Foo(args)` runs `__init__`; classes without `__init__` (in their own body or any ancestor) still construct. `self.x = v` / `self.x` / `obj.method(args)` work. `super().method(args)` walks from the enclosing class's parent. `isinstance(obj, Cls)` walks the class chain. Refused: multiple inheritance, forward-reference base classes, `@property` and other method decorators (`@classmethod` and `@staticmethod` *are* supported -- see the section below), class-level attributes, nested classes, dunder operator overloading (`__add__` etc.), `__getattr__` / `__setattr__` / descriptors, metaclasses, bare `super()` standalone, `super(Class, self)` 2-arg form, `isinstance` with a tuple second arg. Method names that collide with `_METHOD_HANDLERS` (`get`, `append`, `upper`, etc.) are shadowed by the builtin handler. |
 | Comparison ops (`<`, `<=`, `>`, `>=`) | Yes | Numeric only. |
 | `==`, `!=` | Yes | Type-aware deep equality (`equalp`). `True == 1` is `False` because the VM keeps booleans and ints as distinct types. |
 | `is`, `is not` | No | Refused at compile time. |
@@ -123,11 +123,32 @@ helper with the enclosing class's parent slot directly, so the walk
 starts above the current class. `isinstance(obj, Cls)` is backed by
 a similar walk against the parent chain.
 
+Instance construction does not use that walk when it doesn't have
+to. Classes are module-scope and their method sets are fixed once
+the class definition finishes, so the compiler resolves which
+`__init__` a `Foo(args)` site runs and emits one of three shapes:
+the bare instance vector, when no `__init__` exists anywhere in the
+chain and no arguments were passed; a call to
+`_pyvelox_make_instance_direct`, which takes the resolved closure as
+an argument; or `_pyvelox_make_instance`, which performs the runtime
+lookup. The last is the fallback for the cases static resolution
+can't cover -- a constructor call inside the class's own body (the
+closure doesn't exist yet at that point), a `@classmethod` /
+`@staticmethod` `__init__` (the class stores a wrapper rather than
+the closure itself), and `cls(...)` dispatched through
+`_pyvelox_invoke`.
+
+The direct shapes need no guard: the guard in `_pyvelox_make_instance`
+exists only to turn "the lookup found no `__init__`" into "return the
+instance unchanged", which is a compile-time answer on the resolved
+paths.
+
 The supporting runtime helpers (`_pyvelox_make_instance`,
-`_pyvelox_lookup_method`, `_pyvelox_get_attr`, `_pyvelox_set_attr`,
-`_pyvelox_isinstance`, `_pyvelox_class_extends`) are emitted lazily
-into the program prologue when the first class definition or
-attribute access is compiled.
+`_pyvelox_make_instance_direct`, `_pyvelox_lookup_method`,
+`_pyvelox_get_attr`, `_pyvelox_set_attr`, `_pyvelox_isinstance`,
+`_pyvelox_class_extends`) are emitted lazily into the program
+prologue when the first class definition or attribute access is
+compiled.
 
 ## @dataclass
 
@@ -166,9 +187,26 @@ class Config:
 
 Defaults must be literal constants (`int`, `str`, `bool`, `None`),
 matching the existing default-arg restriction on plain functions.
-When any field has a default, the synthesised `__init__` becomes
-variadic (`def __init__(self, *_args)`) with argc-based dispatch
-so missing trailing args fall back to the declared defaults.
+The synthesised `__init__` is a fixed-arity closure taking every
+field, and the construction site fills in the defaults for fields it
+doesn't supply -- the same call-site padding a directly-named call to
+a defaulted function gets.
+
+When any field has a default, the class additionally carries a
+variadic `(self, *_args)` wrapper that fills the missing tail in via
+argc dispatch and forwards to that closure. It is what the method
+alist holds, so callers that can't pad at compile time still get the
+declared defaults: `Foo(*args)`, `cls(...)` through
+`_pyvelox_invoke`, and `super().__init__(...)`.
+
+A user-written `__init__` gets the call-site padding too, but has no
+such wrapper -- so `Foo(*args)` on a class whose `__init__` declares
+defaults must supply every argument.
+
+Because the padding happens while compiling the construction, both
+arity mistakes are compile-time errors there: passing more arguments
+than the `__init__` accepts, and leaving a parameter that has no
+default unsupplied.
 
 What's not supported: parameterised forms (`@dataclass(eq=False,
 frozen=True, ...)`), the `field()` config helper for
@@ -193,9 +231,10 @@ so subclasses without their own `__init__` get the standard shape
 for free, and subclasses that override `__init__` can call
 `super().__init__(msg)` to retain it.
 
-`raise X(args)` on a defined class routes through
-`_pyvelox_make_instance`; the resulting `pyinstance` is what the
-handler sees. Handler-side `e.args`, `e.type`, `str(e)`, and
+`raise X(args)` on a defined class lowers as ordinary instance
+construction, taking whichever of the three shapes above applies;
+the resulting `pyinstance` is what the handler sees. Handler-side
+`e.args`, `e.type`, `str(e)`, and
 `f"{e}"` work the same way they do for the legacy
 `py-exception` tagged vector -- both shapes share the
 `_pyvelox_get_attr` and `_pyvelox_str` runtime helpers.
