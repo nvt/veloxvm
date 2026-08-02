@@ -265,6 +265,159 @@ expect("C.b (from B's init)", c.b, 2)
 expect("C.c (own init)", c.c, 3)
 
 
+# ============================================================
+# Construction paths the compiler resolves statically.
+# ============================================================
+
+# No __init__ anywhere in the chain: construction lowers to a bare
+# allocation, with no init call to make. Methods and attribute
+# attachment must still work on the result.
+class NoInit:
+    def label(self):
+        return "no-init"
+
+
+class NoInitChild(NoInit):
+    pass
+
+
+plain = NoInitChild()
+expect("no-init subclass method", plain.label(), "no-init")
+plain.tag = 7
+expect("no-init subclass attribute", plain.tag, 7)
+
+
+# Constructing a class from inside its own method body. The class
+# isn't statically resolvable while its own methods are still being
+# compiled, so this keeps taking the runtime-lookup path -- it has to
+# build a working instance all the same.
+class Node:
+    def __init__(self, v):
+        self.v = v
+        self.link = None
+
+    def prepend(self, v):
+        head = Node(v)
+        head.link = self
+        return head
+
+
+tail = Node(1)
+head = tail.prepend(2)
+expect("self-constructing method", head.v, 2)
+expect("self-constructed link", head.link.v, 1)
+
+
+# A user-written __init__ with defaults. The closure is fixed-arity,
+# so the construction site is what fills the missing tail in.
+class Defaulted:
+    def __init__(self, a, b=7, c="z"):
+        self.a = a
+        self.b = b
+        self.c = c
+
+
+d1 = Defaulted(1)
+expect("user init required arg", d1.a, 1)
+expect("user init default b", d1.b, 7)
+expect("user init default c", d1.c, "z")
+
+d2 = Defaulted(1, 2)
+expect("user init overridden b", d2.b, 2)
+expect("user init default c kept", d2.c, "z")
+
+d3 = Defaulted(1, 2, "y")
+expect("user init all supplied", d3.c, "y")
+
+
+# The same, inherited: the subclass adds no __init__, so both the
+# closure and its defaults come from the base.
+class DefaultedChild(Defaulted):
+    def total(self):
+        return self.a + self.b
+
+
+dc = DefaultedChild(5)
+expect("inherited defaulted init", dc.total(), 12)
+
+
+# ============================================================
+# Defaults on methods, which are reached through the runtime
+# lookup and so carry their own padding rather than relying on
+# the call site.
+# ============================================================
+
+class Calc:
+    def __init__(self, base):
+        self.base = base
+
+    def add(self, a, b=10, c=100):
+        return self.base + a + b + c
+
+
+calc = Calc(1000)
+expect("method all args", calc.add(1, 2, 3), 1006)
+expect("method one default", calc.add(1, 2), 1103)
+expect("method two defaults", calc.add(1), 1111)
+
+
+# Inherited, and reached through super() from an override.
+class CalcChild(Calc):
+    def add(self, a, b=20, c=200):
+        return super().add(a) + 1
+
+
+cc = CalcChild(0)
+expect("override defaults", cc.add(1), 112)
+
+
+# A module function may share a name with a method without
+# inheriting its signature.
+def add(a, b=5):
+    return a + b
+
+
+expect("module function keeps own defaults", add(1), 6)
+expect("module function explicit", add(1, 2), 3)
+
+
+# ============================================================
+# Method names that collide with the built-in method handlers.
+# Both readings have to survive in the same program, chosen by
+# the receiver's type at run time.
+# ============================================================
+
+class Bag:
+    def __init__(self):
+        self.total = 0
+
+    def append(self, x):
+        self.total = self.total + x
+        return self.total
+
+    def get(self, k):
+        return "bag-" + k
+
+    def upper(self):
+        return self.total * 2
+
+
+bag = Bag()
+expect("shadowed append (instance)", bag.append(5), 5)
+expect("shadowed append accumulates", bag.append(3), 8)
+expect("shadowed get (instance)", bag.get("k"), "bag-k")
+expect("shadowed upper (instance)", bag.upper(), 16)
+
+# The built-in readings of the very same names, in the same program.
+nums = [1, 2]
+nums.append(9)
+expect("list append still works", nums, [1, 2, 9])
+mapping = {"a": 1}
+expect("dict get still works", mapping.get("a"), 1)
+expect("dict get missing", mapping.get("zz"), False)
+expect("string upper still works", "ab".upper(), "AB")
+
+
 if failures > 0:
     print("FAILURES:", failures)
     raise SystemExit(1)
