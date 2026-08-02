@@ -381,6 +381,43 @@ expect("module function keeps own defaults", add(1), 6)
 expect("module function explicit", add(1, 2), 3)
 
 
+# ============================================================
+# Method names that collide with the built-in method handlers.
+# Both readings have to survive in the same program, chosen by
+# the receiver's type at run time.
+# ============================================================
+
+class Bag:
+    def __init__(self):
+        self.total = 0
+
+    def append(self, x):
+        self.total = self.total + x
+        return self.total
+
+    def get(self, k):
+        return "bag-" + k
+
+    def upper(self):
+        return self.total * 2
+
+
+bag = Bag()
+expect("shadowed append (instance)", bag.append(5), 5)
+expect("shadowed append accumulates", bag.append(3), 8)
+expect("shadowed get (instance)", bag.get("k"), "bag-k")
+expect("shadowed upper (instance)", bag.upper(), 16)
+
+# The built-in readings of the very same names, in the same program.
+nums = [1, 2]
+nums.append(9)
+expect("list append still works", nums, [1, 2, 9])
+mapping = {"a": 1}
+expect("dict get still works", mapping.get("a"), 1)
+expect("dict get missing", mapping.get("zz"), False)
+expect("string upper still works", "ab".upper(), "AB")
+
+
 if failures > 0:
     print("FAILURES:", failures)
     raise SystemExit(1)

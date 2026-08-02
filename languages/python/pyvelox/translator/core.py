@@ -217,6 +217,13 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         # construction site.
         self._class_init_default_bytes: Dict[
             str, List[Optional[bytes]]] = {}
+        # Every method name defined by any class in the module,
+        # collected by the signature pre-pass. Consulted by
+        # translate_call: a name that is both a user method and a
+        # built-in method handler (`append`, `get`, `upper`, ...) has
+        # to be dispatched on the receiver's type at run time instead
+        # of being handed straight to the handler.
+        self._user_method_names: Set[str] = set()
         # Stack of (enclosing-class-safe-name, self-param-safe-name)
         # pairs maintained while compiling method bodies. translate_call
         # consults the top of the stack when it sees `super().m(args)`
@@ -529,6 +536,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         """
         if isinstance(node, (ast.FunctionDef, ast.Lambda,
                              ast.AsyncFunctionDef)):
+            if is_method:
+                self._user_method_names.add(node.name)
             try:
                 self._validate_function_signature(
                     node, isinstance(node, ast.Lambda),
@@ -2469,6 +2478,61 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             padded.append(defaults[i])
         return padded
 
+    def _emit_instance_tag_check(self, recv_token: bytes) -> bytes:
+        """Build the predicate "this value is a class instance": a
+        3-vector whose slot 0 is the pyinstance tag. `and`
+        short-circuits, so vector-ref only runs once vectorp and the
+        length check have passed.
+
+        Emitted inline rather than as a prologue helper -- it is only
+        needed where a user method name collides with a built-in one,
+        which most programs never do.
+        """
+        return create_inline_call(
+            'and',
+            [create_inline_call('vectorp', [recv_token], self.bc),
+             create_inline_call(
+                 'equal',
+                 [create_inline_call(
+                     'vector_length', [recv_token], self.bc),
+                  encode_integer(3)],
+                 self.bc),
+             create_inline_call(
+                 'eqp',
+                 [create_inline_call(
+                     'vector_ref',
+                     [recv_token, encode_integer(0)], self.bc),
+                  create_inline_call(
+                      'quote',
+                      [encode_symbol(self.INSTANCE_TAG, self.bc)],
+                      self.bc)],
+                 self.bc)],
+            self.bc)
+
+    def _translate_shadowed_method_call(self, attr_node: ast.Attribute,
+                                        arg_nodes: List[ast.expr],
+                                        handler: Callable) -> bytes:
+        """Lower `recv.m(args)` where `m` is both a built-in method
+        handler and a method some class defines.
+
+        Neither reading can be picked at compile time -- the receiver's
+        type isn't known -- so both are emitted under a receiver-type
+        test: a class instance takes the user's method through the
+        runtime lookup, anything else takes the built-in handler.
+
+        The receiver is translated twice, once per branch, so this is
+        restricted to receivers that re-read without side effects.
+        Callers check that first.
+        """
+        recv_node = attr_node.value
+        user_call = self._hoist(self._translate_user_method_call(
+            recv_node, attr_node.attr, arg_nodes))
+        builtin_call = self._hoist(handler(self, recv_node, arg_nodes))
+        test = self._hoist(self._emit_instance_tag_check(
+            self.translate_expr(recv_node)))
+        return create_inline_call(
+            'if', [test, user_call, builtin_call], self.bc)
+
     def _is_classmethod_recv_call(self, name: str) -> bool:
         """True iff `name` is the receiver parameter of the
         classmethod whose body we're currently compiling. The
@@ -2820,6 +2884,18 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                 return module_call
             handler = self._METHOD_HANDLERS.get(node.func.attr)
             if handler is not None:
+                # A class in this program defines a method with the
+                # same name, so the built-in reading is no longer the
+                # only one. Decide on the receiver at run time -- but
+                # only when re-reading it is free, since the two
+                # branches translate it separately. Anything else
+                # keeps the built-in reading: the mutating list
+                # handlers require a simple-name receiver regardless.
+                if (node.func.attr in self._user_method_names
+                        and self.encodes_as_single_token(node.func.value)
+                        and not starred_idxs):
+                    return self._translate_shadowed_method_call(
+                        node.func, node.args, handler)
                 return handler(self, node.func.value, node.args)
             # Unknown method name -> assume the receiver is an instance
             # of a user-defined class and dispatch via the runtime
