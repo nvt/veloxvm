@@ -1,1 +1,6 @@
 **/.git
+**/__pycache__
+**/*.o
+obj
+bin
+**/bin

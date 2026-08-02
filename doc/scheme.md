@@ -47,16 +47,16 @@ make
 ### Verifying the installation
 
 ```bash
-./compile.sh hello
-./bin/vm apps/hello.vm
+./compile.sh basic/factorial
+./run.sh basic/factorial
 ```
 
 The top-level `compile.sh` wraps the Scheme compiler; you can also invoke it
-directly with `./compile-scheme.sh apps/hello.scm`.
+directly with `./compile-scheme.sh apps/basic/factorial.scm`.
 
 ## Quick start
 
-Write `hello.scm`:
+Write `apps/basic/my-hello.scm`:
 
 ```scheme
 (define (greet name)
@@ -70,8 +70,8 @@ Write `hello.scm`:
 Compile and run:
 
 ```bash
-./compile.sh hello
-./bin/vm apps/hello.vm
+./compile.sh basic/my-hello
+./run.sh basic/my-hello
 # => Hello, World!
 ```
 

@@ -1,9 +1,18 @@
-FROM ubuntu:latest
+FROM ubuntu:24.04
 
 WORKDIR /velox
-ADD . /velox
+COPY . /velox
 
-RUN apt-get -qq update
-RUN apt-get -qq install bison clang clisp flex make
-RUN make
-RUN ./compile.sh
+RUN apt-get -qq update \
+    && DEBIAN_FRONTEND=noninteractive apt-get -qq install --no-install-recommends \
+        bison \
+        clang \
+        flex \
+        make \
+        python3 \
+        racket \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN make && ./compile.sh
+
+CMD ["bin/vm"]
