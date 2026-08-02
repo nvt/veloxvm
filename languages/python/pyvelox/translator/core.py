@@ -201,6 +201,22 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         self._class_parent: Dict[str, Optional[str]] = {}
         self._class_own_init: Dict[str, Optional[bytes]] = {}
         self._class_opaque_init: Set[str] = set()
+        # Positional defaults of each class's own __init__, excluding
+        # the `self` slot: entry i is the AST node for the default of
+        # the i-th construction argument, or None if that argument is
+        # required. A class maps to None when its __init__ takes
+        # *args, where no fixed arity exists to pad up to.
+        #
+        # This deliberately doesn't reuse _default_nodes, which is
+        # keyed by bare function name -- every class's __init__ would
+        # share the key '__init__' there.
+        self._class_init_defaults: Dict[
+            str, Optional[List[Optional[ast.expr]]]] = {}
+        # Lazily-encoded form of the above, same caching rationale as
+        # _default_bytes: encode each default once, reuse at every
+        # construction site.
+        self._class_init_default_bytes: Dict[
+            str, List[Optional[bytes]]] = {}
         # Stack of (enclosing-class-safe-name, self-param-safe-name)
         # pairs maintained while compiling method bodies. translate_call
         # consults the top of the stack when it sees `super().m(args)`
@@ -278,14 +294,18 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                             for scope in self.scope_stack[1:]))
 
     def _resolve_static_init(self, safe_class: str
-                             ) -> "tuple[str, Optional[bytes]]":
+                             ) -> "tuple[str, Optional[bytes], Optional[str]]":
         """Resolve which __init__ a `safe_class` construction runs,
         without deferring to the runtime method walk.
 
         Returns one of:
-        - ('none', None)        no __init__ anywhere in the chain
-        - ('direct', ref)       `ref` is the __init__ closure's form-ref
-        - ('dynamic', None)     not statically resolvable; the caller
+        - ('none', None, None)  no __init__ anywhere in the chain
+        - ('direct', ref, cls)  `ref` is the __init__ closure's
+                                form-ref and `cls` the class that
+                                defines it (whose signature governs
+                                default padding at the call site)
+        - ('dynamic', None, None)
+                                not statically resolvable; the caller
                                 must fall back to _pyvelox_make_instance
 
         The walk mirrors _pyvelox_lookup_method: first class in the
@@ -301,15 +321,53 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             # must already be defined), but a malformed chain must not
             # hang the compiler.
             if cls in seen or cls not in self._class_own_init:
-                return ('dynamic', None)
+                return ('dynamic', None, None)
             if cls in self._class_opaque_init:
-                return ('dynamic', None)
+                return ('dynamic', None, None)
             seen.add(cls)
             own = self._class_own_init[cls]
             if own is not None:
-                return ('direct', own)
+                return ('direct', own, cls)
             cls = self._class_parent.get(cls)
-        return ('none', None)
+        return ('none', None, None)
+
+    def _get_class_init_defaults(self, safe_class: str
+                                 ) -> Optional[List[Optional[bytes]]]:
+        """Encoded positional defaults of `safe_class`'s own __init__,
+        excluding `self`, or None when the signature has no fixed
+        arity to pad up to (an *args __init__, or a class the pre-pass
+        never recorded)."""
+        nodes = self._class_init_defaults.get(safe_class)
+        if nodes is None:
+            return None
+        cached = self._class_init_default_bytes.get(safe_class)
+        if cached is None:
+            cached = [self.translate_constant(n) if n is not None else None
+                      for n in nodes]
+            self._class_init_default_bytes[safe_class] = cached
+        return cached
+
+    def _init_signature_defaults(self, method_node: ast.FunctionDef
+                                 ) -> Optional[List[Optional[ast.expr]]]:
+        """Positional-default layout of an `__init__` definition, with
+        the `self` slot dropped so the list lines up with the actual
+        arguments at a construction site. None for an *args __init__.
+
+        _validate_function_signature has already refused the shapes
+        that would make this ambiguous (kwargs, keyword-only, *args
+        combined with defaults) and checked that every default is a
+        literal constant.
+        """
+        args = method_node.args
+        if args.vararg is not None:
+            return None
+        n_args = len(args.args)
+        n_defaults = len(args.defaults)
+        first_defaulted = n_args - n_defaults
+        # Index 0 is `self`, which the call site never supplies.
+        return [args.defaults[i - first_defaulted]
+                if i >= first_defaulted else None
+                for i in range(1, n_args)]
 
     def encodes_as_single_token(self, expr: ast.expr) -> bool:
         """True if `expr` lowers to a single bytecode token (an atom
@@ -1262,6 +1320,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         # define at the bottom.
         method_pairs: List[bytes] = []
         own_init_ref: Optional[bytes] = None
+        own_init_defaults: Optional[List[Optional[ast.expr]]] = None
         for kind, method_node in method_entries:
             real_lambda = self._compile_method_lambda(
                 method_node,
@@ -1278,6 +1337,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                 # runtime path instead.
                 if kind == 'instance':
                     own_init_ref = real_lambda
+                    own_init_defaults = self._init_signature_defaults(
+                        method_node)
                 else:
                     self._class_opaque_init.add(safe_class_name)
             pair = create_inline_call(
@@ -1295,9 +1356,15 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         # that takes `self, field1, field2, ...` and writes each one
         # via _pyvelox_set_attr.
         if dataclass_fields:
-            init_lambda = self._synthesize_dataclass_init(
-                dataclass_fields)
-            own_init_ref = init_lambda
+            # Two entry points: the fixed-arity closure that
+            # construction sites call after padding the defaults
+            # themselves, and the variadic one stored on the class for
+            # callers that can't pad (a *args construction, cls(...)
+            # through _pyvelox_invoke, super().__init__(...)).
+            init_lambda, direct_init_lambda = (
+                self._synthesize_dataclass_init(dataclass_fields))
+            own_init_ref = direct_init_lambda
+            own_init_defaults = [d for _name, d in dataclass_fields]
             init_pair = create_inline_call(
                 'cons',
                 [create_inline_call(
@@ -1317,6 +1384,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         self._class_parent[safe_class_name] = (
             base_safe if node.bases else None)
         self._class_own_init[safe_class_name] = own_init_ref
+        self._class_init_defaults[safe_class_name] = own_init_defaults
 
         class_vector = create_inline_call(
             'vector',
@@ -1399,96 +1467,91 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
 
     def _synthesize_dataclass_init(
             self,
-            fields: List["tuple[str, Optional[ast.expr]]"]) -> bytes:
-        """Build the __init__ closure for a @dataclass-decorated
-        class. Two shapes:
+            fields: List["tuple[str, Optional[ast.expr]]"]
+    ) -> "tuple[bytes, bytes]":
+        """Build the __init__ closures for a @dataclass-decorated
+        class. Returns `(stored, direct)`: the closure to hang off the
+        class's method alist, and the one construction sites call.
 
-        - **No fields have defaults**: a fixed-arity closure
-          `(self, f1, f2, ...)` where each parameter is stored into
-          its slot via _pyvelox_set_attr. Direct, no extra
-          machinery.
+        `direct` is always the fixed-arity closure `(self, f1, ..., fn)`
+        that stores each parameter into its slot via _pyvelox_set_attr.
+        Callers that know the class statically pad missing trailing
+        arguments with the field defaults themselves, so they can use
+        it as-is -- no rest parameter, no argc dispatch.
 
-        - **At least one field has a default**: a variadic closure
-          `(self, *_args)` plus argc-based dispatch. Each defaulted
-          field's value is `(if (>= n i+1) (list-ref _args i)
-          <default>)` where `n` is the actual arg count. Required
-          fields (those before the first defaulted one) just take
-          `(list-ref _args i)` directly -- if the user calls with
-          too few args, list-ref raises at runtime.
-
-          The arg count is computed once via a let-binding so each
-          defaulted field's check doesn't re-walk the args list.
+        With no defaulted fields, `stored` is that same closure. When
+        at least one field has a default, `stored` is instead a
+        variadic `(self, *_args)` wrapper that fills the missing tail
+        in and forwards to `direct`. That covers the callers which
+        can't pad at compile time: `Foo(*args)`, `cls(...)` through
+        _pyvelox_invoke, and super().__init__(...). Each defaulted
+        field's value there is `(if (>= n i+1) (list-ref _args i)
+        <default>)`, with `n` bound once so the checks don't re-walk
+        the args list.
 
         Fields are validated upstream: defaulted fields must be
         contiguous at the tail, defaults must be literal constants,
         and the field list is guaranteed non-empty.
         """
         sym_self = lambda: encode_symbol('self', self.bc)
-        any_defaults = any(d is not None for _, d in fields)
 
-        if not any_defaults:
-            # Fast path: fixed-arity init.
-            body_calls: List[bytes] = []
-            for fname, _default in fields:
-                safe_fname = self.binding_name(fname)
-                body_calls.append(create_inline_call(
-                    '_pyvelox_set_attr',
-                    [sym_self(),
-                     create_inline_call(
-                         'quote',
-                         [encode_symbol(fname, self.bc)], self.bc),
-                     encode_symbol(safe_fname, self.bc)],
-                    self.bc))
-            body = (body_calls[0] if len(body_calls) == 1
-                    else create_inline_call(
-                        'begin', body_calls, self.bc))
-            params = ['self'] + [
-                self.binding_name(f) for f, _ in fields]
-            return self._emit_lambda(
-                params, body, is_function=True)
-
-        # Variadic path: argc dispatch around defaulted fields.
-        sym_args = lambda: encode_symbol('_args', self.bc)
-        sym_n = lambda: encode_symbol('_n', self.bc)
-        body_calls = []
-        for i, (fname, default_node) in enumerate(fields):
-            list_ref = create_inline_call(
-                'list_ref',
-                [sym_args(), encode_integer(i)], self.bc)
-            if default_node is None:
-                value_bytes = list_ref
-            else:
-                default_bytes = self.translate_constant(default_node)
-                value_bytes = create_inline_call(
-                    'if',
-                    [create_inline_call(
-                        'greater_than_equal',
-                        [sym_n(), encode_integer(i + 1)], self.bc),
-                     list_ref,
-                     default_bytes],
-                    self.bc)
+        # The fixed-arity closure both shapes are built around.
+        body_calls: List[bytes] = []
+        for fname, _default in fields:
+            safe_fname = self.binding_name(fname)
             body_calls.append(create_inline_call(
                 '_pyvelox_set_attr',
                 [sym_self(),
                  create_inline_call(
                      'quote',
                      [encode_symbol(fname, self.bc)], self.bc),
-                 value_bytes],
+                 encode_symbol(safe_fname, self.bc)],
                 self.bc))
         body = (body_calls[0] if len(body_calls) == 1
                 else create_inline_call('begin', body_calls, self.bc))
+        params = ['self'] + [self.binding_name(f) for f, _ in fields]
+        direct_lambda = self._emit_lambda(
+            params, body, is_function=True)
 
-        # Bind n once with ((lambda (_n) <body>) (length _args)).
+        if not any(d is not None for _, d in fields):
+            return direct_lambda, direct_lambda
+
+        # Variadic wrapper: argc dispatch around the defaulted fields,
+        # forwarding to the fixed-arity closure.
+        sym_args = lambda: encode_symbol('_args', self.bc)
+        sym_n = lambda: encode_symbol('_n', self.bc)
+        forward_args: List[bytes] = [sym_self()]
+        for i, (_fname, default_node) in enumerate(fields):
+            list_ref = create_inline_call(
+                'list_ref',
+                [sym_args(), encode_integer(i)], self.bc)
+            if default_node is None:
+                forward_args.append(list_ref)
+                continue
+            default_bytes = self.translate_constant(default_node)
+            forward_args.append(create_inline_call(
+                'if',
+                [create_inline_call(
+                    'greater_than_equal',
+                    [sym_n(), encode_integer(i + 1)], self.bc),
+                 list_ref,
+                 default_bytes],
+                self.bc))
+        forward_call = create_inline_call(
+            direct_lambda, forward_args, self.bc)
+
+        # Bind n once with ((lambda (_n) <forward>) (length _args)).
         n_let_lambda = self._emit_lambda(
-            ['_n'], body, is_function=True)
+            ['_n'], forward_call, is_function=True)
         wrapped_body = create_inline_call(
             n_let_lambda,
             [create_inline_call('length', [sym_args()], self.bc)],
             self.bc)
 
-        return self._emit_lambda(
+        stored_lambda = self._emit_lambda(
             ['self', '_args'], wrapped_body,
             is_function=True, has_rest=True)
+        return stored_lambda, direct_lambda
 
     def _compile_method_lambda(self, node: ast.FunctionDef, *,
                                enclosing_class: str,
@@ -2226,9 +2289,7 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         _pyvelox_make_instance. Trailing *args is supported because the
         helper takes the args as a single list -- we just splice the
         starred value onto the prefix at the call site, mirroring the
-        forwarding-via-apply path. No call-site default-padding here:
-        any defaults declared by a synthesised __init__ are handled
-        inside that closure via its own argc dispatch.
+        forwarding-via-apply path.
 
         Which __init__ runs is resolved at compile time where possible
         (_resolve_static_init). A class with no __init__ in its chain,
@@ -2236,13 +2297,20 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         allocation; a statically known __init__ goes through
         _pyvelox_make_instance_direct, which skips both the method-alist
         walk and the missing-__init__ guard. Anything unresolved falls
-        back to _pyvelox_make_instance."""
+        back to _pyvelox_make_instance.
+
+        On the resolved path the defaults declared by that __init__ are
+        padded in here, the same way translate_call pads a direct call
+        to a defaulted function. A *-argument defeats that (the arity
+        isn't known until run time), so those keep whatever dynamic
+        default handling the closure itself provides."""
         if starred_idxs and starred_idxs[0] != len(arg_nodes) - 1:
             raise NotImplementedError(
                 "Positional arguments after *-argument are not "
                 "supported in class instantiation either.")
         safe_class = self.resolve_name(class_name)
-        init_kind, init_ref = self._resolve_static_init(safe_class)
+        init_kind, init_ref, init_owner = self._resolve_static_init(
+            safe_class)
         if init_kind == 'none' and not arg_nodes:
             # No __init__ to run and no arguments to evaluate for
             # effect: the construction *is* the allocation. Argument-
@@ -2259,6 +2327,13 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                  create_inline_call('list', [], self.bc)],
                 self.bc)
         if starred_idxs:
+            # A splat can't be padded here, and the closure recorded
+            # for direct calls assumes it has been: a defaulted
+            # @dataclass keeps the default-filling entry point on the
+            # class itself, not in _class_own_init. Hand those back to
+            # the runtime helper so the lookup finds the right one.
+            if self._init_needs_padding(init_owner):
+                init_kind = 'dynamic'
             fixed_nodes = arg_nodes[:-1]
             rest_value = self.translate_expr_with_ref(
                 arg_nodes[-1].value)
@@ -2268,10 +2343,12 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                 arg_list = create_inline_call(
                     'cons', [fixed_bytes, arg_list], self.bc)
         else:
-            arg_list = create_inline_call(
-                'list',
-                [self.translate_expr_with_ref(a) for a in arg_nodes],
-                self.bc)
+            arg_bytes = [self.translate_expr_with_ref(a)
+                         for a in arg_nodes]
+            if init_kind == 'direct':
+                arg_bytes = self._pad_init_args(
+                    class_name, init_owner, arg_bytes)
+            arg_list = create_inline_call('list', arg_bytes, self.bc)
         if init_kind == 'direct':
             return create_inline_call(
                 '_pyvelox_make_instance_direct',
@@ -2282,6 +2359,48 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             [encode_symbol(safe_class, self.bc),
              arg_list],
             self.bc)
+
+    def _init_needs_padding(self, init_owner: Optional[str]) -> bool:
+        """Whether the __init__ supplied by `init_owner` declares
+        defaults that a call site is expected to fill in."""
+        if init_owner is None:
+            return False
+        nodes = self._class_init_defaults.get(init_owner)
+        if nodes is None:
+            return False
+        return any(n is not None for n in nodes)
+
+    def _pad_init_args(self, class_name: str, init_owner: Optional[str],
+                       arg_bytes: List[bytes]) -> List[bytes]:
+        """Extend `arg_bytes` with the defaults declared by the
+        __init__ that `init_owner` supplies, and check the arity while
+        we're here.
+
+        Without this, a construction that leans on a default reaches a
+        fixed-arity closure short of actuals -- which the loader
+        rejects rather than diagnosing. Mirrors the padding
+        translate_call does for a direct call to a defaulted function.
+        """
+        if init_owner is None:
+            return arg_bytes
+        defaults = self._get_class_init_defaults(init_owner)
+        if defaults is None:
+            # *args __init__: no fixed arity, nothing to pad or check.
+            return arg_bytes
+        n_provided = len(arg_bytes)
+        n_total = len(defaults)
+        if n_provided > n_total:
+            raise NotImplementedError(
+                f"{class_name}() takes at most {n_total} positional "
+                f"arguments but {n_provided} were given")
+        padded = list(arg_bytes)
+        for i in range(n_provided, n_total):
+            if defaults[i] is None:
+                raise NotImplementedError(
+                    f"{class_name}() missing required positional "
+                    f"argument at index {i}")
+            padded.append(defaults[i])
+        return padded
 
     def _is_classmethod_recv_call(self, name: str) -> bool:
         """True iff `name` is the receiver parameter of the

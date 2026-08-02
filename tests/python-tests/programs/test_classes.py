@@ -308,6 +308,39 @@ expect("self-constructing method", head.v, 2)
 expect("self-constructed link", head.link.v, 1)
 
 
+# A user-written __init__ with defaults. The closure is fixed-arity,
+# so the construction site is what fills the missing tail in.
+class Defaulted:
+    def __init__(self, a, b=7, c="z"):
+        self.a = a
+        self.b = b
+        self.c = c
+
+
+d1 = Defaulted(1)
+expect("user init required arg", d1.a, 1)
+expect("user init default b", d1.b, 7)
+expect("user init default c", d1.c, "z")
+
+d2 = Defaulted(1, 2)
+expect("user init overridden b", d2.b, 2)
+expect("user init default c kept", d2.c, "z")
+
+d3 = Defaulted(1, 2, "y")
+expect("user init all supplied", d3.c, "y")
+
+
+# The same, inherited: the subclass adds no __init__, so both the
+# closure and its defaults come from the base.
+class DefaultedChild(Defaulted):
+    def total(self):
+        return self.a + self.b
+
+
+dc = DefaultedChild(5)
+expect("inherited defaulted init", dc.total(), 12)
+
+
 if failures > 0:
     print("FAILURES:", failures)
     raise SystemExit(1)

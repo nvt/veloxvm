@@ -177,6 +177,23 @@ expect("AllDefaults a override", ad2.a, 10)
 expect("AllDefaults b still default", ad2.b, 2)
 
 
+# Splatted construction. The argument count isn't known until run
+# time, so this can't be padded at the call site and goes through the
+# variadic entry point the class carries -- which must fill the same
+# defaults in.
+splat_full = ["h", 1234, True, "tag"]
+cs1 = Config(*splat_full)
+expect("Config(*args) host", cs1.host, "h")
+expect("Config(*args) port", cs1.port, 1234)
+expect("Config(*args) label", cs1.label, "tag")
+
+splat_short = ["h2"]
+cs2 = Config(*splat_short)
+expect("Config(*short) host", cs2.host, "h2")
+expect("Config(*short) port default", cs2.port, 8080)
+expect("Config(*short) label default", cs2.label, "default")
+
+
 # Subclass of a defaulted dataclass inherits the variadic __init__.
 class ExtendedConfig(Config):
     def description(self):
