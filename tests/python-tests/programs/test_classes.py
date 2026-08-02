@@ -341,6 +341,46 @@ dc = DefaultedChild(5)
 expect("inherited defaulted init", dc.total(), 12)
 
 
+# ============================================================
+# Defaults on methods, which are reached through the runtime
+# lookup and so carry their own padding rather than relying on
+# the call site.
+# ============================================================
+
+class Calc:
+    def __init__(self, base):
+        self.base = base
+
+    def add(self, a, b=10, c=100):
+        return self.base + a + b + c
+
+
+calc = Calc(1000)
+expect("method all args", calc.add(1, 2, 3), 1006)
+expect("method one default", calc.add(1, 2), 1103)
+expect("method two defaults", calc.add(1), 1111)
+
+
+# Inherited, and reached through super() from an override.
+class CalcChild(Calc):
+    def add(self, a, b=20, c=200):
+        return super().add(a) + 1
+
+
+cc = CalcChild(0)
+expect("override defaults", cc.add(1), 112)
+
+
+# A module function may share a name with a method without
+# inheriting its signature.
+def add(a, b=5):
+    return a + b
+
+
+expect("module function keeps own defaults", add(1), 6)
+expect("module function explicit", add(1, 2), 3)
+
+
 if failures > 0:
     print("FAILURES:", failures)
     raise SystemExit(1)

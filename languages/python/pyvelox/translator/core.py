@@ -347,11 +347,16 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             self._class_init_default_bytes[safe_class] = cached
         return cached
 
-    def _init_signature_defaults(self, method_node: ast.FunctionDef
-                                 ) -> Optional[List[Optional[ast.expr]]]:
-        """Positional-default layout of an `__init__` definition, with
-        the `self` slot dropped so the list lines up with the actual
-        arguments at a construction site. None for an *args __init__.
+    def _signature_defaults(self, method_node: ast.FunctionDef, *,
+                            skip_receiver: bool
+                            ) -> Optional[List[Optional[ast.expr]]]:
+        """Positional-default layout of a method definition, lined up
+        with the arguments a caller actually supplies. None for an
+        *args method, which has no fixed arity to pad up to.
+
+        `skip_receiver` drops the leading `self` / `cls` slot. It is
+        false only for a @staticmethod, where every parameter is the
+        caller's to supply.
 
         _validate_function_signature has already refused the shapes
         that would make this ambiguous (kwargs, keyword-only, *args
@@ -364,10 +369,80 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         n_args = len(args.args)
         n_defaults = len(args.defaults)
         first_defaulted = n_args - n_defaults
-        # Index 0 is `self`, which the call site never supplies.
         return [args.defaults[i - first_defaulted]
                 if i >= first_defaulted else None
-                for i in range(1, n_args)]
+                for i in range(1 if skip_receiver else 0, n_args)]
+
+    def _init_signature_defaults(self, method_node: ast.FunctionDef
+                                 ) -> Optional[List[Optional[ast.expr]]]:
+        """Default layout of an `__init__`, as a construction site
+        sees it."""
+        return self._signature_defaults(method_node, skip_receiver=True)
+
+    def _emit_default_padding_wrapper(
+            self, target: bytes,
+            default_nodes: List[Optional[ast.expr]],
+            receiver_params: List[str]) -> bytes:
+        """Wrap `target`, a fixed-arity closure, in a variadic closure
+        that fills its missing trailing arguments with `default_nodes`.
+
+        The result takes `(receiver..., *_args)` and forwards every
+        parameter to `target`, computing a defaulted one as
+        `(if (>= _n i+1) (list-ref _args i) <default>)`. The actual
+        count `_n` is bound once so the checks don't re-walk the list.
+
+        This is what lets a caller that can't pad at compile time --
+        anything reaching a method through the runtime lookup, or a
+        splatted call -- still get the declared defaults.
+        """
+        sym_args = lambda: encode_symbol('_args', self.bc)
+        sym_n = lambda: encode_symbol('_n', self.bc)
+        forward_args: List[bytes] = [encode_symbol(p, self.bc)
+                                     for p in receiver_params]
+        for i, default_node in enumerate(default_nodes):
+            list_ref = create_inline_call(
+                'list_ref', [sym_args(), encode_integer(i)], self.bc)
+            if default_node is None:
+                forward_args.append(list_ref)
+                continue
+            forward_args.append(create_inline_call(
+                'if',
+                [create_inline_call(
+                    'greater_than_equal',
+                    [sym_n(), encode_integer(i + 1)], self.bc),
+                 list_ref,
+                 self.translate_constant(default_node)],
+                self.bc))
+        forward_call = create_inline_call(target, forward_args, self.bc)
+
+        n_let_lambda = self._emit_lambda(
+            ['_n'], forward_call, is_function=True)
+        wrapped_body = create_inline_call(
+            n_let_lambda,
+            [create_inline_call('length', [sym_args()], self.bc)],
+            self.bc)
+        return self._emit_lambda(
+            receiver_params + ['_args'], wrapped_body,
+            is_function=True, has_rest=True)
+
+    def _maybe_wrap_method_defaults(self, target: bytes,
+                                    method_node: ast.FunctionDef,
+                                    kind: str) -> bytes:
+        """Give `target` a default-padding wrapper if the method
+        declares defaults, otherwise hand it back untouched.
+
+        Methods are reached through the runtime method lookup, which
+        knows nothing about the signature, so unlike a directly-named
+        function call there is no call site in a position to pad. The
+        defaults have to travel with the closure.
+        """
+        skip_receiver = kind != 'static'
+        defaults = self._signature_defaults(
+            method_node, skip_receiver=skip_receiver)
+        if defaults is None or not any(d is not None for d in defaults):
+            return target
+        return self._emit_default_padding_wrapper(
+            target, defaults, ['self'] if skip_receiver else [])
 
     def encodes_as_single_token(self, expr: ast.expr) -> bool:
         """True if `expr` lowers to a single bytecode token (an atom
@@ -439,16 +514,25 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         # time and concatenated here as the program prologue.
         return bytes(self._preamble) + bytes(statements)
 
-    def _collect_function_defaults(self, node: ast.AST) -> None:
+    def _collect_function_defaults(self, node: ast.AST,
+                                   is_method: bool = False) -> None:
         """Walk `node` recursively, validating every FunctionDef and
         Lambda signature and recording literal positional defaults.
         Errors are re-raised as PyveloxCompileError with the offending
-        function's source location."""
+        function's source location.
+
+        Methods are validated but their defaults are not recorded in
+        the module-level table: it is keyed by bare name, so every
+        class's `__init__` (and any method sharing a name with a
+        module function) would collide there. A method's defaults ride
+        on its own closure instead -- see _maybe_wrap_method_defaults.
+        """
         if isinstance(node, (ast.FunctionDef, ast.Lambda,
                              ast.AsyncFunctionDef)):
             try:
                 self._validate_function_signature(
-                    node, isinstance(node, ast.Lambda))
+                    node, isinstance(node, ast.Lambda),
+                    record_defaults=not is_method)
             except NotImplementedError as exc:
                 raise PyveloxCompileError(
                     str(exc),
@@ -458,11 +542,18 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                 ) from exc
 
         # Recurse. ast.iter_child_nodes covers function body, lambda
-        # body, expression children — everything we need.
+        # body, expression children — everything we need. Only a
+        # FunctionDef directly in a class body is a method; a def
+        # nested inside a method is an ordinary local function and
+        # keeps its call-site padding.
         for child in ast.iter_child_nodes(node):
-            self._collect_function_defaults(child)
+            self._collect_function_defaults(
+                child,
+                is_method=(isinstance(node, ast.ClassDef)
+                           and isinstance(child, ast.FunctionDef)))
 
-    def _validate_function_signature(self, node, is_lambda: bool) -> None:
+    def _validate_function_signature(self, node, is_lambda: bool,
+                                     record_defaults: bool = True) -> None:
         """Refuse kwarg/kw-only/positional-only forms; for FunctionDefs
         also encode and record any literal defaults, and record the
         rest-parameter name if `*args` is present.
@@ -519,7 +610,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
             self._validate_literal_default(default_node)
             nodes.append(default_node)
 
-        self._default_nodes[self.binding_name(node.name)] = nodes
+        if record_defaults:
+            self._default_nodes[self.binding_name(node.name)] = nodes
 
     def _validate_literal_default(self, default_node: ast.expr) -> None:
         """Default values must be literal constants — anything else
@@ -1326,8 +1418,13 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
                 method_node,
                 enclosing_class=safe_class_name,
                 kind=kind)
+            # Defaults first, receiver convention second: the kind
+            # wrapper forwards an argument list, so it has to reach a
+            # closure that already knows how to fill its own tail in.
+            padded_lambda = self._maybe_wrap_method_defaults(
+                real_lambda, method_node, kind)
             method_lambda = self._wrap_method_for_kind(
-                real_lambda, kind)
+                padded_lambda, kind)
             if method_node.name == '__init__':
                 # Record the *unwrapped* closure so construction sites
                 # can call it directly. A @classmethod/@staticmethod
@@ -1516,41 +1613,8 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         if not any(d is not None for _, d in fields):
             return direct_lambda, direct_lambda
 
-        # Variadic wrapper: argc dispatch around the defaulted fields,
-        # forwarding to the fixed-arity closure.
-        sym_args = lambda: encode_symbol('_args', self.bc)
-        sym_n = lambda: encode_symbol('_n', self.bc)
-        forward_args: List[bytes] = [sym_self()]
-        for i, (_fname, default_node) in enumerate(fields):
-            list_ref = create_inline_call(
-                'list_ref',
-                [sym_args(), encode_integer(i)], self.bc)
-            if default_node is None:
-                forward_args.append(list_ref)
-                continue
-            default_bytes = self.translate_constant(default_node)
-            forward_args.append(create_inline_call(
-                'if',
-                [create_inline_call(
-                    'greater_than_equal',
-                    [sym_n(), encode_integer(i + 1)], self.bc),
-                 list_ref,
-                 default_bytes],
-                self.bc))
-        forward_call = create_inline_call(
-            direct_lambda, forward_args, self.bc)
-
-        # Bind n once with ((lambda (_n) <forward>) (length _args)).
-        n_let_lambda = self._emit_lambda(
-            ['_n'], forward_call, is_function=True)
-        wrapped_body = create_inline_call(
-            n_let_lambda,
-            [create_inline_call('length', [sym_args()], self.bc)],
-            self.bc)
-
-        stored_lambda = self._emit_lambda(
-            ['self', '_args'], wrapped_body,
-            is_function=True, has_rest=True)
+        stored_lambda = self._emit_default_padding_wrapper(
+            direct_lambda, [d for _name, d in fields], ['self'])
         return stored_lambda, direct_lambda
 
     def _compile_method_lambda(self, node: ast.FunctionDef, *,
@@ -1570,11 +1634,14 @@ class PythonTranslator(_BuiltinHandlers, _ClosureAnalysis, _MethodHandlers):
         there's no implicit receiver -- the `self` slot of the stack
         entry is None, and super() inside the body refuses with the
         usual "no parameter" message."""
-        # Validate signature (covers *args, defaults, etc.) and record
-        # the rest-parameter name so calls into this method via the
-        # method-dispatch path don't fight the default-padding logic.
+        # Validate the signature (covers *args, defaults, etc.). The
+        # defaults themselves are not recorded in the module-level
+        # table: they ride on the method's own closure instead, since
+        # that table is keyed by bare name and shared with module
+        # functions.
         try:
-            self._validate_function_signature(node, is_lambda=False)
+            self._validate_function_signature(
+                node, is_lambda=False, record_defaults=False)
         except NotImplementedError as exc:
             raise PyveloxCompileError(
                 str(exc),

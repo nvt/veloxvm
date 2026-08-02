@@ -162,6 +162,35 @@ expect("Mid.label", Mid.label(), "mid-on-base")
 expect("Base.label", Base.label(), "base")
 
 
+# Defaults combined with the receiver wrappers. A staticmethod has no
+# implicit receiver, so its whole parameter list is the caller's to
+# supply and its defaults line up one slot earlier than an instance
+# or class method's.
+class Defaults:
+    def __init__(self):
+        self.tag = "inst"
+
+    @staticmethod
+    def stat(a, b=2, c=3):
+        return a * 100 + b * 10 + c
+
+    @classmethod
+    def cls_method(cls, a, b=7):
+        return a * 10 + b
+
+
+expect("staticmethod all args", Defaults.stat(1, 4, 5), 145)
+expect("staticmethod one default", Defaults.stat(1, 4), 143)
+expect("staticmethod two defaults", Defaults.stat(1), 123)
+
+d = Defaults()
+expect("staticmethod via instance", d.stat(9), 923)
+
+expect("classmethod all args", Defaults.cls_method(1, 2), 12)
+expect("classmethod default", Defaults.cls_method(1), 17)
+expect("classmethod via instance", d.cls_method(3), 37)
+
+
 if failures > 0:
     print("FAILURES:", failures)
     raise SystemExit(1)
