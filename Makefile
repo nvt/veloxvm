@@ -37,10 +37,25 @@ VM_CORE_OBJECTS = ${patsubst $(VM_CORE_DIR)/%.c,$(VM_OBJ_DIR)/%.o,$(VM_CORE_FILE
 CUSTOM_POLICY_FILE = $(VM_POLICY_DIR)/vm-policy-defs-custom.c
 DEFAULT_POLICY_FILE = $(VM_POLICY_DIR)/vm-policy-defs-default.c
 
-ifeq ($(wildcard $(CUSTOM_POLICY_FILE)),)
-        VM_POLICY_FILES = ${wildcard $(DEFAULT_POLICY_FILE)}
+# Policy DSL sources. When any *.policy file exists under policy-defs/,
+# the policy compiler turns the whole set into CUSTOM_POLICY_FILE and the
+# C build links that instead of DEFAULT_POLICY_FILE. With no DSL sources,
+# the build falls back to whichever C file is checked in.
+POLICY_SRC_DIR = policy-defs
+POLICY_SRC_FILES = $(wildcard $(POLICY_SRC_DIR)/*.policy)
+POLICY_COMPILER = $(POLICY_COMPILER_DIR)/vm-policy
+
+ifneq ($(POLICY_SRC_FILES),)
+        VM_POLICY_FILES = $(CUSTOM_POLICY_FILE)
+
+$(CUSTOM_POLICY_FILE): $(POLICY_SRC_FILES) | build_tools
+	VM_BASE_DIR=$(CURDIR)/ $(POLICY_COMPILER) $(POLICY_SRC_FILES)
 else
-        VM_POLICY_FILES = ${wildcard $(CUSTOM_POLICY_FILE)}
+ifneq ($(wildcard $(CUSTOM_POLICY_FILE)),)
+        VM_POLICY_FILES = $(CUSTOM_POLICY_FILE)
+else
+        VM_POLICY_FILES = $(DEFAULT_POLICY_FILE)
+endif
 endif
 VM_POLICY_OBJECTS = ${patsubst $(VM_POLICY_DIR)/%.c,$(VM_OBJ_DIR)/%.o,$(VM_POLICY_FILES)}
 
@@ -119,6 +134,7 @@ docker:
 
 clean:
 	rm -rf $(VM_OBJ_DIR)
+	@if [ -n "$(POLICY_SRC_FILES)" ]; then rm -f $(CUSTOM_POLICY_FILE); fi
 	@$(MAKE) -C $(TOOLS_DIR) clean
 	@$(MAKE) -C $(POLICY_COMPILER_DIR) clean
 	@$(MAKE) -C $(SCRIPT_DIR) clean

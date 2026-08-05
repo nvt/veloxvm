@@ -1,0 +1,14 @@
+# Permissive fallback policy.
+#
+# Attached to every program that does not match a named PROGRAM-POLICY.
+# Keeps existing apps and tests working now that VM_SUPERUSER_MODE=0 is
+# the POSIX default. Tighten or replace this file once per-program
+# policies cover the apps you care about.
+
+DEFAULT {
+  RESOURCE superuser
+  THREADS 255
+  CPU 100%
+  FILE * RW
+  NET ANY
+}

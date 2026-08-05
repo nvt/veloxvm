@@ -60,6 +60,7 @@ extern int yylex();
 extern int yylineno;
 extern const char *yytext;
 extern FILE *yyin;
+extern void yyrestart(FILE *);
 
 static char file_path[PATH_MAX];
 static uint8_t resources;
@@ -95,7 +96,7 @@ add_resource(uint8_t resource)
 %token <token> T_NET T_RESOURCE T_THREADS
 %token <token> T_READ T_WRITE T_READWRITE T_TCP T_UDP T_CLIENT T_SERVER
 %token <token> T_WINDOW T_THROTTLE T_SHA256 T_LBRACE T_RBRACE T_SEMICOLON
-%token <token> T_COMMA T_SUPERUSER T_CONSOLE T_DNS T_IPC T_STATS
+%token <token> T_COMMA T_SUPERUSER T_CONSOLE T_DNS T_IPC T_STATS T_ANY
 
 %%
 
@@ -165,7 +166,14 @@ memory_rule: T_MEMORY T_INTEGER
   ADD_RULE(out_fp);
 };
 
-net_rule: T_NET T_IDENTIFIER T_INTEGER protocol direction
+net_rule: T_NET T_ANY
+{
+  fprintf(out_fp, "  rule.type = VM_POLICY_TYPE_NET;\n");
+  fprintf(out_fp, "  rule.net.address = NULL;\n");
+  fprintf(out_fp, "  rule.net.port = 0;\n");
+  ADD_RULE(out_fp);
+}
+        | T_NET T_IDENTIFIER T_INTEGER protocol direction
 {
   struct in6_addr address;
   int i;
@@ -228,7 +236,9 @@ threads_rule: T_THREADS T_INTEGER
   ADD_RULE(out_fp);
 };
 
-header: T_PROGRAM_POLICY T_IDENTIFIER T_SHA256 T_IDENTIFIER
+header: program_header | default_header;
+
+program_header: T_PROGRAM_POLICY T_IDENTIFIER T_SHA256 T_IDENTIFIER
 {
   fprintf(out_fp, "  /* Policy definition for program %s */\n", $2);
   fprintf(out_fp, "  p = vm_policy_add(\"%s\", NULL, %d);\n",
@@ -236,20 +246,22 @@ header: T_PROGRAM_POLICY T_IDENTIFIER T_SHA256 T_IDENTIFIER
   fprintf(out_fp, "  if(p == NULL) {\n    return 0;\n  }\n\n");
 };
 
+default_header: T_DEFAULT
+{
+  fprintf(out_fp, "  /* Permissive fallback policy attached to programs"
+                  " without a named policy. */\n");
+  fprintf(out_fp, "  p = &vm_policy_default;\n\n");
+};
+
 %%
 int
 main(int argc, char *argv[])
 {
   char *vm_base_dir;
+  int i;
 
-  if(argc != 2) {
-    fprintf(stderr, "Usage: %s <policy-file>\n", argv[0]);
-    exit(EXIT_FAILURE);
-  }
-
-  yyin = fopen(argv[1], "r");
-  if(yyin == NULL) {
-    fprintf(stderr, "Unable to open the policy file %s\n", argv[1]);
+  if(argc < 2) {
+    fprintf(stderr, "Usage: %s <policy-file> [<policy-file> ...]\n", argv[0]);
     exit(EXIT_FAILURE);
   }
 
@@ -279,7 +291,19 @@ main(int argc, char *argv[])
   fprintf(out_fp, "  vm_policy_t *p;\n");
   fprintf(out_fp, "  vm_policy_rule_t rule;\n\n");
 
-  yyparse();
+  for(i = 1; i < argc; i++) {
+    yyin = fopen(argv[i], "r");
+    if(yyin == NULL) {
+      fprintf(stderr, "Unable to open the policy file %s\n", argv[i]);
+      fclose(out_fp);
+      unlink(file_path);
+      exit(EXIT_FAILURE);
+    }
+    fprintf(out_fp, "  /* === source: %s === */\n", argv[i]);
+    yyrestart(yyin);
+    yyparse();
+    fclose(yyin);
+  }
 
   fprintf(out_fp, "  return 1;\n}\n");
 
