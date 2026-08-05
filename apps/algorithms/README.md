@@ -57,3 +57,15 @@ produce a sum smaller than the expected arithmetic-series total.
 The `thread-yield!` between consumed items hands the rest of the
 scheduling slice to the other consumer; without it the first
 consumer to grab the mutex tends to drain the queue alone.
+
+## Python threading demo
+
+| File | Language | Style |
+|------|----------|-------|
+| `threading-demo.py` | Python | Named threads, mutex, thread-local state, and joins |
+
+Creates two threads with `make_thread`, confirms that they do not run
+before `thread_start`, and gives each one a name and a thread-specific
+label. The workers increment a shared counter under a mutex, yield to
+one another, and return their labels and work counts through
+`thread_join`. The final counter and both return values are checked.

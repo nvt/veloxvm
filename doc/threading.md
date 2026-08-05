@@ -192,6 +192,9 @@ wait; never assume the predicate holds just because you were signaled.
 - `apps/algorithms/producer-consumer.scm` — bounded-buffer
   producer/consumer over `not-full` / `not-empty` CVs, exercises
   `condition-variable-signal!` and `-broadcast!` end to end.
+- `apps/algorithms/threading-demo.py` — Python example using named,
+  deferred-start threads, mutex-protected shared state, thread-specific
+  values, yielding, and join results.
 - `apps/embedded/thread.iscm`, `apps/embedded/mutex.iscm` — older
   demos using just `thread-create!` + `thread-sleep!` + simple
   mutexes.
