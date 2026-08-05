@@ -39,7 +39,12 @@ typedef enum vm_policy_reaction {
   VM_POLICY_REACTION_EXCEPTION = 0,
   VM_POLICY_REACTION_REPORT    = 1,
   VM_POLICY_REACTION_SLOWDOWN  = 2,
-  VM_POLICY_REACTION_KILL      = 3
+  VM_POLICY_REACTION_KILL      = 3,
+  /* Caller-side sentinel meaning "use the type-specific default."
+     Resolved by vm_policy_add_rule at install time; never appears in
+     stored rules. Sits outside VM_POLICY_REACTION_COUNT so iteration
+     over real reactions still terminates at KILL. */
+  VM_POLICY_REACTION_USE_DEFAULT = 4
 } vm_policy_reaction_t;
 
 typedef enum vm_policy_type {

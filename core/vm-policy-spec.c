@@ -313,7 +313,9 @@ vm_policy_add_rule(vm_policy_t *policy, vm_policy_rule_t *rule_arg)
     goto error;
   }
 
-  rule->reaction = default_reaction_rules[rule->type].reaction;
+  rule->reaction = (rule_arg->reaction == VM_POLICY_REACTION_USE_DEFAULT)
+                   ? default_reaction_rules[rule->type].reaction
+                   : rule_arg->reaction;
   policy->rules[rule->type] = rule;
 
   return 1;

@@ -1,0 +1,2 @@
+PROGRAM-POLICY sieve
+SHA256 0000 { INHERIT compute-only }
