@@ -19,4 +19,5 @@ build-backend = "hatchling.build"
 packages = ["velox_repl", "tests"]
 
 [tool.uv]
+exclude-newer = "7 days"
 dev-dependencies = []
