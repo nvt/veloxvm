@@ -15,4 +15,9 @@ RUN apt-get -qq update \
 
 RUN make && ./compile.sh
 
+RUN groupadd --system velox \
+    && useradd --system --gid velox --no-create-home velox
+
+USER velox
+
 CMD ["bin/vm"]
