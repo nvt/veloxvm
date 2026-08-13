@@ -1315,7 +1315,7 @@ vm_native_write_buffer(vm_port_t *port, const char *buf, size_t len)
     vm_thread_t *t = port->thread != NULL ? port->thread : vm_current_thread();
     vm_signal_error(t, VM_ERROR_IO);
     vm_set_error_string(t, "port write failed");
-  } else if(port->thread != NULL && port != NULL &&
+  } else if(port != NULL && port->thread != NULL &&
             VM_IS_SET(port->flags, VM_PORT_FLAG_SOCKET)) {
     sock = port->opaque_desc;
     attribute_bandwidth(port->thread, len);
