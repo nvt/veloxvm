@@ -484,6 +484,9 @@ VM_FUNCTION(reverse)
 
   vm_gc_disable();
   result.type = VM_TYPE_NIL;
+  /* The first iteration copies result into p->cdr as the chain
+     terminator, so the union must not hold an indeterminate value. */
+  result.value.pair = NULL;
 
   while((status = vm_list_walker_next(&walker, &car)) == 1) {
     p = vm_alloc(sizeof(vm_pair_t));
