@@ -1257,6 +1257,23 @@ vm_native_write(vm_port_t *port, const char *format, ...)
   return vm_native_write_buffer(port, buf, len);
 }
 
+/*
+ * Writes len bytes to stdout. buf is a counted buffer that callers do
+ * not have to terminate -- bytevectors and string slices reach this
+ * function -- so the length must be honoured rather than inferred.
+ */
+static int
+write_stdout(const char *buf, size_t len)
+{
+  size_t i;
+
+  for(i = 0; i < len; i++) {
+    putchar(buf[i]);
+  }
+
+  return (int)len;
+}
+
 int
 vm_native_write_buffer(vm_port_t *port, const char *buf, size_t len)
 {
@@ -1280,13 +1297,13 @@ vm_native_write_buffer(vm_port_t *port, const char *buf, size_t len)
   } else if(port != NULL && port->io != NULL && port->io->write != NULL) {
     ret = port->io->write(port, buf, len);
   } else {
-    ret = printf("%s", buf);
+    ret = write_stdout(buf, len);
   }
 #else
   if(port != NULL && port->io != NULL && port->io->write != NULL) {
     ret = port->io->write(port, buf, len);
   } else {
-    ret = printf("%s", buf);
+    ret = write_stdout(buf, len);
   }
 #endif
 
