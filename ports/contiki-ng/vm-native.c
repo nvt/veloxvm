@@ -1243,6 +1243,17 @@ vm_native_write(vm_port_t *port, const char *format, ...)
   len = vsnprintf(buf, sizeof(buf), format, args);
   va_end(args);
 
+  if(len < 0) {
+    return -1;
+  }
+
+  /* vsnprintf returns the length it would have written, and fills at
+     most sizeof(buf) - 1 chars plus the terminator. Passing the
+     unclamped value on would read past the formatted output. */
+  if((size_t)len >= sizeof(buf)) {
+    len = sizeof(buf) - 1;
+  }
+
   return vm_native_write_buffer(port, buf, len);
 }
 
