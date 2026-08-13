@@ -1243,7 +1243,35 @@ vm_native_write(vm_port_t *port, const char *format, ...)
   len = vsnprintf(buf, sizeof(buf), format, args);
   va_end(args);
 
+  if(len < 0) {
+    return -1;
+  }
+
+  /* vsnprintf returns the length it would have written, and fills at
+     most sizeof(buf) - 1 chars plus the terminator. Passing the
+     unclamped value on would read past the formatted output. */
+  if((size_t)len >= sizeof(buf)) {
+    len = sizeof(buf) - 1;
+  }
+
   return vm_native_write_buffer(port, buf, len);
+}
+
+/*
+ * Writes len bytes to stdout. buf is a counted buffer that callers do
+ * not have to terminate -- bytevectors and string slices reach this
+ * function -- so the length must be honoured rather than inferred.
+ */
+static int
+write_stdout(const char *buf, size_t len)
+{
+  size_t i;
+
+  for(i = 0; i < len; i++) {
+    putchar(buf[i]);
+  }
+
+  return (int)len;
 }
 
 int
@@ -1269,13 +1297,13 @@ vm_native_write_buffer(vm_port_t *port, const char *buf, size_t len)
   } else if(port != NULL && port->io != NULL && port->io->write != NULL) {
     ret = port->io->write(port, buf, len);
   } else {
-    ret = printf("%s", buf);
+    ret = write_stdout(buf, len);
   }
 #else
   if(port != NULL && port->io != NULL && port->io->write != NULL) {
     ret = port->io->write(port, buf, len);
   } else {
-    ret = printf("%s", buf);
+    ret = write_stdout(buf, len);
   }
 #endif
 
@@ -1287,7 +1315,7 @@ vm_native_write_buffer(vm_port_t *port, const char *buf, size_t len)
     vm_thread_t *t = port->thread != NULL ? port->thread : vm_current_thread();
     vm_signal_error(t, VM_ERROR_IO);
     vm_set_error_string(t, "port write failed");
-  } else if(port->thread != NULL && port != NULL &&
+  } else if(port != NULL && port->thread != NULL &&
             VM_IS_SET(port->flags, VM_PORT_FLAG_SOCKET)) {
     sock = port->opaque_desc;
     attribute_bandwidth(port->thread, len);

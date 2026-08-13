@@ -48,15 +48,20 @@ object_is_true(vm_obj_t *obj)
 static int
 highest_bit_set(vm_integer_t value)
 {
+  /* Scan over the unsigned representation. Probing the top bit as
+     "value & (1 << i)" would shift a signed 1 into the sign bit at
+     i == 31, which is undefined behaviour. */
+  uint32_t bits;
   int highest, i;
 
   if(value == 0) {
     return -1;
   }
 
+  bits = (uint32_t)value;
   highest = -1;
-  for(i = sizeof(value) * CHAR_BIT - 1; i >= 0; i--) {
-    if(value & (1 << i)) {
+  for(i = sizeof(bits) * CHAR_BIT - 1; i >= 0; i--) {
+    if(bits & ((uint32_t)1 << i)) {
       highest = i;
       break;
     }

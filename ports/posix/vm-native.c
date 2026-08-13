@@ -1000,8 +1000,10 @@ vm_native_write(vm_port_t *port, const char *format, ...)
     if(n < 0) {
       ret = -1;
     } else {
-      if((size_t)n > sizeof(buf)) {
-        n = sizeof(buf);
+      if((size_t)n >= sizeof(buf)) {
+        /* vsnprintf returns the length it would have written, and
+           fills at most sizeof(buf) - 1 chars plus the terminator. */
+        n = sizeof(buf) - 1;
       }
       ret = port->io->write(port, buf, (size_t)n);
     }
@@ -1015,8 +1017,10 @@ vm_native_write(vm_port_t *port, const char *format, ...)
     if(n < 0) {
       ret = -1;
     } else {
-      if((size_t)n > sizeof(buf)) {
-        n = sizeof(buf);
+      if((size_t)n >= sizeof(buf)) {
+        /* vsnprintf returns the length it would have written, and
+           fills at most sizeof(buf) - 1 chars plus the terminator. */
+        n = sizeof(buf) - 1;
       }
       ret = vm_native_console_writer(buf, (size_t)n);
     }
