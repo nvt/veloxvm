@@ -39,24 +39,34 @@
 #include "vm-pair.h"
 
 #define NUMBER_BITS (sizeof(long) * CHAR_BIT)
-#define NUMBER_STRING_LENGTH NUMBER_BITS
+/* Room for every bit plus a sign character. */
+#define NUMBER_STRING_LENGTH (NUMBER_BITS + 1)
 
+/*
+ * Writes number in base 2 into str, using at most len characters plus
+ * a terminator, and returns the number of characters written.
+ */
 static int
 print_bits(char *str, size_t len, long number)
 {
+  unsigned long bits;
   uint8_t is_negative, leading_zeroes, bit;
-  unsigned i, j;
+  unsigned i;
+  size_t j;
 
   is_negative = number < 0;
+  /* Take the magnitude through the unsigned type, since negating
+     LONG_MIN overflows. */
+  bits = is_negative ? -(unsigned long)number : (unsigned long)number;
+
   j = 0;
-  if(is_negative) {
-    number = -number;
+  if(is_negative && j < len) {
     str[j++] = '-';
   }
   leading_zeroes = 1;
 
   for(i = 0; i < NUMBER_BITS; i++) {
-    bit = (number >> (NUMBER_BITS - i - 1)) & 1;
+    bit = (bits >> (NUMBER_BITS - i - 1)) & 1;
 
     if(bit) {
       leading_zeroes = 0;
@@ -65,11 +75,16 @@ print_bits(char *str, size_t len, long number)
     if(!leading_zeroes || i + 1 == NUMBER_BITS) {
       /* Print the bit if it is not a leading zero, or if it is
          the only zero. */
+      if(j == len) {
+        break;
+      }
       str[j++] = '0' + bit;
     }
   }
 
-  return j;
+  str[j] = '\0';
+
+  return (int)j;
 }
 
 VM_FUNCTION(make_string)
